@@ -11,6 +11,6 @@
  * the pure-module contract of `legacySettingsChain.ts`.
  */
 
-import { runSettingsStorageSplitMigration } from './splitSettingsStorage'
+import { runSettingsStorageMigration } from './splitSettingsStorage'
 
-runSettingsStorageSplitMigration()
+runSettingsStorageMigration()

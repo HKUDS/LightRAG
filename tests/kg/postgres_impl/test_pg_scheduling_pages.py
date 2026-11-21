@@ -181,6 +181,9 @@ async def test_decode_cursor_normalizes_timezone_aware_iso():
         '["not-a-date", "doc-1"]',
         '["2026-01-01T00:00:00", "a", "extra"]',
         "{}",
+        # A two-entry object unpacks to its two keys; an ISO-date first key
+        # would otherwise pass fromisoformat and mis-position the sweep.
+        '{"2026-01-01T00:00:00": "x", "doc-1": "y"}',
     ],
 )
 async def test_malformed_cursor_raises_control_plane_error(opaque):
@@ -263,11 +266,12 @@ async def test_null_created_at_row_reachable_across_page_boundary():
 # ---------------------------------------------------------------------------
 
 
-async def test_page_sql_keyset_shape_without_cursor():
+@pytest.mark.parametrize("second_status", [DocStatus.FAILED, DocStatus.DELETING])
+async def test_page_sql_keyset_shape_without_cursor(second_status):
     db = _FakeDB(results=[[]])
     storage = _storage(db)
     page = await storage.get_docs_by_statuses_page(
-        [DocStatus.PENDING, DocStatus.FAILED], limit=10, strict=True
+        [DocStatus.PENDING, second_status], limit=10, strict=True
     )
     assert page.docs == {}
     assert page.next_position is CURSOR_END
@@ -287,7 +291,18 @@ async def test_page_sql_keyset_shape_without_cursor():
     assert "failure_generation" not in sql
     # $1 workspace, $2 limit (shared by every branch and the wrapper), then one
     # parameter per status.
-    assert params == ["ws", 10, "pending", "failed"]
+    assert params == ["ws", 10, "pending", second_status.value]
+
+
+async def test_deleting_public_pagination_keeps_parameterized_status_predicate():
+    db = _FakeDB(results=[[]])
+    storage = _storage(db)
+    docs, total = await storage.get_docs_paginated(status_filter=DocStatus.DELETING)
+    assert docs == [] and total == 0
+    sql, params, _ = db.calls[0]
+    assert "status = ANY($2)" in sql
+    assert params[1] == ["deleting"]
+    assert "deleting" not in sql
 
 
 async def test_page_sql_with_cursor():

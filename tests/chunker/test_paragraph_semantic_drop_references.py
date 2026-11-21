@@ -24,6 +24,10 @@ from lightrag.chunker.paragraph_semantic import (
 )
 from lightrag.constants import DEFAULT_P_REFERENCES_HEADINGS
 from lightrag.utils import Tokenizer, TokenizerInterface, logger as _lightrag_logger
+from tests._log_capture import capture_lightrag_logs
+
+
+pytestmark = pytest.mark.offline
 
 
 class _CharTokenizer(TokenizerInterface):
@@ -312,11 +316,7 @@ def test_drop_references_emits_info_log(tmp_path, caplog):
     ]
     blocks_path = _write_blocks_jsonl(tmp_path, rows)
 
-    # The lightrag logger sets propagate=False, so caplog can't see it by
-    # default — enable propagation for the duration of the call.
-    original_propagate = _lightrag_logger.propagate
-    _lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.INFO, logger=_lightrag_logger.name):
             chunking_by_paragraph_semantic(
                 tokenizer,
@@ -326,8 +326,6 @@ def test_drop_references_emits_info_log(tmp_path, caplog):
                 drop_references=True,
                 doc_id="doc-xyz",
             )
-    finally:
-        _lightrag_logger.propagate = original_propagate
 
     info_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     # Log names the dropped heading and attributes it to the doc_id.
@@ -353,3 +351,59 @@ def test_headings_read_live_from_env(tmp_path, monkeypatch):
         )
     )
     assert "LIT_MARKER" not in body
+
+
+# --------------------------------------------------------------------------- #
+# Parser-marked reference blocks (session_type="references")
+# --------------------------------------------------------------------------- #
+
+
+def _references_row(heading: str, content: str) -> dict:
+    row = _row(heading, content)
+    row["session_type"] = "references"
+    return row
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("drop", [False, True])
+def test_marked_reference_block_dropped_whatever_heading_and_window(tmp_path, drop):
+    # A Word bibliography control: "Works Cited" matches no prefix, and a
+    # heading-less bibliography keeps the heading of the section it follows.
+    tokenizer = _make_tokenizer()
+    rows = [
+        _row("Introduction", "INTRO_MARKER intro body"),
+        _references_row("Works Cited", "CITED_MARKER [1] Foo."),
+        _references_row("Introduction", "INLINE_REF_MARKER [2] Bar."),
+        _row("Appendix", "APPENDIX_MARKER appendix body"),
+    ]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    body = _all_content(
+        chunking_by_paragraph_semantic(
+            tokenizer,
+            "",
+            2000,
+            blocks_path=blocks_path,
+            drop_references=drop,
+            references_tail_n=1,  # the window covers only "Appendix"
+        )
+    )
+
+    assert ("CITED_MARKER" in body) is not drop
+    assert ("INLINE_REF_MARKER" in body) is not drop
+    assert "INTRO_MARKER" in body and "APPENDIX_MARKER" in body
+
+
+@pytest.mark.offline
+def test_marked_reference_only_document_is_kept(tmp_path):
+    tokenizer = _make_tokenizer()
+    rows = [_references_row("Bibliography", "REF_MARKER [1] Foo.")]
+    blocks_path = _write_blocks_jsonl(tmp_path, rows)
+
+    body = _all_content(
+        chunking_by_paragraph_semantic(
+            tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
+        )
+    )
+
+    assert "REF_MARKER" in body

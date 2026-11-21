@@ -22,6 +22,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 # Env vars that the project's `.env` may have populated (via load_dotenv at
 # import time of lightrag.api.config). Tests must be hermetic and not depend on
 # developer-local .env values, so we clear/override anything that affects
@@ -58,6 +60,10 @@ def _isolate_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LLM_BINDING", "ollama")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
+    # Part of the minimal viable server config since create_app began
+    # refusing to start without a named embedding model. The ollama
+    # binding's own default, so no EMBEDDING_DIM is implied.
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3:latest")
 
     import lightrag.api.config as config
 

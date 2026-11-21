@@ -44,6 +44,31 @@ async def test_valid_results_survive_malformed_items():
 
 
 @pytest.mark.asyncio
+async def test_results_are_sorted_by_score_not_provider_order():
+    """Callers (chunk_top_k truncation) slice the returned list positionally,
+    so it must be sorted by relevance_score descending regardless of what
+    order the provider returned results in."""
+
+    async def rerank_func(**_kwargs):
+        return [
+            {"index": 0, "relevance_score": 0.1},
+            {"index": 1, "relevance_score": 0.9},
+            {"index": 2, "relevance_score": 0.5},
+        ]
+
+    documents = [{"content": "low"}, {"content": "high"}, {"content": "mid"}]
+
+    result = await apply_rerank_if_enabled(
+        query="query",
+        retrieved_docs=documents,
+        global_config={"rerank_model_func": rerank_func},
+    )
+
+    assert [d["content"] for d in result] == ["high", "mid", "low"]
+    assert [d["rerank_score"] for d in result] == [0.9, 0.5, 0.1]
+
+
+@pytest.mark.asyncio
 async def test_legacy_documents_are_not_inferred_from_later_index_metadata():
     legacy_results = [
         {"content": "ranked first"},
@@ -60,3 +85,27 @@ async def test_legacy_documents_are_not_inferred_from_later_index_metadata():
     )
 
     assert result == legacy_results
+
+
+@pytest.mark.asyncio
+async def test_negative_top_n_keeps_original_documents_without_calling_rerank():
+    """A negative top_n must not reach a custom rerank function, whose legacy
+    result format would otherwise be sliced with it and silently lose the
+    last-ranked documents."""
+    calls = []
+
+    async def rerank_func(**kwargs):
+        calls.append(kwargs)
+        return [{"content": "b"}, {"content": "a"}]
+
+    documents = [{"content": "a"}, {"content": "b"}]
+
+    result = await apply_rerank_if_enabled(
+        query="query",
+        retrieved_docs=documents,
+        global_config={"rerank_model_func": rerank_func},
+        top_n=-1,
+    )
+
+    assert result == documents
+    assert calls == []

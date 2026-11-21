@@ -8,7 +8,12 @@ import json
 import numpy as np
 from dataclasses import dataclass
 
-from lightrag.exceptions import CommitBookkeepingError
+from lightrag.exceptions import (
+    CommitBookkeepingError,
+    CorruptStorageSnapshotError,
+    StorageCapabilityError,
+    VectorSpaceMismatchError,
+)
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -21,6 +26,12 @@ from lightrag.base import BaseVectorStorage
 from lightrag.constants import DEFAULT_QUERY_PRIORITY
 
 from . import file_fingerprint
+from .vector_space import (
+    assert_vector_space_matches,
+    declared_model_name,
+    read_vector_space_marker,
+    vector_space_marker,
+)
 from .shared_storage import (
     get_namespace_lock,
     get_update_flag,
@@ -52,6 +63,30 @@ class _PendingFaissDoc:
     vector: np.ndarray | None = None
 
 
+def _raise_if_unreadable(path: str) -> None:
+    """Re-ask in Python whether a file's bytes are reachable at all.
+
+    ``faiss.read_index`` runs in C++ and reports EVERY failure as a bare
+    ``RuntimeError``: a truncated index and one the OS refused to open are the
+    same exception type with different text. Only the first may be labelled
+    corruption, because that label routes to a recovery that backs the
+    container up and DROPS it -- a healthy index that was merely unreadable
+    for a moment would be destroyed and re-embedded for nothing, and rebuilt
+    from sources that may hold fewer rows than it did.
+
+    So the failure path asks the question the C++ error cannot answer. Any
+    ``OSError`` here propagates as itself; reaching the end means the bytes
+    are readable and the payload is what is wrong.
+
+    Residue: the probe runs after the failure, so a fault that clears in
+    between reads as corruption. That direction is survivable -- recovery
+    still needs the operator's confirmation and a successful backup -- while
+    the reverse, labelling an I/O fault as corruption silently, is not.
+    """
+    with open(path, "rb") as handle:
+        handle.read(1)
+
+
 @final
 @dataclass
 class FaissVectorDBStorage(BaseVectorStorage):
@@ -73,7 +108,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
     renames are independent, so a crash between them can leave the pair
     describing different snapshots. ``_load_faiss_index`` drops ``meta > index``
     rows silently and warns on ``index > meta`` without repairing it, so orphan
-    vectors stay in the loaded index, unreachable by custom-id lookup.
+    vectors stay in the loaded index, unreachable by custom-id lookup. A pair
+    it cannot read back AT ALL is different in kind: it raises
+    ``CorruptStorageSnapshotError`` and never degrades to an empty index,
+    because the next save would publish that emptiness over the unread bytes.
 
     The three invariants this class is correct only while they hold: **single
     writer per workspace** (the pipeline's ``busy`` reservation), **eventual
@@ -131,6 +169,20 @@ class FaissVectorDBStorage(BaseVectorStorage):
             workspace_dir, f"faiss_index_{self.namespace}.index"
         )
         self._meta_file = self._faiss_index_file + ".meta.json"
+        # Embedding-space marker. A THIRD file rather than a reserved key in
+        # ``.meta.json``, and the reason is downgrade safety: that map is
+        # ``{str(faiss_id): metadata}`` and ``_load_faiss_index`` calls
+        # ``int()`` on every key, with a broad ``except Exception`` that falls
+        # back to "start with an empty index". An older LightRAG reading a
+        # reserved key would therefore discard every metadata row and the next
+        # save would persist that emptiness -- silent total loss of the store
+        # on a rollback. A file an old reader never opens cannot do that.
+        #
+        # Deliberately NOT part of ``_fingerprint_paths``: it carries no rows,
+        # so a peer has nothing to reload because of it, and adding a third
+        # path would change the two-file publication fence. See
+        # ``docs/design/VectorSpaceProvenance.md``.
+        self._vector_space_file = self._faiss_index_file + ".space.json"
 
         self._max_batch_size = self.global_config["embedding_batch_num"]
         # Embedding dimension (e.g. 768) must match your embedding function
@@ -204,14 +256,25 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self.workspace or "_",
             extra_patterns=(glob.escape(self._meta_file) + ".tmp",),
         )
+        reap_orphan_tmp_files(self._vector_space_file, self.workspace or "_")
 
-        # Sampled BEFORE the load, never after -- see ``kg.file_fingerprint``.
-        fingerprint = self._stat_fingerprint()
-        self._load_faiss_index()
-        self._adopt_fingerprint(fingerprint)
+        # The on-disk index is NOT loaded here; see initialize().
+        # Set by _load_faiss_index / drop(); see _load_faiss_index for the rule.
+        self._vector_space_certified = False
 
     async def initialize(self):
-        """Initialize storage data"""
+        """Initialize storage data, refusing a foreign embedding space.
+
+        The load happens HERE and not in ``__post_init__``, which is where it
+        used to be. Loading at construction meant the refusal was raised by the
+        constructor, so ``lightrag-rebuild-vdb`` could not even build the
+        object, let alone call ``drop()`` on it -- the operator had to delete
+        the files by hand. The object must survive its own refusal.
+
+        Order matters for the same reason: the update flag and the storage lock
+        are taken FIRST, so a storage that refuses below is still able to serve
+        ``drop()``. See ``docs/design/VectorSpaceProvenance.md``.
+        """
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(
             self.namespace, workspace=self.workspace
@@ -220,6 +283,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self._storage_lock = get_namespace_lock(
             self.namespace, workspace=self.workspace
         )
+        # Sampled BEFORE the load, never after -- see ``kg.file_fingerprint``.
+        fingerprint = self._stat_fingerprint()
+        self._load_faiss_index()
+        self._adopt_fingerprint(fingerprint)
 
     def _fingerprint_paths(self) -> tuple[str, str]:
         """Both files this storage's state spans, **in publication order**.
@@ -538,6 +605,23 @@ class FaissVectorDBStorage(BaseVectorStorage):
         committed snapshot until some other method triggers a reload.
         """
         return {"data": list(self._id_to_meta.values())}
+
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        Same shape as ``NanoVectorDBStorage.is_empty`` and for the same
+        reasons: no transport to fail, a pending upsert counts as non-empty,
+        and ``_pending_deletes`` is not subtracted because ``True`` is the only
+        answer here that can refuse a deployment.
+
+        ``_reload_index_from_disk_locked`` is called directly rather than
+        through ``_get_index``: ``_storage_lock`` is non-reentrant.
+        """
+        async with self._storage_lock:
+            if self._pending_upserts:
+                return False
+            self._reload_index_from_disk_locked()
+            return not self._id_to_meta
 
     async def delete(self, ids: list[str]):
         """Delete vectors for the provided custom IDs.
@@ -1218,6 +1302,14 @@ class FaissVectorDBStorage(BaseVectorStorage):
             # newer. See ``_fingerprint_paths`` and
             # ``file_fingerprint.publication_complete``. Reversing this makes
             # a torn pair indistinguishable from a committed one.
+            # The marker goes FIRST, before the fenced pair. It is not part of
+            # the two-file publication fence (see ``_vector_space_file``), and
+            # writing it ahead of the rows keeps the metadata rename the last
+            # thing that happens -- that rename is this storage's commit point,
+            # and a third write after it would make a complete publication look
+            # torn to ``file_fingerprint.publication_complete``.
+            if self._vector_space_certified:
+                self._write_vector_space_file()
             atomic_write(
                 index_file,
                 lambda tmp: faiss.write_index(index, tmp),
@@ -1301,36 +1393,198 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 "wrote.",
             )
 
-    def _load_faiss_index(self):
+    def _dump_vector_space_marker(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(vector_space_marker(self.embedding_func), f)
+
+    def _read_vector_space_file(self) -> tuple[str | None, int | None]:
+        """The recorded ``(model, dim)``, or ``(None, None)``.
+
+        ABSENT reads as "not recorded": no file (a store written before the
+        marker existed, or one whose sidecar write did not land) and a payload
+        this version cannot interpret (``read_vector_space_marker`` is tolerant
+        on purpose, so a future format never wedges an old reader). Absent
+        evidence never refuses.
+
+        UNREADABLE is not absent. A marker that exists but is not JSON is
+        corruption, and reading it as "not recorded" would hand a
+        same-dimension model swap the one answer that lets it through, on the
+        very file recorded to catch it -- and then let the next save stamp
+        this process's model over rows it cannot vouch for. An I/O failure is
+        neither: it propagates as itself, because the recovery this refusal
+        routes to destroys the container.
         """
-        Load the Faiss index + metadata from disk if it exists,
-        and rebuild in-memory structures so we can query.
+        try:
+            with open(self._vector_space_file, encoding="utf-8") as f:
+                payload = json.load(f)
+        except FileNotFoundError:
+            return None, None
+        except OSError:
+            raise
+        except (ValueError, RecursionError) as e:
+            # `RecursionError` is the parser saying the document is nested
+            # past the interpreter's limit -- a statement about these bytes,
+            # like the `ValueError` beside it. Uncaught it would reach the
+            # loader's own handler, where the file being read is the METADATA,
+            # and name that instead of the marker that failed.
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=self._vector_space_file,
+                detail=f"{type(e).__name__}: {e}",
+                artifacts=(
+                    self._faiss_index_file,
+                    self._meta_file,
+                    self._vector_space_file,
+                ),
+            ) from e
+        return read_vector_space_marker(payload)
+
+    def _write_vector_space_file(self) -> None:
+        """Record this instance's embedding space beside the index.
+
+        Called from the save path, before the fenced pair, so the marker
+        describes rows this process is about to write.
+
+        A failure degrades to unmarked -- the vectors are what matter, and an
+        unwritable marker puts the store back where it was before this feature
+        existed -- EXCEPT when what is already on disk contradicts us. Then
+        degrading would publish rows in this instance's embedding space beside
+        a marker naming another one, and every later attach would refuse a
+        store it cannot be talked out of: the sidecar cannot be removed (its
+        drop swallows that too, correctly, because by then the vectors are
+        already gone) and cannot be replaced, so repeated drops would never
+        clear it. Raising here is what keeps that from becoming permanent --
+        the pair is not published, so nothing new is written into the
+        contradiction.
+
+        Raises:
+            VectorSpaceMismatchError: the marker could not be written and the
+                one on disk names a different embedding space.
+        """
+        try:
+            atomic_write(
+                self._vector_space_file,
+                self._dump_vector_space_marker,
+                workspace=self.workspace or "_",
+            )
+            return
+        except Exception as e:
+            write_error = e
+
+        stored_model, stored_dim = self._read_vector_space_file()
+        assert_vector_space_matches(
+            backend=type(self).__name__,
+            container=self._vector_space_file,
+            embedding_func=self.embedding_func,
+            stored_model=stored_model,
+            stored_dim=stored_dim,
+            detail=(
+                f"The marker could not be rewritten ({write_error}), so this save "
+                f"was abandoned rather than publishing vectors beside a marker "
+                f"that contradicts them. Remove {self._vector_space_file} by hand "
+                f"and re-run the rebuild."
+            ),
+        )
+        log_without_raising(
+            logger.warning,
+            f"[{self.workspace}] Could not record the embedding-space marker at "
+            f"{self._vector_space_file}: {write_error}. The store stays unmarked, "
+            f"so a later same-dimension model change cannot be detected.",
+        )
+
+    def _load_faiss_index(self):
+        """Load the index + metadata from disk and rebuild in-memory state.
+
+        **Fail-loud.** A pair that exists but cannot be read back raises
+        ``CorruptStorageSnapshotError``; every other failure propagates as
+        itself. Nothing here degrades to an empty index, which is what this
+        method used to do for any exception at all. That degradation was
+        silent data loss on a delay: the empty index certified itself as this
+        process's embedding space, and the next ``index_done_callback`` saved
+        it over the very bytes it had failed to read -- turning an unreadable
+        file into an empty one, permanently, with a fresh baseline stamped on
+        top. Refusing leaves those bytes on disk for the offline rebuild,
+        which is the only path allowed to destroy them.
+
+        Absent files are NOT corruption and never reach the refusal: no index
+        is a first start (handled above), and an unreadable ``.space.json``
+        marker is absent evidence (``_read_vector_space_file`` swallows it).
+        An absent ``.meta.json`` BESIDE a present index is a torn pair -- the
+        metadata is this storage's commit marker (``_fingerprint_paths``), so
+        its absence contradicts the index that is there -- and is reported as
+        corruption so the operator reaches the same recovery path.
         """
         if not os.path.exists(self._faiss_index_file):
             logger.warning(
                 f"[{self.workspace}] No existing Faiss index file found for {self.namespace}"
             )
+            # Nothing here but what this process writes from now on.
+            self._vector_space_certified = True
             return
 
-        dim_mismatch = False
+        space_mismatch = False
+        # Which file the code below is reading. `container` is the operator's
+        # DIAGNOSIS -- the file that could not be read -- and most parse
+        # failures cannot be attributed after the fact: `json.JSONDecodeError`
+        # carries no `filename`, so a `.meta.json` full of garbage would
+        # otherwise be reported as the `.index`, which is intact, and send the
+        # operator to inspect the wrong artifact. The recovery SCOPE is
+        # unaffected either way: `artifacts` always names all three files.
+        reading = self._faiss_index_file
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
 
-            # Verify dimension consistency between loaded index and embedding function
-            if self._index.d != self._dim:
-                error_msg = (
-                    f"Dimension mismatch: loaded Faiss index has dimension {self._index.d}, "
-                    f"but embedding function expects dimension {self._dim}. "
-                    f"Please ensure the embedding model matches the stored index or rebuild the index."
-                )
-                logger.error(error_msg)
-                dim_mismatch = True
-                raise ValueError(error_msg)
-
-            # Load metadata
+            # Load metadata. Everything from here on reads the metadata --
+            # its bytes, then its shape -- except the `reconstruct` calls in
+            # the row loop, which are the index's and which faiss reports as
+            # `RuntimeError` (attributed below).
+            reading = self._meta_file
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
+
+            # The embedding-space verdict, before anything is served. The
+            # dimension comes from the index itself -- the physical truth it
+            # enforces -- and the model from the marker, which is the only
+            # record of it: this backend's file name carries no model, so a
+            # same-dimension model swap reuses these very vectors and every
+            # query returns the previous model's neighbours. Absent evidence
+            # never refuses, so a file written before the marker existed still
+            # loads.
+            stored_model, _marker_dim = self._read_vector_space_file()
+            try:
+                assert_vector_space_matches(
+                    backend=type(self).__name__,
+                    container=self._faiss_index_file,
+                    embedding_func=self.embedding_func,
+                    stored_model=stored_model,
+                    stored_dim=self._index.d,
+                )
+            except Exception:
+                space_mismatch = True
+                raise
+
+            # May a later save record THIS process's model over this snapshot?
+            # Only if the snapshot is ours to vouch for: empty (every row from
+            # here on is one we wrote) or already naming a model (which the
+            # check above just confirmed is ours). A NON-EMPTY snapshot with no
+            # model recorded is the pre-marker legacy case, and the
+            # absent-evidence rule let it through without establishing anything
+            # about its rows -- stamping it would record a model over another
+            # model's vectors and make the lie permanent, which is the very
+            # thing the attach path refuses to do. Certification for that case
+            # needs the adoption probe, one layer up.
+            # Certification needs BOTH sides named. A process with no
+            # configured model that certified a marked store would, on its next
+            # save, replace the marker with a dimension-only payload -- erasing
+            # provenance that was already established and reopening the
+            # same-dimension swap it was recorded to catch. Attach accepts such
+            # a process (absent evidence never refuses); writing the marker is a
+            # different, stronger claim.
+            self._vector_space_certified = self._index.ntotal == 0 or (
+                stored_model is not None
+                and declared_model_name(self.embedding_func) is not None
+            )
 
             # Convert string keys back to int and reconstruct vectors from index
             self._id_to_meta = {}
@@ -1363,15 +1617,114 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.info(
                 f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
             )
+        except CorruptStorageSnapshotError:
+            # Already typed and already naming its own file (the marker read
+            # below raises this). Re-wrapping would relabel it as the index.
+            raise
         except Exception as e:
-            if dim_mismatch:
+            if space_mismatch:
                 raise
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
             )
-            logger.warning(f"[{self.workspace}] Starting with an empty Faiss index.")
-            self._index = faiss.IndexFlatIP(self._dim)
-            self._id_to_meta = {}
+            if isinstance(e, MemoryError):
+                # A heap this process could not satisfy says nothing about the
+                # bytes on disk -- a large but healthy snapshot on a small
+                # container raises it. `CorruptStorageSnapshotError` is what
+                # the rebuild tool reads as permission to back up and DROP,
+                # and a transient shortage must never buy that. Same rule as
+                # the I/O failures below, one resource up.
+                raise
+            missing = (
+                getattr(e, "filename", None)
+                if isinstance(e, FileNotFoundError)
+                else None
+            )
+            if missing != self._meta_file:
+                # Not the torn pair handled below. An I/O or permission
+                # failure says nothing about the bytes, and dropping this pair
+                # would destroy readable data -- so it propagates as itself.
+                if isinstance(e, OSError):
+                    raise
+                if isinstance(e, RuntimeError):
+                    # faiss hides I/O failures in this type too; ask directly.
+                    _raise_if_unreadable(self._faiss_index_file)
+            # `RuntimeError` is faiss's own -- only the index can raise it --
+            # so it names the index whatever was being read around it.
+            # `RecursionError` is the exception: it is a `RuntimeError`
+            # subclass the JSON parser raises on a document nested past the
+            # interpreter's limit, which is the metadata's problem, not the
+            # index's.
+            failed = (
+                self._faiss_index_file
+                if isinstance(e, RuntimeError) and not isinstance(e, RecursionError)
+                else reading
+            )
+            raise CorruptStorageSnapshotError(
+                backend=type(self).__name__,
+                container=missing or failed,
+                detail=(
+                    f"{missing} is missing beside a present index"
+                    if missing
+                    else f"{type(e).__name__}: {e}"
+                ),
+                artifacts=(
+                    self._faiss_index_file,
+                    self._meta_file,
+                    self._vector_space_file,
+                ),
+            ) from e
+
+    async def vector_space_adoption_pending(self) -> bool:
+        """Whether this index holds vectors whose embedding model is unrecorded.
+
+        Read straight off ``_vector_space_certified``, which
+        ``_load_faiss_index`` already derived from the files it loaded: it is
+        ``False`` exactly when the index had vectors AND the sidecar named no
+        model, which is the transitional state the adoption probe exists to
+        resolve. An empty index certifies itself, so it never reports pending
+        -- there are no vectors to misdescribe.
+        """
+        return (
+            self._index is not None
+            and not self._vector_space_certified
+            and declared_model_name(self.embedding_func) is not None
+        )
+
+    async def adopt_vector_space(self) -> bool:
+        """Record this process's embedding model beside the loaded index.
+
+        Writes the sidecar directly rather than republishing the fenced
+        ``.index`` / ``.meta.json`` pair: the marker is deliberately not part
+        of that publication (see ``_vector_space_file``), so adopting costs one
+        small file and leaves the pair -- and its fingerprint -- untouched. A
+        peer therefore has nothing to reload because of this.
+
+        Never raises, per the base contract. ``_write_vector_space_file``
+        re-reads the sidecar and raises ``VectorSpaceMismatchError`` when the
+        stored marker contradicts this process; that is not an adoption
+        failure to swallow quietly but a probe that reached the wrong verdict,
+        so it propagates -- the caller is the only place that can tell the
+        operator the two disagree.
+        """
+        if declared_model_name(self.embedding_func) is None:
+            return False
+
+        async with self._storage_lock:
+            try:
+                self._write_vector_space_file()
+            except VectorSpaceMismatchError:
+                raise
+            except Exception as e:
+                logger.warning(
+                    f"[{self.workspace}] Could not record the embedding-space "
+                    f"marker in '{self._vector_space_file}': {e}"
+                )
+                return False
+            # Only now: a later save may keep stamping this sidecar, and the
+            # claim is only true once the sidecar actually says so.
+            self._vector_space_certified = True
+        return True
 
     async def drop_pending_index_ops(self) -> None:
         """Discard buffered upserts on an aborting batch.
@@ -1622,6 +1975,54 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
 
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Same as ``get_by_ids``: the data is in this process, so no read can
+        fail into a miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self.get_by_ids(ids)
+
+    async def get_exact_count(self) -> int:
+        """Count the persisted, addressable rows of this namespace.
+
+        Raises :class:`~lightrag.exceptions.StorageCapabilityError` instead of
+        answering while this process holds writes not yet on disk, or when the
+        index and its metadata disagree (slot count, positions, missing or
+        duplicate ids). It counts the snapshot as loaded: a metadata row past
+        the end of the index is dropped at load, holds no vector and is
+        unreadable by every read, so it is not an addressable record.
+        Read-only: nothing is repaired. See *Maintenance
+        consistency capabilities* in ``docs/design/FileBackedSnapshotContract.md``.
+        """
+        async with self._storage_lock:
+            self._reload_index_from_disk_locked()
+            if (
+                self._pending_upserts
+                or self._pending_deletes
+                or self._unsaved_upserts
+                or self._unsaved_deletes
+                or self._index_dirty
+            ):
+                raise StorageCapabilityError("unflushed_writes")
+            index_total = int(self._index.ntotal)
+            metadata_total = len(self._id_to_meta)
+            valid_positions = all(
+                isinstance(fid, int) and 0 <= fid < index_total
+                for fid in self._id_to_meta
+            )
+            record_ids = [meta.get("__id__") for meta in self._id_to_meta.values()]
+            valid_ids = (
+                all(
+                    record_id is not None and str(record_id).strip()
+                    for record_id in record_ids
+                )
+                and len({str(record_id) for record_id in record_ids}) == metadata_total
+            )
+            if index_total != metadata_total or not valid_positions or not valid_ids:
+                raise StorageCapabilityError(
+                    "index_meta_skew: "
+                    f"index_total={index_total}, metadata_total={metadata_total}"
+                )
+            return metadata_total
+
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs (read-your-writes), returning only ID and vector.
 
@@ -1787,14 +2188,41 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
 
         def _delete_files() -> None:
-            # Remove storage files if they exist. Both removals stay in the
+            # Attempt removal directly: exists() can hide a stat permission
+            # error as absence. Both removals stay in the
             # destructive phase: the pair is what a drop destroys, and a
             # failure on the second one must not be reported as a completed
             # drop just because the first one landed.
-            if os.path.exists(self._faiss_index_file):
+            try:
                 os.remove(self._faiss_index_file)
-            if os.path.exists(self._meta_file):
+            except FileNotFoundError:
+                pass
+            try:
                 os.remove(self._meta_file)
+            except FileNotFoundError:
+                pass
+            # The marker is cleaned up LAST and its failure is swallowed,
+            # because by this line the drop has already happened: both
+            # authoritative files are gone, so every persisted vector is gone.
+            # Nothing past that point may report the completed destruction as
+            # an error -- ``/documents/clear`` reads this status to decide
+            # whether the input files are safe to delete, and a false failure
+            # leaves them queued for re-ingestion against storage that no
+            # longer matches. An orphan marker is harmless: with the index file
+            # absent ``_load_faiss_index`` takes its early return and never
+            # reads the marker, and the next save replaces it.
+            try:
+                os.remove(self._vector_space_file)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log_without_raising(
+                    logger.warning,
+                    f"[{self.workspace}] Dropped {self.namespace}, but could not "
+                    f"remove the embedding-space marker at "
+                    f"{self._vector_space_file}: {e}. It describes rows that no "
+                    f"longer exist and is ignored while the index is absent.",
+                )
 
         async def _committed() -> None:
             # Discard buffered (unflushed) upserts, queued deletes and
@@ -1803,6 +2231,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._pending_deletes.clear()
             self._unsaved_deletes.clear()
             self._unsaved_upserts.clear()
+
+            # The rows are gone, so every row from here on is one this process
+            # wrote: the next save may record this instance's embedding space.
+            self._vector_space_certified = True
 
             # Reset the in-memory snapshot to the post-drop state directly.
             # No ``_load_faiss_index`` re-parse: ``_storage_lock`` spans

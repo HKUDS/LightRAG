@@ -7,8 +7,9 @@
 # 🚀 LightRAG: Retrieval-Augmented Generation yang Sederhana dan Cepat
 
 <div align="center">
-    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending"><img alt="GitHub Trending Repository of the Day" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=trending" height="55"></picture></a>&#32;<a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS/LightRAG | Trendshift" height="55"></a>&#32;<a href="https://www.star-history.com/hkuds/lightrag"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank&amp;theme=dark"><source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank"><img alt="Star History Rank" src="https://api.star-history.com/badge?repo=HKUDS/LightRAG&amp;type=rank" height="55"></picture></a>
 </div>
+
 <p>
 </p>
 <div align="center">
@@ -23,7 +24,7 @@
       <a href="https://github.com/HKUDS/LightRAG/stargazers"><img src='https://img.shields.io/github/stars/HKUDS/LightRAG?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
     </p>
     <p>
-      <img src="https://img.shields.io/badge/🐍Python-3.10-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/🐍Python-3.11-4ecdc4?style=for-the-badge&logo=python&logoColor=white&labelColor=1a1a2e">
       <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg?style=for-the-badge&logo=pypi&logoColor=white&labelColor=1a1a2e&color=ff6b6b"></a>
     </p>
     <p>
@@ -55,31 +56,10 @@
 
 ---
 
-<div align="center">
-  <table>
-    <tr>
-      <td style="vertical-align: middle;">
-        <img src="./assets/LiteWrite.png"
-             width="56"
-             height="56"
-             alt="LiteWrite"
-             style="border-radius: 12px;" />
-      </td>
-      <td style="vertical-align: middle; padding-left: 12px;">
-        <a href="https://litewrite.ai">
-          <img src="https://img.shields.io/badge/🚀%20LiteWrite-AI%20Native%20LaTeX%20Editor-ff6b6b?style=for-the-badge&logoColor=white&labelColor=1a1a2e">
-        </a>
-      </td>
-    </tr>
-  </table>
-</div>
-
----
-
 ## 🎉 Berita
 - [2026.07]🎯[Fitur Baru]: Menambahkan fitur pengenalan **Smart Heading** untuk dokumen Word.
 - [2026.05]🎯[Fitur Baru]: **Menggabungkan RagAnything ke dalam LightRAG**🎉. Parsing dan ekstraksi konten multimodal melalui layanan **MinerU / Docling**.
-- [2026.05]🎯[Fitur Baru]: Memperkenalkan empat strategi text chunking yang dapat dipilih: `Fix`, `Recursive`, `Vector`, dan `Paragraph`.
+- [2026.05]🎯[Fitur Baru]: Memperkenalkan strategi text chunking yang dapat dipilih: `Fix`, `Recursive`, `Vector`, `Paragraph`, dan `C` kustom.
 - [2026.05]🎯[Fitur Baru]: Dukungan **konfigurasi LLM khusus per role**, dengan 4 role berbeda: EXTRACT, QUERY, KEYWORDS, dan VLM, masing-masing dengan pengaturan LLM independen.
 - [2026.03]🎯[Fitur Baru]: Mengintegrasikan **OpenSearch** sebagai unified storage backend, dengan dukungan lengkap untuk keempat jenis storage LightRAG.
 - [2026.03]🎯[Fitur Baru]: Memperkenalkan setup wizard. Mendukung deployment lokal untuk embedding, reranking, dan storage backend melalui Docker.
@@ -121,77 +101,106 @@
 >
 > **📦 Deployment Offline**: Untuk environment offline atau air-gapped, lihat [Panduan Deployment Offline](./docs/OfflineDeployment.md) untuk petunjuk menginstal semua dependency dan file cache sebelumnya.
 
-### Instal LightRAG Server
+> [!WARNING]
+> **Amankan server sebelum menjalankannya di jaringan bersama.** `lightrag-server` secara default mendengarkan di semua interface (`HOST=0.0.0.0`) dan autentikasinya nonaktif, sehingga di cloud host setiap endpoint terbuka untuk publik — dan siapa pun dapat menghabiskan kuota LLM Anda. Sebelum start pertama, pilih salah satu: bind ke alamat privat di `.env` (`HOST=127.0.0.1`, atau alamat VPN / tunnel), atau konfigurasikan autentikasi: `LIGHTRAG_API_KEY`, atau `AUTH_ACCOUNTS` bersama `TOKEN_SECRET` (buat dengan `openssl rand -hex 32`). Setelah `LIGHTRAG_API_KEY` di-set, route `/api/*` yang kompatibel dengan Ollama juga memerlukan key tersebut (klien Ollama mengirimnya sebagai `Authorization: Bearer <key>`); tanpa key, route tersebut tetap terbuka demi kompatibilitas klien. Ini berlaku untuk semua metode instalasi di bawah.
 
-* Instal dari PyPI
+### Instal dari PyPI
+
+Package PyPI sudah menyertakan WebUI yang telah di-build, sehingga frontend tidak perlu di-build.
 
 ```bash
-### Install LightRAG Server as tool using uv (recommended)
+# Instal LightRAG Server sebagai tool menggunakan uv (direkomendasikan)
 uv tool install "lightrag-hku[api]"
 
-### Or using pip
+# Atau menggunakan pip di dalam virtual environment
 # python -m venv .venv
 # source .venv/bin/activate  # Windows: .venv\Scripts\activate
 # pip install "lightrag-hku[api]"
 
-# Setup env file
-# Obtain the env.example file by downloading it from the GitHub repository root
-# or by copying it from a local source checkout.
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# Launch the server. It binds to all interfaces (0.0.0.0) by default.
-# SECURITY: before exposing it on a network, configure authentication in .env
-# (LIGHTRAG_API_KEY, or AUTH_ACCOUNTS together with TOKEN_SECRET), or bind to
-# 127.0.0.1 for local-only access; without auth every endpoint is public.
-# Note: the Ollama-compatible /api/* routes stay open by default for client
-# compatibility; set WHITELIST_PATHS=/health to require auth on them too.
+# Ambil template konfigurasi lalu edit (lihat "Perubahan Minimum pada .env" di bawah)
+curl -O https://raw.githubusercontent.com/HKUDS/LightRAG/main/env.example
+cp env.example .env
+
 lightrag-server
 ```
 
-* Instalasi dari Source
+### Instal dari Source
+
+**Prasyarat**
+
+| Tool | Kegunaan | Cara instal |
+|---|---|---|
+| git | Clone repository | Package manager sistem |
+| [uv](https://docs.astral.sh/uv/) | Virtual environment dan dependency Python. Mengunduh Python yang sesuai (3.11+) bila sistem tidak memilikinya | Lihat catatan uv di atas |
+| [bun](https://bun.sh/docs/installation) | Build WebUI | `curl -fsSL https://bun.sh/install \| bash` (Windows: `powershell -c "irm bun.sh/install.ps1 \| iex"`). Script Linux memerlukan `unzip`, yang tidak ada di image Debian / Ubuntu minimal: `sudo apt-get install -y unzip` |
+| make | Opsional: shortcut `make dev` dan setup wizard `make env-*` | Package manager sistem |
+
+**Langkah 1 — Clone repository**
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+```
 
-# Bootstrap the development environment (recommended)
-make dev
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+**Langkah 2 — Instal dependency Python.** Pilih **salah satu** opsi:
 
-# make dev installs the test toolchain plus the full offline stack
-# (API, storage backends, and provider integrations), then builds the frontend.
-# Run make env-base or copy env.example to .env before starting the server.
+```bash
+# Opsi A: hanya menjalankan server (API + WebUI) — instalasi terkecil
+uv sync --extra api
+```
 
-# Equivalent manual steps with uv
-# Note: uv sync automatically creates a virtual environment in .venv/
+```bash
+# Opsi B: berkontribusi — toolchain test plus semua storage backend
+# dan integrasi provider LLM
 uv sync --extra test --extra offline
-source .venv/bin/activate  # Activate the virtual environment (Linux/macOS)
-# Or on Windows: .venv\Scripts\activate
+```
 
-### Or using pip with virtual environment
-# python -m venv .venv
-# source .venv/bin/activate  # Windows: .venv\Scripts\activate
-# pip install -e ".[test,offline]"
+`uv sync` membuat virtual environment di `.venv/`. Aktifkan dengan `source .venv/bin/activate` (Windows: `.venv\Scripts\activate`). Dengan pip alih-alih uv: `python -m venv .venv`, aktifkan, lalu `pip install -e ".[api]"` (atau `pip install -e ".[test,offline]"`).
 
-# Build front-end artifacts
+**Langkah 3 — Build WebUI**
+
+```bash
 cd lightrag_webui
 bun install --frozen-lockfile
 bun run build
 cd ..
+```
 
-# setup env file
-make env-base  # Or: cp env.example .env and update it manually
-# Launch API-WebUI server
+> `make dev` menjalankan Langkah 2 Opsi B dan Langkah 3 dalam satu perintah. Jika Anda sudah menjalankannya, lanjutkan ke Langkah 4.
+
+**Langkah 4 — Buat `.env`.** Jalankan wizard interaktif `make env-base` (lihat [Membuat File .env dengan Setup Tool](#membuat-file-env-dengan-setup-tool)), atau salin template lalu edit secara manual (lihat [Perubahan Minimum pada .env](#perubahan-minimum-pada-env)):
+
+```bash
+cp env.example .env
+```
+
+**Langkah 5 — Jalankan server**
+
+```bash
 lightrag-server
 ```
 
-* Menjalankan LightRAG Server dengan Docker Compose
+Buka `http://localhost:9621/webui` untuk WebUI. Dokumentasi REST API interaktif ada di `http://localhost:9621/docs`. Ganti host dan port jika Anda mengubah `HOST` / `PORT`.
+
+**Memperbarui setelah `git pull`.** Sinkronkan ulang dengan extras yang Anda pasang di Langkah 2, ditambah `--locked --inexact`. Untuk Opsi B:
+
+```bash
+git pull
+uv sync --locked --inexact --extra test --extra offline   # Opsi A: --locked --inexact --extra api
+```
+
+- **Gunakan extras yang sama setiap kali.** Paket yang hanya dibutuhkan oleh extra yang terlewat tidak lagi dijaga pada versi terkuncinya, dan sinkronisasi tanpa `--inexact` akan mencopotnya.
+- **`--locked`** memasang persis versi yang dikunci `uv.lock`. Jika `uv.lock` tidak sesuai dengan `pyproject.toml`, perintah berhenti dengan error alih-alih menulis ulang `uv.lock`.
+- **`--inexact`** mempertahankan paket yang tidak ada di `uv.lock`, misalnya model spaCy dari `lightrag-download-cache --spacy-install`. `uv sync` biasa akan menghapusnya.
+
+Jika pull mengubah `lightrag_webui/`, ulangi juga Langkah 3.
+
+### Menjalankan dengan Docker Compose
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
-cp env.example .env  # Update the .env with your LLM and embedding configurations
-# modify LLM and Embedding settings in .env
+cp env.example .env  # edit terlebih dahulu: lihat "Perubahan Minimum pada .env" di bawah
 docker compose up
 ```
 
@@ -200,6 +209,22 @@ docker compose up
 > Image GHCR resmi yang dipublikasikan melalui GitHub Actions ditandatangani menggunakan Sigstore Cosign dengan GitHub OIDC. Lihat [docs/DockerDeployment.md](./docs/DockerDeployment.md#verify-official-ghcr-images-with-cosign) untuk perintah verifikasi.
 >
 > Pada Apple Silicon (macOS 26) tanpa Docker Desktop, Anda dapat menjalankan stack storage Postgres/Neo4j/Milvus yang sama pada runtime `container` native Apple — lihat [docs/AppleContainerSetup.md](./docs/AppleContainerSetup.md).
+
+### Perubahan Minimum pada .env
+
+`env.example` langsung berfungsi dengan storage berbasis file lokal, tanpa reranker, dan parser dokumen bawaan, sehingga tidak perlu database atau layanan tambahan. Hanya pengaturan model yang perlu diperhatikan. Dengan model OpenAI default:
+
+| Variabel | Yang perlu dilakukan |
+|---|---|
+| `LLM_BINDING_API_KEY` | **Wajib.** Isi dengan API key OpenAI Anda |
+| `EMBEDDING_BINDING_API_KEY` | **Wajib.** Isi dengan API key OpenAI Anda (boleh key yang sama) |
+| `OPENAI_LLM_REASONING_EFFORT` | **Direkomendasikan.** Hapus komentarnya dan biarkan `low`. Model default `gpt-6-luna` adalah model reasoning dengan effort default API `medium`, yang membuat ekstraksi entity — satu panggilan LLM per text chunk — jauh lebih lambat dan mahal |
+
+Menggunakan provider lain? Set juga `LLM_BINDING_HOST` dan `LLM_MODEL` (biarkan `LLM_BINDING=openai` untuk API apa pun yang kompatibel dengan OpenAI), serta `EMBEDDING_BINDING_HOST`, `EMBEDDING_MODEL`, dan `EMBEDDING_DIM`. `EMBEDDING_DIM` harus sama dengan dimensi output model embedding. Lihat [Panduan Konfigurasi Utama](#panduan-konfigurasi-utama) untuk pilihan model.
+
+> **Tentukan model embedding sebelum upload pertama.** Mengubahnya nanti berarti mengindeks ulang semua dokumen (lihat [Model Embedding](#model-embedding)).
+
+**Langkah berikutnya:** setelah server berjalan, [Exploring LightRAG](./docs/ExploreLightRAG.md) ([🇨🇳](./docs/ExploreLightRAG-zh.md)) memandu mengaktifkan fitur lainnya satu per satu, lengkap dengan hasil pengukuran: storage PostgreSQL, autentikasi, LLM per peran, rerank, analisis gambar, smart heading Word, MinerU, dan tuning konkurensi.
 
 ### Membuat File .env dengan Setup Tool
 
@@ -223,6 +248,8 @@ Parameter engine `smart_heading` yang bersifat opt-in pada native docx parser me
 ```bash
 lightrag-download-cache --spacy-install
 ```
+
+> Di environment hasil `uv sync` (yang tidak memiliki pip), perintah ini memasang model melalui `uv pip install`. Model tidak tercantum di `uv.lock`, sehingga `uv sync` biasa akan menghapusnya kembali; gunakan `uv sync --inexact` setelahnya agar model tetap terpasang.
 
 Aktifkan smart_heading per file/rule (misalnya `LIGHTRAG_PARSER=docx:native(smart_heading=true)`), atau secara global di `.env`:
 
@@ -268,8 +295,8 @@ LightRAG adalah framework knowledge-graph RAG yang ringan dan merupakan alternat
 - **Efisiensi Retrieval Ekstrem & Biaya Rendah:** LightRAG tidak bergantung pada community report yang tidak efisien atau multi-hop reasoning untuk query kompleks. Ini secara drastis mengurangi jumlah panggilan LLM yang diperlukan pada fase indexing maupun querying, sehingga menurunkan response latency dan biaya komputasi LLM secara signifikan.
 - **Incremental Update & Selective Deletion:** LightRAG mengatasi tantangan dalam memperbarui dan menghapus konten secara selektif pada knowledge base berbasis graph, sehingga knowledge base tetap mutakhir dalam environment data yang dinamis. Ketika sebuah dokumen dihapus, sistem dapat menggunakan LLM cache yang dibuat saat indexing untuk dengan cepat membangun ulang entity dan relationship yang terdampak, sehingga efisiensi update meningkat secara signifikan.
 - **Beragam Engine Parsing Dokumen:** Pipeline pemrosesan dokumen LightRAG mendukung MinerU, Docling, dan Native serta dapat diperluas dengan parser pihak ketiga. Engine Native LightRAG secara efisien mem-parsing gambar, tabel, dan formula pada dokumen Word dan Markdown, sehingga sangat cocok untuk dokumen yang kaya konten multimodal. Engine Native juga otomatis mendeteksi dan mengoreksi section heading pada dokumen Word, meningkatkan ekstraksi konten dari dokumen dengan outline yang tidak konsisten dan menjadi fondasi untuk text chunking yang memahami struktur bagian.
-- **Beragam Strategi Text Chunking:** LightRAG mendukung empat strategi text chunking: `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, dan `Paragraph semantic (P)`. Strategi native LightRAG `Paragraph semantic (P)` **menyelaraskan batas chunk dengan batas semantik native dokumen**—heading, paragraf, dan tabel—sedekat mungkin. Hal ini mengurangi masalah seperti heading yang tidak cocok dengan konten atau hilangnya header row ketika tabel panjang dipecah.
-- **Beragam Storage Backend:** KV, vector, dan graph store default LightRAG menggunakan database in-memory dengan persistensi file lokal, sehingga cocok untuk mengevaluasi proyek dengan cepat. LightRAG juga mendukung beragam storage backend yang umum digunakan untuk deployment production dengan dataset besar.
+- **Beragam Strategi Text Chunking:** LightRAG mendukung strategi bawaan `Fixed-length (F)`, `Recursive character (R)`, `Vector semantic (V)`, dan `Paragraph semantic (P)`, ditambah callback chunker kustom `C`. Strategi `P` bekerja dengan sidecar terstruktur dari parser yang didukung dan **menyelaraskan batas chunk dengan batas semantik native dokumen**—heading, paragraf, dan tabel—sedekat mungkin. Hal ini mengurangi masalah seperti heading yang tidak cocok dengan konten atau hilangnya header row ketika tabel panjang dipecah.
+- **Beragam Storage Backend:** KV, vector, dan graph store default LightRAG adalah database in-memory dengan persistensi file lokal — hanya cocok untuk pengujian dan evaluasi skala kecil, **bukan untuk production**. LightRAG juga mendukung beragam storage backend yang umum digunakan (PostgreSQL direkomendasikan) untuk deployment production dengan dataset besar.
 
 ### Peningkatan Kemampuan Multimodal
 
@@ -289,7 +316,8 @@ LightRAG membutuhkan LLM/VLM dengan empat role berbeda selama workflow-nya. Anda
 
 **Model yang direkomendasikan berdasarkan role:**
 
-- **Extraction LLM (`EXTRACT`)**: Ekstraksi entity-relation dijalankan pada setiap text chunk, sehingga model mainstream yang cepat dan hemat biaya sudah cukup — model **non-thinking** (mode reasoning/thinking dinonaktifkan) sangat direkomendasikan untuk menghindari proses ekstraksi yang lambat dan mahal. Opsi hosted yang baik antara lain GPT-5.6-luna, Claude Haiku, atau Gemini-mini secara internasional, serta DeepSeek-V4-lite atau Kimi di China. Untuk deployment lokal, Qwen3-30B-A3B-Instruct merupakan minimum yang wajar.
+- **Extraction LLM (`EXTRACT`)**: Ekstraksi entity-relation dijalankan pada setiap text chunk, sehingga model mainstream yang cepat dan hemat biaya sudah cukup — model **non-thinking** (mode reasoning/thinking dinonaktifkan) sangat direkomendasikan untuk menghindari proses ekstraksi yang lambat dan mahal. Opsi hosted yang baik antara lain GPT-6 Luna, Claude Haiku, atau Gemini-mini secara internasional, serta DeepSeek-V4-lite atau Kimi di China. Untuk deployment lokal, Qwen3-30B-A3B-Instruct merupakan minimum yang wajar.
+  Dengan model default OpenAI `gpt-6-luna` (model reasoning), set `OPENAI_LLM_REASONING_EFFORT=low` agar ekstraksi tetap cepat dan murah (lihat [Perubahan Minimum pada .env](#perubahan-minimum-pada-env)).
 - **Query LLM (`QUERY`)**: Model ini menulis jawaban akhir berdasarkan context hasil retrieval yang panjang dan noisy, sehingga sebaiknya *lebih kuat* daripada model extraction untuk memaksimalkan kualitas jawaban. Pilih model tier lebih tinggi dari keluarga yang sama; model yang mendukung thinking dapat digunakan di sini.
 - **Keyword LLM (`KEYWORD`)**: Langkah ringan yang sensitif terhadap latency dan **harus** menggunakan model non-thinking agar query latency tetap rendah; model cepat yang setara dengan model extraction sudah cukup.
 - **VLM (`VLM`)**: Model multimodal mainstream apa pun yang mendukung input gambar dapat digunakan. Untuk deployment lokal, pertimbangkan Qwen3.6-35B-A3B.
@@ -310,9 +338,9 @@ Mode query default LightRAG adalah `mix`. Menggunakan mode `mix` umumnya menghas
 
 ### Model Embedding
 
-Saat memilih model Embedding, perhatikan kemampuan dukungan multilingual-nya. Karena kualitas retrieval LightRAG hanya memiliki ketergantungan terbatas pada model Embedding, disarankan memilih model berdimensi rendah dan cepat. Model embedding mainstream yang mutakhir dapat bekerja dengan baik; untuk deployment lokal, `BAAI/bge-m3` merupakan pilihan yang solid. Kami sangat merekomendasikan deployment model Embedding secara lokal untuk memperoleh performa terbaik.
+Saat memilih model Embedding, perhatikan kemampuan dukungan multilingual-nya. Karena kualitas retrieval LightRAG hanya memiliki ketergantungan terbatas pada model Embedding, disarankan memilih model berdimensi rendah dan cepat. Default `env.example`, OpenAI `text-embedding-3-large` (3072 dimensi), mengutamakan kualitas multilingual; `text-embedding-3-small` (1536 dimensi, set `EMBEDDING_DIM=1536`) lebih murah dan cepat. Model embedding mainstream yang mutakhir dapat bekerja dengan baik; untuk deployment lokal, `BAAI/bge-m3` merupakan pilihan yang solid. Kami sangat merekomendasikan deployment model Embedding secara lokal untuk memperoleh performa terbaik.
 
-**Catatan Penting**: Model Embedding harus ditentukan sebelum indexing dokumen, dan model yang sama harus digunakan pada fase query. Setelah dipilih, model embedding umumnya tidak dapat diubah. Jika diubah, Anda perlu melakukan re-embed terhadap seluruh text chunk, entity, dan relationship. LightRAG saat ini tidak menyediakan tool re-embedding. Beberapa storage backend (misalnya PostgreSQL) mengharuskan dimensi vector ditentukan saat membuat tabel untuk pertama kali, sehingga mengganti model Embedding memerlukan penghapusan tabel terkait vector agar LightRAG dapat membuatnya ulang.
+**Catatan Penting**: Tentukan model Embedding sebelum indexing dokumen dan gunakan model yang sama untuk query. Mengganti model memerlukan re-embed text chunk, entity, dan relationship. Gunakan utilitas `lightrag-rebuild-vdb` yang didukung untuk membangun ulang vector dari knowledge graph dan text chunk; lihat [Mengganti model embedding](./docs/ProgramingWithCore.md#switching-embedding-models). Jangan menghapus tabel vector atau working directory sebagai penggantinya.
 
 ### Mengaktifkan Reranking
 
@@ -360,7 +388,11 @@ LightRAG membutuhkan empat jenis backend storage:
 - **GRAPH_STORAGE**: Digunakan untuk menyimpan knowledge graph.
 - **DOC_STATUS_STORAGE**: Digunakan untuk menyimpan daftar dokumen.
 
-Secara default, storage backend LightRAG adalah database in-memory yang dipersist ke file. Storage default ini hanya ditujukan untuk development dan debugging, serta tidak cocok untuk production. Pada environment production, jika Anda lebih memilih satu backend untuk menangani keempat jenis storage, Anda dapat memilih PostgreSQL, MongoDB, atau OpenSearch. Sebagai alternatif, Anda dapat memilih database khusus untuk vector atau graph storage, misalnya Milvus atau Qdrant untuk vector storage, serta Neo4j atau Memgraph untuk graph storage.
+**Keempat storage default adalah database in-memory** (`JsonKVStorage`, `NanoVectorDBStorage`, `NetworkXStorage`, `JsonDocStatusStorage`): seluruh dataset berada di memori proses server dan file lokal di bawah `WORKING_DIR` hanya berfungsi sebagai persistensi, sehingga kapasitasnya dibatasi oleh RAM yang tersedia. Karena itu, storage default **hanya ditujukan untuk pengujian, evaluasi, dan debugging skala kecil, dan tidak cocok untuk production**.
+
+Untuk production, **PostgreSQL adalah backend yang direkomendasikan** — PostgreSQL dapat melayani keempat jenis storage sendirian; MongoDB dan OpenSearch adalah opsi single-backend lainnya. Sebagai alternatif, Anda dapat memilih database khusus untuk vector atau graph storage, misalnya Milvus atau Qdrant untuk vector storage, serta Neo4j atau Memgraph untuk graph storage.
+
+Untuk daftar lengkap implementasi yang tersedia per jenis storage, lihat [Storage Types Supported](./docs/LightRAG-API-Server.md#storage-types-supported).
 
 ### Konfigurasi Penting Lainnya untuk Pemrosesan Dokumen
 
@@ -382,12 +414,21 @@ Timeout LLM selama ekstraksi entity-relation biasanya berasal dari salah satu da
 - **Model terjebak dalam output loop.** Beberapa model (terutama model Qwen yang di-deploy secara lokal) terkadang masuk ke endless-output loop pada teks tertentu. Jika terjadi sesekali, cukup proses ulang dokumen satu kali dan masalah biasanya terselesaikan.
 - **Khusus referensi (strategi P chunking).** Saat menggunakan strategi paragraph-semantic (`P`) chunking (misalnya `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` untuk otomatis membuang block referensi yang cocok sebelum chunking. Ini mencegah referensi menghasilkan terlalu banyak entity dan relation bernilai rendah, salah satu penyebab umum timeout. Opsi ini juga dapat diaktifkan per file melalui filename hint `paper.[-P(drop_rf=true)].pdf`; parameter detection terkait (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) didokumentasikan di `env.example`.
 
+### Mengatasi Timeout Embedding
+
+Error seperti `Embedding func: Worker execution timeout after 60s` berasal dari embedding queue, yang memiliki timeout sendiri dan tidak mengikuti `LLM_TIMEOUT`:
+
+- **Timeout-nya adalah `EMBEDDING_TIMEOUT` (default `30`).** Seperti timeout LLM, execution timeout efektif adalah **dua kali** nilai yang dikonfigurasi, sehingga nilai default menampilkan `60s`. Menaikkan `LLM_TIMEOUT` tidak berpengaruh pada pemanggilan embedding.
+- **Penyebab yang umum adalah embedding service yang lambat.** Batch embedding yang sehat selesai dalam beberapa detik, sehingga menaikkan `EMBEDDING_TIMEOUT` biasanya hanya menyembunyikan masalah. Periksa embedding service terlebih dahulu.
+- **Sesuaikan concurrency dengan kemampuan service.** LightRAG mengirim hingga `EMBEDDING_FUNC_MAX_ASYNC` (default `8`) batch sekaligus. Dengan Ollama, set `OLLAMA_NUM_PARALLEL` minimal sebesar nilai itu atau turunkan `EMBEDDING_FUNC_MAX_ASYNC`, dan jaga agar model embedding tetap dimuat (`OLLAMA_KEEP_ALIVE=-1`, atau instance Ollama terpisah), karena pertukaran model dengan LLM di VRAM membuat request embedding macet.
+
 ### Konfigurasi Penting Lainnya untuk Query Dokumen
 
 Pada tahap query dokumen, Anda juga mungkin perlu menyesuaikan environment variable berikut sesuai kebutuhan:
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: Mengontrol panjang token dari content hasil retrieval yang dikirim ke context LLM. Content hasil retrieval terdiri atas tiga bagian: `entities`, `relations`, dan `text chunks`. Panjang entity dan relation dapat dikontrol secara independen, sedangkan panjang text chunk ditentukan dengan mengurangi panjang entity dan relation dari panjang total.
 - **ENABLE_CONTENT_HEADINGS**: Mengontrol apakah section heading tempat sebuah text chunk berada dikirim ke LLM; aktif secara default, sehingga memberi context lebih kaya kepada LLM dan meningkatkan kualitas jawaban.
 - **ENABLE_LLM_CACHE**: Menentukan apakah hasil query di-cache. Aktif secara default; pertanyaan query, mode query, dan parameter model LLM yang identik akan mengembalikan hasil yang sama.
+- **KEYWORD_EXTRACTION_JSON_MODE**: Mengatur cara ekstraksi kata kunci query meminta output terstruktur dari LLM. `auto` (default) meminta `response_format={"type": "json_object"}`, dan mencoba ulang satu kali tanpa field tersebut hanya ketika provider menolak field itu sendiri; `json_object` selalu mengirimkannya, dan `none` tidak pernah mengirimkannya. Atur `json_object` atau `none` hanya jika Anda mengetahui dukungan provider Anda — server seperti LM Studio hanya menerima `json_schema`/`text` dan menjawab HTTP 400, yang sebelumnya membuat setiap query `hybrid`/`local`/`global` mengembalikan "No relevant context found".
 - **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**: Instruksi global yang ditambahkan di depan setiap `user_prompt` request (bagian "Additional Instructions" pada answer prompt), sehingga operator memiliki satu tempat untuk menyesuaikan output LLM. Nilai ini digabungkan secara verbatim, jadi akhiri nilainya sendiri dengan `\n\n`. Jika `user_prompt` request kosong, prefix itu sendiri menjadi instruksi yang dikirim ke LLM; hanya field API `disable_user_prompt_prefix` yang dapat menonaktifkannya, dan sebuah request tidak pernah dapat membaca atau menggantinya. Gunakan `USER_PROMPT_PREFIX_FILE` (nama file `.md`/`.txt` di bawah `PROMPT_DIR/user_prompt`) untuk teks panjang atau multi-paragraf, karena nilai `.env` harus tetap berada dalam satu baris.
 
 ### Entri WebUI dan Entri Bawaan
@@ -399,6 +440,8 @@ Server memasang dua entri WebUI dari satu build frontend. **`/webui`** adalah ko
 - **ENABLE_AI_CONTENT_NOTICE**: Memberi label AI-generated pada setiap jawaban yang **dihasilkan LLM** di kedua UI query (`/workspace` dan panel retrieval `/webui`); teks yang tidak ditulis model — jawaban standar saat tidak ada konteks dan output debug panel admin — tidak diberi label. Nonaktif secara default; ini hanya elemen UI dan tidak pernah masuk ke API response atau riwayat chat yang disimpan.
 
 Dua hal yang perlu diketahui sebelum mengarahkan end user ke `/workspace`. Pertama, parameter query di sana **diwarisi, tidak dapat diedit**: setiap query menggunakan pengaturan yang disimpan `/webui` di **browser yang sama** (default frontend jika belum ada yang disimpan), yang merupakan local state per browser, bukan kebijakan server-wide. Kedua, menyembunyikan UI admin adalah pemisahan UX, **bukan** batas keamanan — API tetap melakukan otorisasi untuk setiap endpoint di sisi server. Untuk perilaku lengkap entri query, lihat [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
+
+**Migrasi autentikasi WebUI:** Akses `/webui` dan `/workspace` yang terlindungi memerlukan `AUTH_ACCOUNTS` serta `TOKEN_SECRET` yang kuat dan bukan nilai bawaan. API key ditujukan untuk akses terprogram dan tidak lagi dimasukkan atau dikirim oleh WebUI. Pengguna WebUI API-key-only yang sudah ada harus mempertahankan key-nya, mengonfigurasi akun dan secret, me-restart, memuat ulang semua tab, lalu masuk. Deployment yang sepenuhnya terbuka (tanpa akun maupun API key efektif) tetap memakai alur token guest. Lihat [detail migrasi](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access).
 
 ## Menggunakan LightRAG sebagai SDK
 
@@ -442,7 +485,7 @@ python examples/lightrag_openai_demo.py
 
 Untuk contoh implementasi streaming response, lihat `examples/lightrag_openai_compatible_demo.py`. Sebelum menjalankannya, pastikan Anda menyesuaikan konfigurasi LLM dan embedding pada contoh kode tersebut.
 
-**Catatan 1**: Saat menjalankan program demo, perhatikan bahwa script pengujian yang berbeda dapat menggunakan model embedding yang berbeda. Jika Anda mengganti model embedding, Anda harus menghapus data directory (`./dickens`); jika tidak, program dapat mengalami error. Jika ingin mempertahankan LLM cache, Anda dapat menyimpan file `kv_store_llm_response_cache.json` saat membersihkan data directory.
+**Catatan 1**: Saat menjalankan program demo, perhatikan bahwa script pengujian yang berbeda dapat menggunakan model embedding yang berbeda. Vektor yang ditulis oleh satu model tidak dapat dipakai oleh model lain, jadi mengganti model mengharuskan vektornya dibangun ulang. Khusus untuk data **demo**, cara termudah adalah menghapus direktori demo (`./dickens`) lalu menjalankannya kembali — korpusnya kecil dan sekali pakai; simpan `kv_store_llm_response_cache.json` bila ingin mempertahankan LLM cache. Untuk **deployment nyata, jangan hapus working directory**: di dalamnya tersimpan knowledge graph dan text chunks, dan menghapusnya mengubah pekerjaan re-embedding menjadi ingest ulang seluruh dokumen. Jalankan `lightrag-rebuild-vdb` — lihat [Switching embedding models](./docs/ProgramingWithCore.md#switching-embedding-models).
 
 **Catatan 2**: Hanya `lightrag_openai_demo.py` dan `lightrag_openai_compatible_demo.py` yang merupakan contoh kode yang didukung secara resmi. File contoh lainnya merupakan kontribusi komunitas yang belum melalui pengujian dan optimasi penuh.
 
@@ -490,6 +533,7 @@ Entri yang ditandai 🇨🇳 juga menyediakan terjemahan bahasa Mandarin sebagai
 
 | Dokumen | Cakupan |
 |---|---|
+| [ExploreLightRAG.md](./docs/ExploreLightRAG.md) [🇨🇳](./docs/ExploreLightRAG-zh.md) | Dari setup default ke produksi: PostgreSQL, auth, LLM per peran, rerank, VLM, smart heading, MinerU, dan konkurensi, langkah demi langkah dengan hasil pengukuran |
 | [InteractiveSetup.md](./docs/InteractiveSetup.md) | Setup wizard `make env-*`: menghasilkan `.env` dan `docker-compose.final.yml` yang dikelola wizard |
 | [DockerDeployment.md](./docs/DockerDeployment.md) | Deployment Docker / Docker Compose, varian image, dan verifikasi Cosign untuk image GHCR resmi |
 | [AppleContainerSetup.md](./docs/AppleContainerSetup.md) | Menjalankan stack storage Postgres / Neo4j / Milvus pada runtime `container` native Apple (Apple Silicon, tanpa Docker Desktop) |
@@ -534,19 +578,27 @@ Entri yang ditandai 🇨🇳 juga menyediakan terjemahan bahasa Mandarin sebagai
 
 ### Tool Pemeliharaan (`lightrag/tools/`)
 
-Tool yang berinteraksi dengan storage membaca `.env` dan environment variable dengan cara yang sama seperti server, jadi jalankan dari root proyek dengan konfigurasi yang sama. Beberapa tool menulis ulang storage secara in-place — periksa panduan terkait untuk mengetahui apakah server (dan writer lainnya) harus dihentikan terlebih dahulu; `rebuild_vdb` mewajibkannya.
+Tool yang berinteraksi dengan storage membaca `.env` dan environment variable dengan cara yang sama seperti server, jadi jalankan dari root proyek dengan konfigurasi yang sama. Beberapa tool menulis ulang storage secara in-place — periksa panduan terkait untuk mengetahui apakah server (dan writer lainnya) harus dihentikan terlebih dahulu; `rebuild_vdb` dan `clear_storage` mewajibkannya.
 
 **`rebuild_vdb.py`** — `lightrag-rebuild-vdb` — [README_REBUILD_VDB.md](./lightrag/tools/README_REBUILD_VDB.md)
 
 Menghapus dan membangun ulang seluruh vector storage dari sumber otoritatifnya (graph node/edge dan KV store `text_chunks`). Ini adalah jalur recovery setelah vector write gagal, dan setelah mengganti model atau dimensi embedding. Tool ini juga menyediakan pemeriksaan konsistensi read-only.
 
+**`clear_storage.py`** — `lightrag-clear-storage` — [README_CLEAR_STORAGE.md](./lightrag/tools/README_CLEAR_STORAGE.md)
+
+Menghapus seluruh data storage dari satu workspace secara offline, persis seperti tombol *Clear* di WebUI, setelah menampilkan apa yang akan dihapus dan meminta konfirmasi yang diketik. Ini adalah jalan keluar ketika server menolak start karena vector index kosong atau tidak terbaca, sementara datanya boleh dibuang dan rebuild akan sia-sia. Tidak pernah menyentuh LLM response cache. Server harus dihentikan terlebih dahulu.
+
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 Menghapus entri LLM cache mode query (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) sambil mempertahankan extraction cache yang mahal.
 
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+Menghapus entri cache LLM yang chunk pemiliknya sudah tidak ada dan tidak lagi dirujuk oleh chunk lain yang masih ada. Entri ini tidak terjangkau oleh penghapusan dokumen dan masih menyimpan prompt ekstraksi beserta hasilnya. Secara default alat ini hanya melaporkan. Opsi `--apply` menghapus entri hanya setelah pembacaan ketat mengonfirmasi bahwa chunk sudah tidak ada.
+
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
-Memigrasikan cache mode default (extraction, summary, analisis multimodal) antar-KV storage backend dengan tetap mempertahankan isolasi workspace.
+Memigrasikan cache mode default (extraction, summary, analisis multimodal, smart-heading) antar-KV storage backend dengan tetap mempertahankan isolasi workspace.
 
 **`kg_integrity_repair.py`** — `python -m lightrag.tools.kg_integrity_repair [--apply]` — [README_KG_INTEGRITY_REPAIR.md](./lightrag/tools/README_KG_INTEGRITY_REPAIR.md)
 

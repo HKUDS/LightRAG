@@ -1,5 +1,8 @@
+import asyncio
+
 import pytest
 
+from lightrag.kg import memgraph_impl
 from lightrag.kg.memgraph_impl import MemgraphStorage
 
 
@@ -50,13 +53,13 @@ class _FakeDriver:
         return _FakeSession(self._record, self._calls)
 
 
-def _make_storage(record):
+def _make_storage(record, workspace="test"):
     calls = []
     storage = MemgraphStorage(
         namespace="chunk_entity_relation",
         global_config={"max_graph_nodes": 1000},
         embedding_func=None,
-        workspace="test",
+        workspace=workspace,
     )
     storage._driver = _FakeDriver(record, calls)
     storage._DATABASE = "memgraph"
@@ -135,3 +138,55 @@ async def test_get_knowledge_graph_max_nodes_zero_does_not_underflow():
 
     _, params = calls[0]
     assert params["max_other_nodes"] == 0  # max(0 - 1, 0) = 0, no underflow
+
+
+# Workspace names the core API accepts (validate_workspace only rejects path
+# separators and a leading "$") that are not plain Cypher identifiers.
+_QUOTING_WORKSPACES = ["o'brien", "a`b", "my-ws"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", _QUOTING_WORKSPACES)
+async def test_get_knowledge_graph_binds_raw_workspace_label(workspace):
+    """The BFS path filter compares labels(n) to the raw label as a parameter.
+
+    Interpolating the backtick-escaped label into a string literal broke the
+    query for a quote and made it match nothing for a backtick.
+    """
+    storage, calls = _make_storage(
+        {"node_info": [], "relationships": [], "is_truncated": False},
+        workspace=workspace,
+    )
+
+    await storage.get_knowledge_graph("Start", max_depth=2, max_nodes=5)
+
+    assert len(calls) == 1
+    query, params = calls[0]
+    assert "$workspace_label IN labels(n)" in query
+    assert f"'{storage._get_workspace_label()}'" not in query
+    assert params["workspace_label"] == workspace
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", _QUOTING_WORKSPACES)
+async def test_initialize_creates_index_on_quoted_label(workspace, monkeypatch):
+    calls = []
+    init_lock = asyncio.Lock()
+    monkeypatch.setattr(memgraph_impl, "get_data_init_lock", lambda: init_lock)
+    monkeypatch.setattr(
+        memgraph_impl.AsyncGraphDatabase,
+        "driver",
+        lambda *args, **kwargs: _FakeDriver(None, calls),
+    )
+    storage = MemgraphStorage(
+        namespace="chunk_entity_relation",
+        global_config={"max_graph_nodes": 1000},
+        embedding_func=None,
+        workspace=workspace,
+    )
+
+    await storage.initialize()
+
+    index_queries = [q for q, _ in calls if q.startswith("CREATE INDEX")]
+    escaped = workspace.replace("`", "``")
+    assert index_queries == [f"CREATE INDEX ON :`{escaped}`(entity_id)"]

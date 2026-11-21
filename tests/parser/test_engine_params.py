@@ -33,6 +33,9 @@ from lightrag.parser.routing import (
     validate_parser_routing_config,
 )
 
+
+pytestmark = pytest.mark.offline
+
 # Importing document_routes runs argparse over sys.argv at import time;
 # neutralise pytest's argv during that first import.
 _original_argv = sys.argv[:]
@@ -140,6 +143,7 @@ def test_parse_engine_params_local_parse_method_rejected_official(monkeypatch):
         ("force_ocr=maybe", "docling", "must be a boolean"),
         ("language=", "mineru", "must be non-empty"),
         ("page_range=1-3,5", "mineru", "page lists must repeat the key"),
+        ("language=a)b", "mineru", "may not contain"),
     ],
 )
 def test_parse_engine_params_errors(block, engine, needle):
@@ -368,3 +372,11 @@ def test_direct_parse_engine_field_accepts_bare_bool_flag():
 def test_direct_parse_engine_field_rejected(raw):
     with pytest.raises(ValueError):
         _decode_via_parse_engine_at(raw)
+
+
+def test_encode_parse_engine_rejects_forbidden_chars():
+    # The resolved-dict path applies the same forbidden-character rule as the
+    # text path; otherwise encode would emit e.g. "mineru(language=a)b)",
+    # which decode_parse_engine cannot read back.
+    with pytest.raises(ValueError, match="may not contain"):
+        encode_parse_engine("mineru", {"language": "a)b"})

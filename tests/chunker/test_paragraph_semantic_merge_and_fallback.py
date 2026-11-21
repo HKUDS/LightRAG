@@ -1,13 +1,18 @@
 """Regression tests for paragraph-semantic LevelMerge merging and the top-level R fallback."""
 
+import json
+from collections.abc import Sequence
+
 import pytest
 
 from lightrag.chunker.paragraph_semantic import (
+    _IDEAL_RATIO,
     _glue_heading_only_blocks,
     _is_heading_only,
     _merge_small_blocks,
     chunking_by_paragraph_semantic,
 )
+from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.utils import Tokenizer, TokenizerInterface
 
 
@@ -25,7 +30,9 @@ def _make_tokenizer() -> Tokenizer:
     return Tokenizer(model_name="char", tokenizer=_CharTokenizer())
 
 
-def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
+def _make_block(
+    text: str, *, tokenizer: Tokenizer, level: int = 1, blockids: Sequence[str] = ()
+) -> dict:
     return {
         "heading": "H",
         "parent_headings": [],
@@ -34,6 +41,8 @@ def _make_block(text: str, *, tokenizer: Tokenizer, level: int = 1) -> dict:
         "content": text,
         "tokens": len(tokenizer.encode(text)),
         "table_chunk_role": "none",
+        "is_title_block": False,
+        "blockids": list(blockids),
     }
 
 
@@ -105,6 +114,119 @@ def test_tail_absorption_still_fires_when_joined_size_fits():
     assert len(merged) == 1
     assert merged[0]["tokens"] == 83
     assert merged[0]["content"] == "x" * 80 + "\n\n" + "y" * 1
+
+
+@pytest.mark.offline
+def test_tail_absorption_preserves_blockids():
+    """Tail absorption built its result as a raw dict literal, omitting
+    ``blockids`` -- unlike _new_block and _merged_pair, the other two block
+    constructors, which both carry it. The absorbed block then reached chunk
+    assembly with no provenance at all, so the chunk was emitted without its
+    ``sidecar`` (see the end-to-end test below).
+
+    ``is_title_block`` is asserted for schema consistency only: every reader
+    goes through _is_pinned -> ``.get``, so its absence was already falsy and
+    changed no behaviour. Tail absorption is gated on ``not _is_pinned(cur)``,
+    which is why False is the right value.
+    """
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _make_block("x" * 80, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("y" * 1, tokenizer=tokenizer, blockids=["blk-2"]),
+    ]
+
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=100,
+        target_ideal=80,
+        small_tail_threshold=12,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["blockids"] == ["blk-1", "blk-2"]
+    assert merged[0]["is_title_block"] is False
+
+
+@pytest.mark.offline
+def test_tail_absorption_unions_multi_block_run_and_dedups():
+    # A run of more than one absorbed block, where the absorber and the first
+    # tail block share a blockid -- exactly what AnchorSplit produces when it
+    # slices one blocks.jsonl row into fragments and the last sliver is then
+    # tail-absorbed. Exercises the absorption loop across >1 iteration AND the
+    # _dedup_preserving_order call; a plain concatenation would emit blk-1
+    # twice and a per-block overwrite would keep only the last id.
+    tokenizer = _make_tokenizer()
+    blocks = [
+        _make_block("x" * 80, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("y" * 1, tokenizer=tokenizer, blockids=["blk-1"]),
+        _make_block("z" * 1, tokenizer=tokenizer, blockids=["blk-2"]),
+    ]
+
+    merged = _merge_small_blocks(
+        blocks,
+        tokenizer=tokenizer,
+        target_max=100,
+        target_ideal=80,
+        small_tail_threshold=12,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["content"] == "x" * 80 + "\n\n" + "y" + "\n\n" + "z"
+    assert merged[0]["blockids"] == ["blk-1", "blk-2"]
+
+
+@pytest.mark.offline
+def test_tail_absorbed_chunk_still_emits_sidecar(tmp_path):
+    # The user-visible half of the same defect, through the public entry point:
+    # a chunk built by tail absorption carried no "sidecar" key at all -- the
+    # ABSORBER's own blockid was lost too, not just the absorbed tail's. P is
+    # the only strategy that emits its own sidecars (the pipeline never sets
+    # sidecar_backfill_eligible for it, because P chunks carry no _source_span),
+    # so nothing downstream repairs this.
+    #
+    # Sizes are derived from _IDEAL_RATIO so a future ratio change cannot
+    # silently move this onto the _merged_pair path, which unions blockids
+    # correctly and would let the test pass while covering nothing: the
+    # absorber must stay at-or-above IDEAL to reach tail absorption at all.
+    target_max = 1000
+    ideal = int(target_max * _IDEAL_RATIO)
+    rows = [
+        {
+            "blockid": "blk-1",
+            "type": "content",
+            "level": 1,
+            "heading": "A",
+            "parent_headings": [],
+            "content": "# A\n\n" + "x" * (ideal + 100),
+        },
+        {
+            "blockid": "blk-2",
+            "type": "content",
+            "level": 1,
+            "heading": "A",
+            "parent_headings": [],
+            "content": "# A\n\n" + "y" * 5,
+        },
+    ]
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    chunks = chunking_by_paragraph_semantic(
+        _make_tokenizer(),
+        "",
+        target_max,
+        blocks_path=str(blocks_path),
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["sidecar"] == {
+        "type": "block",
+        "id": "blk-1",
+        "refs": [{"type": "block", "id": "blk-1"}, {"type": "block", "id": "blk-2"}],
+    }
 
 
 @pytest.mark.offline
@@ -313,6 +435,165 @@ def test_paragraph_semantic_fallback_passes_configured_recursive_overlap(monkeyp
         "P→R fallback must pass the configured chunk_overlap_token_size"
     )
     assert captured.get("chunk_token_size") == 500
+
+
+@pytest.mark.offline
+def test_paragraph_semantic_fails_when_blocks_jsonl_is_not_utf8(tmp_path):
+    # A sidecar that exists but does not decode is damaged, not absent. It
+    # must fail the document rather than take the missing-sidecar P→R
+    # fallback: that fallback is recorded nowhere, so the document would be
+    # indexed without its structure and nobody would know.
+    corrupt = tmp_path / "doc.blocks.jsonl"
+    # A valid first row proves the failure is caught mid-file as well.
+    corrupt.write_bytes(
+        json.dumps({"type": "content", "content": "ok"}).encode() + b"\n\xff\xfe\n"
+    )
+
+    with pytest.raises(BlocksSidecarCorruptError) as excinfo:
+        chunking_by_paragraph_semantic(
+            _make_tokenizer(),
+            "First paragraph.\n\nSecond paragraph.",
+            40,
+            blocks_path=str(corrupt),
+        )
+
+    assert excinfo.value.blocks_path == str(corrupt)
+    assert "invalid UTF-8" in str(excinfo.value)
+    assert "upload it again" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "content_fields",
+    [{}, *({"content": value} for value in (None, False, 0, [], {}, 42, ["text"]))],
+    ids=[
+        "missing",
+        "null",
+        "false",
+        "zero",
+        "empty-list",
+        "empty-object",
+        "number",
+        "list",
+    ],
+)
+@pytest.mark.parametrize("partial", [False, True])
+def test_paragraph_semantic_rejects_invalid_content_row(
+    tmp_path, content_fields, partial, lightrag_log_records
+):
+    rows = [{"type": "meta"}]
+    if partial:
+        rows.append({"type": "content", "content": "Alpha section."})
+    rows.append({"type": "content", **content_fields})
+    if partial:
+        rows.append({"type": "content", "content": "Gamma section."})
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+
+    with pytest.raises(BlocksSidecarCorruptError, match="content.*string") as excinfo:
+        chunking_by_paragraph_semantic(
+            _make_tokenizer(),
+            "Alpha section.\n\nBeta section.\n\nGamma section.",
+            100,
+            blocks_path=str(blocks_path),
+        )
+
+    assert excinfo.value.blocks_path == str(blocks_path)
+    assert excinfo.value.line_number == (3 if partial else 2)
+    assert "upload it again" in str(excinfo.value)
+    assert not [r for r in lightrag_log_records if "falling back" in r.getMessage()]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("corrupt_row", [0, 1, 2])
+def test_paragraph_semantic_fails_for_partially_malformed_jsonl(
+    tmp_path, corrupt_row, lightrag_log_records
+):
+    paragraphs = ["Alpha section.", "Beta section.", "Gamma section."]
+    rows = [
+        json.dumps({"type": "content", "blockid": f"blk-{i}", "content": text})
+        for i, text in enumerate(paragraphs)
+    ]
+    # A truncated row must invalidate the whole sidecar, even when other
+    # content rows can be read. Keeping only those rows loses source text.
+    rows[corrupt_row] = rows[corrupt_row][:-1]
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    # A leading meta row and a blank line: the reported line number is the
+    # file's own, not an index into the content rows.
+    blocks_path.write_text(
+        json.dumps({"type": "meta"}) + "\n\n" + "\n".join(rows) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BlocksSidecarCorruptError) as excinfo:
+        chunking_by_paragraph_semantic(
+            _make_tokenizer(),
+            "\n\n".join(paragraphs),
+            30,
+            blocks_path=str(blocks_path),
+        )
+
+    assert excinfo.value.line_number == corrupt_row + 3
+    assert f"at line {corrupt_row + 3}" in str(excinfo.value)
+    assert "upload it again" in str(excinfo.value)
+    # No fallback ran: the P→R path always logs a warning.
+    assert not [r for r in lightrag_log_records if "falling back" in r.getMessage()]
+
+
+@pytest.mark.offline
+def test_paragraph_semantic_still_falls_back_when_blocks_jsonl_is_missing(tmp_path):
+    # The fail-fast above is for a damaged sidecar only. A document that never
+    # had one keeps the documented P→R degradation.
+    tokenizer = _make_tokenizer()
+    content = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer, content, 40, blocks_path=str(tmp_path / "missing.blocks.jsonl")
+    )
+
+    assert chunks
+    assert chunks == chunking_by_paragraph_semantic(tokenizer, content, 40)
+
+
+@pytest.mark.offline
+def test_valid_jsonl_keeps_structured_chunks_with_blank_and_metadata_rows(tmp_path):
+    content = "# Topic\nStructured paragraph."
+    row = {
+        "type": "content",
+        "blockid": "blk-topic",
+        "heading": "Topic",
+        "level": 2,
+        "parent_headings": ["Parent"],
+        "content": content,
+    }
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps({"type": "meta", "doc_title": "Document"})
+        + "\n\n"
+        + json.dumps({"type": "content", "content": ""})
+        + "\n"
+        + json.dumps(row)
+        + "\n \t\n",
+        encoding="utf-8",
+    )
+
+    chunks = chunking_by_paragraph_semantic(
+        _make_tokenizer(), content, 100, blocks_path=str(blocks_path)
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["content"] == content
+    assert chunks[0]["heading"] == {
+        "heading": "Topic",
+        "level": 2,
+        "parent_headings": ["Parent"],
+    }
+    assert chunks[0]["sidecar"] == {
+        "type": "block",
+        "id": "blk-topic",
+        "refs": [{"type": "block", "id": "blk-topic"}],
+    }
 
 
 # ---------------------------------------------------------------------------
