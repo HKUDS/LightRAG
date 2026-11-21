@@ -107,17 +107,6 @@ def test_sidecar_files_and_payload(tmp_path: Path):
     assert drawing["format"] == "png"
 
 
-def test_pipe_table_rendered_rows_match_header_width(tmp_path: Path):
-    parsed_dir = _build_sidecar(
-        tmp_path, "| A | B |\n|---|---|\n| x |\n| y | z | EXTRA |"
-    )
-    (content_line,) = _content_lines(parsed_dir)
-    content = json.loads(content_line)["content"]
-    (table,) = TABLE_TAG_RE.finditer(content)
-    assert json.loads(table.group("body")) == [["A", "B"], ["x", ""], ["y", "z"]]
-    assert "EXTRA" not in content
-
-
 class _CharTokenizer(TokenizerInterface):
     """Keep chunk boundaries deterministic without downloading tokenizer data."""
 

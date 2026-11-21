@@ -988,7 +988,9 @@ def _consume_pipe_table(
     starts an ATX heading recognized by ``extract_markdown``. An escaped pipe
     counts as cell content once the table is established. This subset still
     requires a pipe in each body row and does not detect all GFM block types.
-    A row may carry fewer cells than the header; the IR builder pads it."""
+    Rows keep the cell count they were written with, shorter or longer than
+    the header; the IR builder pads every row, header included, to the widest
+    one."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter
