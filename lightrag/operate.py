@@ -2237,51 +2237,18 @@ async def _rebuild_single_entity(
             f"No entity data found for `{entity_name}`, trying to rebuild from relationships"
         )
 
-        # Collect relationship data to extract entity information
+        # Only the description comes from the edges. Provenance follows the
+        # surviving chunks like source_id does: an edge's file_path may name
+        # files outside this entity's chunks and carries its own truncation
+        # marker, which must not be counted or kept as a path.
         relationship_descriptions = []
-        file_paths_list = []
-        seen_paths = set()
-
-        # Get edge data for all connected relationships
         for src_id, tgt_id in edges:
             edge_data = await knowledge_graph_inst.get_edge(src_id, tgt_id)
-            if edge_data:
-                if edge_data.get("description"):
-                    relationship_descriptions.append(edge_data["description"])
-
-                if edge_data.get("file_path"):
-                    for file_path in edge_data["file_path"].split(GRAPH_FIELD_SEP):
-                        if file_path and file_path not in seen_paths:
-                            file_paths_list.append(file_path)
-                            seen_paths.add(file_path)
-
-        # Apply the same MAX_FILE_PATHS limit as the cached-data path and
-        # _rebuild_single_relationship's degraded path, so an entity rebuilt
-        # from its edges cannot grow an unbounded file_path field.
-        max_file_paths = global_config.get("max_file_paths", DEFAULT_MAX_FILE_PATHS)
-        file_path_placeholder = global_config.get(
-            "file_path_more_placeholder", DEFAULT_FILE_PATH_MORE_PLACEHOLDER
+            if edge_data and edge_data.get("description"):
+                relationship_descriptions.append(edge_data["description"])
+        file_paths = _surviving_chunk_file_paths(
+            limited_chunk_ids, chunk_data_by_id or {}, global_config
         )
-        original_count = len(file_paths_list)
-        if original_count > max_file_paths:
-            limit_method = (
-                global_config.get("source_ids_limit_method")
-                or SOURCE_IDS_LIMIT_METHOD_KEEP
-            )
-            if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
-                # FIFO: keep tail (newest), discard head
-                file_paths_list = file_paths_list[-max_file_paths:]
-            else:
-                # KEEP: keep head (earliest), discard tail
-                file_paths_list = file_paths_list[:max_file_paths]
-
-            file_paths_list.append(
-                f"...{file_path_placeholder}...({limit_method} {max_file_paths}/{original_count})"
-            )
-            logger.info(
-                f"Limited `{entity_name}`: file_path {original_count} -> {max_file_paths} ({limit_method})"
-            )
-        file_paths = file_paths_list
 
         # deduplicate descriptions
         description_list = list(dict.fromkeys(relationship_descriptions))
