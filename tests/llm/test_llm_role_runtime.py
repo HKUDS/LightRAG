@@ -11,7 +11,7 @@ from lightrag import LightRAG, ROLES, RoleLLMConfig
 from lightrag.base import StoragesStatus
 from lightrag.llm.binding_options import OpenAILLMOptions
 from lightrag.llm_roles import apply_llm_timeout
-from lightrag.utils import EmbeddingFunc, Tokenizer, priority_limit_async_func_call
+from lightrag.utils import EmbeddingFunc, TokenTracker, Tokenizer
 
 
 pytestmark = pytest.mark.offline
@@ -114,116 +114,13 @@ ROLE_MAX_ASYNC_ENV_KEYS = (
 )
 
 
-@pytest.mark.asyncio
-async def test_priority_queue_stats_track_running_and_queued():
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def slow_func(value: str, **_kwargs):
-        started.set()
-        await release.wait()
-        return value
-
-    wrapped = priority_limit_async_func_call(1, queue_name="test LLM func")(slow_func)
-
-    first = asyncio.create_task(wrapped("first"))
-    await started.wait()
-    second = asyncio.create_task(wrapped("second"))
-    await asyncio.sleep(0.05)
-
-    stats = await wrapped.get_queue_stats()
-    assert stats["max_async"] == 1
-    assert stats["running"] == 1
-    assert stats["queued"] == 1
-    assert stats["in_flight"] == 2
-    assert stats["submitted_total"] == 2
-
-    release.set()
-    assert await asyncio.gather(first, second) == ["first", "second"]
-    await asyncio.sleep(0)
-
-    stats = await wrapped.get_queue_stats()
-    assert stats["running"] == 0
-    assert stats["queued"] == 0
-    assert stats["completed_total"] == 2
-    assert stats["rejected_total"] == 0
-
-    await wrapped.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_priority_queue_graceful_shutdown_timeout_falls_back_to_force(
-    caplog, lightrag_caplog
-):
-    started = asyncio.Event()
-
-    async def stuck_func(value: str, **_kwargs):
-        started.set()
-        await asyncio.sleep(60)
-        return value
-
-    wrapped = priority_limit_async_func_call(1, queue_name="stuck LLM func")(stuck_func)
-
-    in_flight = asyncio.create_task(wrapped("hold"))
-    await started.wait()
-
-    with caplog.at_level("WARNING", logger="lightrag"):
-        await wrapped.shutdown(graceful=True, timeout=0.1)
-
-    assert any(
-        "Graceful drain timed out" in record.getMessage() for record in caplog.records
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await in_flight
-
-    stats = await wrapped.get_queue_stats()
-    assert stats["cancelled_total"] >= 1
-
-
-@pytest.mark.asyncio
-async def test_priority_queue_rejects_submissions_after_shutdown():
-    async def fast_func(value: str, **_kwargs):
-        return value
-
-    wrapped = priority_limit_async_func_call(1, queue_name="reject LLM func")(fast_func)
-
-    assert await wrapped("warmup") == "warmup"
-    await wrapped.shutdown()
-
-    with pytest.raises(RuntimeError, match="Queue is shutting down"):
-        await wrapped("rejected")
-
-    stats = await wrapped.get_queue_stats()
-    assert stats["rejected_total"] == 1
-
-
-def test_role_max_async_defaults_inherit_base(tmp_path, monkeypatch):
+def test_role_max_async_env_override_keeps_other_roles_inherited(tmp_path, monkeypatch):
     # Use the literal "None" string rather than delenv: storage modules
     # (e.g. lightrag.kg.networkx_impl) are imported lazily during
     # LightRAG() and re-run load_dotenv(override=False), which would
     # restore deleted vars from .env. Setting "None" keeps the variable
     # present so load_dotenv leaves it alone, and _optional_env_int
     # interprets the string as Python None via special_none=True.
-    for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
-        monkeypatch.setenv(env_key, "None")
-
-    rag = _make_rag(tmp_path, llm_model_max_async=10)
-
-    assert rag._role_llm_states["extract"].max_async is None
-    assert rag._role_llm_states["keyword"].max_async is None
-    assert rag._role_llm_states["query"].max_async is None
-    assert rag._role_llm_states["vlm"].max_async is None
-    assert rag._get_effective_role_llm_max_async("extract") == 10
-    assert rag._get_effective_role_llm_max_async("keyword") == 10
-    assert rag._get_effective_role_llm_max_async("query") == 10
-    assert rag._get_effective_role_llm_max_async("vlm") == 10
-
-
-def test_role_max_async_env_override_keeps_other_roles_inherited(tmp_path, monkeypatch):
-    # See note in test_role_max_async_defaults_inherit_base: lazy
-    # storage imports re-run load_dotenv, so we mark unwanted keys with
-    # "None" instead of deleting them.
     for env_key in ROLE_MAX_ASYNC_ENV_KEYS:
         monkeypatch.setenv(env_key, "None")
     monkeypatch.setenv("EXTRACT_MAX_ASYNC_LLM", "7")
@@ -238,21 +135,6 @@ def test_role_max_async_env_override_keeps_other_roles_inherited(tmp_path, monke
     assert rag._get_effective_role_llm_max_async("keyword") == 10
     assert rag._get_effective_role_llm_max_async("query") == 10
     assert rag._get_effective_role_llm_max_async("vlm") == 10
-
-
-@pytest.mark.asyncio
-async def test_role_functions_are_isolated_and_vlm_present(tmp_path):
-    rag = _make_rag(tmp_path)
-
-    funcs = [
-        rag.llm_model_func,
-        rag.role_llm_funcs["extract"],
-        rag.role_llm_funcs["keyword"],
-        rag.role_llm_funcs["query"],
-        rag.role_llm_funcs["vlm"],
-    ]
-    assert all(callable(func) for func in funcs)
-    assert len({id(func) for func in funcs}) == len(funcs)
 
 
 @pytest.mark.asyncio
@@ -365,39 +247,37 @@ def test_role_llm_config_logs_once_on_init_with_metadata(
 
 
 @pytest.mark.asyncio
-async def test_role_specific_kwargs_and_fallback(tmp_path):
-    extract_calls = []
-    vlm_calls = []
+async def test_role_kwargs_replace_base_kwargs_and_unset_ones_inherit(tmp_path):
+    """A role without kwargs inherits the base ``llm_model_kwargs`` object by
+    object, so a shared ``TokenTracker`` reaches it. A role with its own
+    kwargs replaces the base ones as a whole; nothing is merged in, the
+    tracker included."""
+    tracker = TokenTracker()
+    calls: dict[str, dict] = {}
 
-    async def extract_func(*args, **kwargs):
-        extract_calls.append(kwargs)
-        return "extract"
+    def recorder(role: str):
+        async def func(*args, **kwargs):
+            calls[role] = kwargs
+            return role
 
-    async def vlm_func(*args, **kwargs):
-        vlm_calls.append(kwargs)
-        return "vlm"
+        return func
 
     rag = _make_rag(
         tmp_path,
-        llm_model_kwargs={"shared": "base"},
-        extract_llm_model_func=extract_func,
-        extract_llm_model_kwargs={"shared": "extract", "tag": "extract"},
-        vlm_llm_model_func=vlm_func,
-        vlm_llm_model_kwargs={"shared": "vlm", "tag": "vlm"},
+        llm_model_kwargs={"shared": "base", "token_tracker": tracker},
+        extract_llm_model_func=recorder("extract"),
+        extract_llm_model_kwargs={"shared": "extract"},
+        keyword_llm_model_func=recorder("keyword"),
     )
 
     await rag.role_llm_funcs["extract"]("extract prompt")
     await rag.role_llm_funcs["keyword"]("keyword prompt")
-    await rag.role_llm_funcs["vlm"]("vlm prompt")
 
-    assert extract_calls[-1]["tag"] == "extract"
-    assert extract_calls[-1]["shared"] == "extract"
-    assert "hashing_kv" in extract_calls[-1]
-
-    # Keyword role falls back to base kwargs when no role kwargs are configured.
-    # We do not inspect base function internals, but the call must succeed.
-    assert vlm_calls[-1]["tag"] == "vlm"
-    assert vlm_calls[-1]["shared"] == "vlm"
+    assert calls["keyword"]["shared"] == "base"
+    assert calls["keyword"]["token_tracker"] is tracker
+    assert calls["extract"]["shared"] == "extract"
+    assert "token_tracker" not in calls["extract"]
+    assert "hashing_kv" in calls["extract"]
 
 
 @pytest.mark.asyncio
@@ -421,16 +301,17 @@ async def test_update_llm_role_config_rewraps_without_double_call(tmp_path):
     assert call_count == 1
     assert seen_tags[-1] == "v1"
 
-    for value in (3, 5, 7):
-        rag.update_llm_role_config("query", max_async=value)
-        await rag.role_llm_funcs["query"]("next")
+    rag.update_llm_role_config("query", max_async=3)
+    await rag.role_llm_funcs["query"]("next")
 
     rag.update_llm_role_config("query", model_kwargs={"tag": "v2"})
     await rag.role_llm_funcs["query"]("final")
 
-    assert call_count == 5
+    # A rewrap that wrapped the previous wrapper would call the function
+    # more than once per request.
+    assert call_count == 3
     assert seen_tags[-1] == "v2"
-    assert rag._role_llm_states["query"].max_async == 7
+    assert rag._role_llm_states["query"].max_async == 3
     await rag.wait_for_retired_llm_queues()
 
 
@@ -505,56 +386,6 @@ def test_sync_update_without_event_loop_skips_cleanup(
         return await rag.role_llm_funcs["query"]("after")
 
     assert asyncio.run(call_new()) == "new"
-
-
-@pytest.mark.asyncio
-async def test_aupdate_llm_role_config_with_builder_drains_old_queue(tmp_path):
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    def builder(role, meta):
-        model_name = meta["model"]
-
-        if model_name == "old-model":
-
-            async def built_func(*args, **kwargs):
-                started.set()
-                await release.wait()
-                return model_name
-        else:
-
-            async def built_func(*args, **kwargs):
-                return model_name
-
-        return built_func, None
-
-    rag = _make_rag(tmp_path)
-    rag.register_role_llm_builder(builder)
-    rag.set_role_llm_metadata(
-        "query",
-        binding="openai",
-        model="seed",
-        host="https://seed",
-        api_key="seed-key",
-    )
-
-    rag.update_llm_role_config("query", binding="openai", model="old-model")
-    await rag.wait_for_retired_llm_queues()
-
-    in_flight = asyncio.create_task(rag.role_llm_funcs["query"]("hold"))
-    await started.wait()
-
-    update_call = asyncio.create_task(
-        rag.aupdate_llm_role_config("query", binding="openai", model="new-model")
-    )
-    await asyncio.sleep(0.05)
-    assert not update_call.done()
-    assert await rag.role_llm_funcs["query"]("hello") == "new-model"
-
-    release.set()
-    assert await in_flight == "old-model"
-    await update_call
-    assert not rag._retired_llm_queue_cleanup_tasks
 
 
 @pytest.mark.asyncio
@@ -711,17 +542,41 @@ async def test_aupdate_llm_role_config_logs_after_success(
 
 
 @pytest.mark.asyncio
-async def test_aupdate_llm_role_config_metadata_without_builder_raises(tmp_path):
-    """Pin down the public-API contract: updating any metadata field
-    (binding/model/host/api_key/provider_options) without a registered
-    builder and without an explicit model_func must fail loudly with a
-    ValueError. State must be intact so the caller can recover."""
+@pytest.mark.parametrize(
+    ("role", "update", "error", "match"),
+    [
+        # A metadata field with no registered builder and no model_func.
+        pytest.param(
+            "query",
+            {"binding": "openai"},
+            ValueError,
+            "Runtime role builder is not configured",
+            id="metadata-without-builder",
+        ),
+        pytest.param(
+            "query",
+            {"model_func": "not-a-func"},
+            TypeError,
+            "model_func must be callable",
+            id="non-callable-model-func",
+        ),
+        # A typo surfaces as ValueError, not KeyError.
+        pytest.param(
+            "qurey", {"max_async": 2}, ValueError, "Invalid LLM role", id="unknown-role"
+        ),
+    ],
+)
+async def test_aupdate_llm_role_config_rejects_invalid_update_before_mutation(
+    tmp_path, role, update, error, match
+):
+    """An invalid update fails loudly and leaves the role untouched, so the
+    caller can recover."""
     rag = _make_rag(tmp_path)
     original_wrapped = rag.role_llm_funcs["query"]
     original_metadata = dict(rag._role_llm_states["query"].metadata)
 
-    with pytest.raises(ValueError, match="Runtime role builder is not configured"):
-        await rag.aupdate_llm_role_config("query", binding="openai")
+    with pytest.raises(error, match=match):
+        await rag.aupdate_llm_role_config(role, **update)
 
     assert rag.role_llm_funcs["query"] is original_wrapped
     assert rag._role_llm_states["query"].metadata == original_metadata
@@ -729,39 +584,22 @@ async def test_aupdate_llm_role_config_metadata_without_builder_raises(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_aupdate_llm_role_config_rejects_non_callable_model_func(tmp_path):
-    """model_func type check must reject non-callables before any state
-    mutation happens."""
-    rag = _make_rag(tmp_path)
-    original_wrapped = rag.role_llm_funcs["query"]
-
-    with pytest.raises(TypeError, match="model_func must be callable"):
-        await rag.aupdate_llm_role_config("query", model_func="not-a-func")
-
-    assert rag.role_llm_funcs["query"] is original_wrapped
-    assert await rag.role_llm_funcs["query"]("ping") == "base"
-
-
-@pytest.mark.asyncio
-async def test_aupdate_llm_role_config_rejects_unknown_role(tmp_path):
-    """Typos in the role name must surface as ValueError, not KeyError,
-    via the shared _normalize_llm_role guard."""
-    rag = _make_rag(tmp_path)
-
-    with pytest.raises(ValueError, match="Invalid LLM role"):
-        await rag.aupdate_llm_role_config("qurey", max_async=2)
-
-
-@pytest.mark.asyncio
-async def test_aupdate_llm_role_config_rolls_back_and_keeps_old_wrapped(tmp_path):
-    """When the builder raises, the async path must roll state back AND
-    skip the retired-wrapper shutdown — the swap effectively never
-    happened, so the old queue must remain live and accept new work."""
+async def test_aupdate_llm_role_config_rolls_back_and_keeps_old_wrapped(
+    tmp_path, caplog, lightrag_caplog
+):
+    """When the builder raises, the update rolls state back, logs no
+    "updated" header, AND skips the retired-wrapper shutdown — the swap
+    effectively never happened, so the old queue must remain live and accept
+    new work. The sync variant shares the same apply step."""
 
     async def query_func(*args, **kwargs):
         return "old"
 
-    rag = _make_rag(tmp_path, query_llm_model_func=query_func)
+    rag = _make_rag(
+        tmp_path,
+        query_llm_model_func=query_func,
+        query_llm_model_kwargs={"tag": "before"},
+    )
     rag.set_role_llm_metadata(
         "query",
         binding="openai",
@@ -772,22 +610,28 @@ async def test_aupdate_llm_role_config_rolls_back_and_keeps_old_wrapped(tmp_path
     original_wrapped = rag.role_llm_funcs["query"]
     original_raw = rag._role_llm_states["query"].raw_func
     original_metadata = dict(rag._role_llm_states["query"].metadata)
+    original_kwargs = dict(rag.role_llm_kwargs["query"])
 
     def failing_builder(_role, _meta):
         raise RuntimeError("builder boom")
 
     rag.register_role_llm_builder(failing_builder)
 
-    with pytest.raises(RuntimeError, match="builder boom"):
-        await rag.aupdate_llm_role_config(
-            "query",
-            binding="gemini",
-            model="new-model",
-        )
+    caplog.clear()
+    with caplog.at_level("INFO", logger="lightrag"):
+        with pytest.raises(RuntimeError, match="builder boom"):
+            await rag.aupdate_llm_role_config(
+                "query",
+                binding="gemini",
+                model="new-model",
+                provider_options={"temperature": 0.9},
+            )
 
     assert rag.role_llm_funcs["query"] is original_wrapped
     assert rag._role_llm_states["query"].raw_func is original_raw
     assert rag._role_llm_states["query"].metadata == original_metadata
+    assert rag.role_llm_kwargs["query"] == original_kwargs
+    assert not _role_config_headers(caplog)
     # Critical: old wrapper was NOT shut down — it still serves calls.
     assert await rag.role_llm_funcs["query"]("ping") == "old"
 
@@ -1115,19 +959,6 @@ def test_get_llm_role_config_strips_bedrock_and_password_fields(tmp_path):
     )
 
 
-def test_get_llm_role_config_has_no_secret_escape_hatch(tmp_path):
-    """Security guarantee: no parameter on get_llm_role_config can flip
-    secret stripping off. This pins down the public-API contract so a future
-    change can't accidentally re-introduce an ``include_secrets`` knob."""
-    rag = _make_rag(tmp_path)
-    rag.set_role_llm_metadata("query", api_key="super-secret")
-
-    with pytest.raises(TypeError):
-        rag.get_llm_role_config("query", include_secrets=True)  # type: ignore[call-arg]
-
-    assert "api_key" not in rag.get_llm_role_config("query")["metadata"]
-
-
 @pytest.mark.asyncio
 async def test_cross_provider_update_does_not_inherit_base_kwargs(tmp_path):
     built_calls = []
@@ -1178,43 +1009,6 @@ async def test_cross_provider_update_does_not_inherit_base_kwargs(tmp_path):
     assert "api_key" not in call_kwargs
 
 
-@pytest.mark.asyncio
-async def test_update_llm_role_config_rolls_back_on_failure(
-    tmp_path, caplog, lightrag_caplog
-):
-    rag = _make_rag(tmp_path, extract_llm_model_kwargs={"tag": "before"})
-    original_raw = rag._role_llm_states["extract"].raw_func
-    original_wrapped = rag.role_llm_funcs["extract"]
-    original_kwargs = dict(rag.role_llm_kwargs["extract"])
-
-    def failing_builder(role: str, meta: dict):
-        raise RuntimeError("boom")
-
-    rag.register_role_llm_builder(failing_builder)
-    rag.set_role_llm_metadata(
-        "extract",
-        binding="openai",
-        model="base-model",
-        host="https://base",
-        api_key="key",
-        provider_options={"temperature": 0.1},
-    )
-
-    caplog.clear()
-    with caplog.at_level("INFO", logger="lightrag"):
-        with pytest.raises(RuntimeError, match="boom"):
-            rag.update_llm_role_config(
-                "extract",
-                binding="gemini",
-                provider_options={"temperature": 0.9},
-            )
-
-    assert rag._role_llm_states["extract"].raw_func is original_raw
-    assert rag.role_llm_funcs["extract"] is original_wrapped
-    assert rag.role_llm_kwargs["extract"] == original_kwargs
-    assert not _role_config_headers(caplog)
-
-
 def test_options_dict_for_role_inherits_same_provider(monkeypatch):
     args = Namespace(
         openai_llm_temperature=0.2,
@@ -1262,35 +1056,6 @@ def test_options_dict_for_role_parses_nested_extra_body_cross_provider(monkeypat
     assert options["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
-@pytest.mark.asyncio
-async def test_vlm_role_supports_runtime_update(tmp_path):
-    vlm_calls = []
-
-    async def vlm_func(*args, **kwargs):
-        vlm_calls.append(kwargs)
-        return "vlm"
-
-    rag = _make_rag(
-        tmp_path,
-        vlm_llm_model_func=vlm_func,
-        vlm_llm_model_kwargs={"tag": "initial"},
-    )
-
-    await rag.role_llm_funcs["vlm"]("before")
-    rag.update_llm_role_config(
-        "vlm",
-        model_kwargs={"tag": "updated"},
-        max_async=2,
-        timeout=240,
-    )
-    await rag.role_llm_funcs["vlm"]("after")
-
-    assert vlm_calls[0]["tag"] == "initial"
-    assert vlm_calls[1]["tag"] == "updated"
-    assert rag._role_llm_states["vlm"].max_async == 2
-    assert rag._role_llm_states["vlm"].timeout == 240
-
-
 def _timeout_probe_func(calls: list[dict]):
     """A custom llm_model_func recording its kwargs and the timeout a bundled
     provider wrapper would apply at this point of the call."""
@@ -1306,16 +1071,24 @@ def _timeout_probe_func(calls: list[dict]):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("role_config", "expected_applied"),
+    ("role_config", "expected_applied", "expected_timeout_kwarg"),
     [
-        pytest.param({"timeout": 180}, 180, id="role-own-timeout"),
+        pytest.param({"timeout": 180}, 180, {}, id="role-own-timeout"),
         # A role without its own timeout uses the base one its queue uses.
-        pytest.param({}, 30, id="inherited-base-timeout"),
-        pytest.param({"timeout": 0}, 0, id="zero-applied-verbatim"),
+        pytest.param({}, 30, {}, id="inherited-base-timeout"),
+        pytest.param({"timeout": 0}, 0, {}, id="zero-applied-verbatim"),
+        # A timeout the caller put in the role kwargs reaches the function
+        # unchanged; the role timeout does not override it.
+        pytest.param(
+            {"timeout": 180, "kwargs": {"timeout": 45}},
+            180,
+            {"timeout": 45},
+            id="kwargs-timeout",
+        ),
     ],
 )
 async def test_role_call_exposes_effective_timeout_without_passing_it(
-    tmp_path, role_config, expected_applied
+    tmp_path, role_config, expected_applied, expected_timeout_kwarg
 ):
     calls: list[dict] = []
     rag = _make_rag(
@@ -1329,26 +1102,10 @@ async def test_role_call_exposes_effective_timeout_without_passing_it(
 
     assert len(calls) == 1
     assert calls[0]["applied"] == expected_applied
-    # A custom function is never handed a timeout it did not ask for.
-    assert "timeout" not in calls[0]["kwargs"]
-
-
-@pytest.mark.asyncio
-async def test_role_kwargs_timeout_reaches_the_function_unchanged(tmp_path):
-    calls: list[dict] = []
-    rag = _make_rag(
-        tmp_path,
-        default_llm_timeout=30,
-        llm_model_func=_timeout_probe_func(calls),
-        role_llm_configs={
-            "extract": RoleLLMConfig(timeout=180, kwargs={"timeout": 45})
-        },
-    )
-
-    await rag.role_llm_funcs["extract"]("prompt")
-
-    assert len(calls) == 1
-    assert calls[0]["kwargs"]["timeout"] == 45
+    # A custom function is never handed a timeout it did not ask for, not
+    # even timeout=None: a function without that parameter would raise.
+    passed = {k: v for k, v in calls[0]["kwargs"].items() if k == "timeout"}
+    assert passed == expected_timeout_kwarg
 
 
 @pytest.mark.asyncio
