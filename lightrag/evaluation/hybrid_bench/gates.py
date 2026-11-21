@@ -39,17 +39,17 @@ from lightrag.evaluation.hybrid_bench.metrics import relative_gain
 
 @dataclass(frozen=True, slots=True)
 class GateThresholds:
-    b2a_j_relative_gain: float = 0.15
-    b2a_g_relative_floor: float = -0.01
-    b2a_g_noise_band_fraction: float = 0.01
-    b2b_j_relative_gain: float = 0.10
-    b2b_g_absolute_delta: float = 0.005
-    b3a_p95_overhead: float = 0.25
-    b3b_p95_overhead: float = 0.15
-    b3c_upsert_p95_increase: float = 0.10
-    b3c_gin_vector_ratio: float = 1.5
-    b3d_chunks_per_min: float = 5000.0
-    b4_survival: float = 0.50
+    terminology_entity_gain_threshold: float = 0.15
+    general_entity_regression_floor: float = -0.01
+    general_entity_noise_band_fraction: float = 0.01
+    terminology_chunk_gain_threshold: float = 0.10
+    general_chunk_equivalence_delta: float = 0.005
+    retrieval_latency_overhead_limit: float = 0.25
+    answer_latency_overhead_limit: float = 0.15
+    write_amp_upsert_increase_limit: float = 0.10
+    write_amp_gin_vector_ratio_limit: float = 1.5
+    backfill_min_chunks_per_min: float = 5000.0
+    rerank_min_survival: float = 0.50
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +67,7 @@ def _fmt(value: float | None) -> str:
     return "undefined" if value is None else f"{value:.4f}"
 
 
-def gate_b2a_j(
+def gate_terminology_entity_hit(
     domain: str,
     dense_mean: float,
     hybrid_mean: float,
@@ -79,17 +79,19 @@ def gate_b2a_j(
     gain = relative_gain(hybrid_mean, dense_mean)
     if gain is None:
         return not_run(gate_id, "dense mean is zero; relative gain undefined")
-    passed = gain >= thresholds.b2a_j_relative_gain and diff_ci_lower > 0.0
+    passed = (
+        gain >= thresholds.terminology_entity_gain_threshold and diff_ci_lower > 0.0
+    )
     return GateVerdict(
         gate_id,
         "pass" if passed else "fail",
         f"relative gain {_fmt(gain)} >= "
-        f"{thresholds.b2a_j_relative_gain:.2f} and CI lower "
+        f"{thresholds.terminology_entity_gain_threshold:.2f} and CI lower "
         f"{_fmt(diff_ci_lower)} > 0",
     )
 
 
-def gate_b2a_g(
+def gate_general_entity_hit(
     domain: str,
     dense_mean: float,
     hybrid_mean: float,
@@ -101,20 +103,21 @@ def gate_b2a_g(
     gain = relative_gain(hybrid_mean, dense_mean)
     if gain is None:
         return not_run(gate_id, "dense mean is zero; relative gain undefined")
-    band = thresholds.b2a_g_noise_band_fraction * dense_mean
+    band = thresholds.general_entity_noise_band_fraction * dense_mean
     passed = (
-        gain >= thresholds.b2a_g_relative_floor and dense_minus_hybrid_ci_upper < band
+        gain >= thresholds.general_entity_regression_floor
+        and dense_minus_hybrid_ci_upper < band
     )
     return GateVerdict(
         gate_id,
         "pass" if passed else "fail",
         f"relative gain {_fmt(gain)} >= "
-        f"{thresholds.b2a_g_relative_floor:.2f} and CI upper "
+        f"{thresholds.general_entity_regression_floor:.2f} and CI upper "
         f"{_fmt(dense_minus_hybrid_ci_upper)} < noise band {_fmt(band)}",
     )
 
 
-def gate_b2b_j(
+def gate_terminology_chunk_quality(
     domain: str,
     metric: str,
     dense_mean: float,
@@ -126,17 +129,17 @@ def gate_b2b_j(
     gain = relative_gain(hybrid_mean, dense_mean)
     if gain is None:
         return not_run(gate_id, "dense mean is zero; relative gain undefined")
-    passed = gain >= thresholds.b2b_j_relative_gain and diff_ci_lower > 0.0
+    passed = gain >= thresholds.terminology_chunk_gain_threshold and diff_ci_lower > 0.0
     return GateVerdict(
         gate_id,
         "pass" if passed else "fail",
         f"relative gain {_fmt(gain)} >= "
-        f"{thresholds.b2b_j_relative_gain:.2f} and CI lower "
+        f"{thresholds.terminology_chunk_gain_threshold:.2f} and CI lower "
         f"{_fmt(diff_ci_lower)} > 0",
     )
 
 
-def gate_b2b_g(
+def gate_general_chunk_quality(
     domain: str,
     dense_ndcg: float,
     hybrid_ndcg: float,
@@ -146,7 +149,7 @@ def gate_b2b_g(
 ) -> GateVerdict:
     gate_id = f"chunk-quality/{domain}/ndcg@{top_k}"
     delta = abs(hybrid_ndcg - dense_ndcg)
-    limit = thresholds.b2b_g_absolute_delta
+    limit = thresholds.general_chunk_equivalence_delta
     passed = delta <= limit and abs_delta_ci_upper < limit
     return GateVerdict(
         gate_id,
@@ -171,7 +174,7 @@ def gate_p95_overhead(
     )
 
 
-def gate_b3c(
+def gate_write_amp(
     upsert_increase: float | None,
     gin_vector_ratio: float | None,
     thresholds: GateThresholds,
@@ -180,7 +183,7 @@ def gate_b3c(
     if upsert_increase is None:
         verdicts.append(not_run("write-amp/upsert-p95", "baseline upsert p95 absent"))
     else:
-        limit = thresholds.b3c_upsert_p95_increase
+        limit = thresholds.write_amp_upsert_increase_limit
         verdicts.append(
             GateVerdict(
                 "write-amp/upsert-p95",
@@ -191,7 +194,7 @@ def gate_b3c(
     if gin_vector_ratio is None:
         verdicts.append(not_run("write-amp/gin-size", "index sizes absent"))
     else:
-        limit = thresholds.b3c_gin_vector_ratio
+        limit = thresholds.write_amp_gin_vector_ratio_limit
         verdicts.append(
             GateVerdict(
                 "write-amp/gin-size",
@@ -202,21 +205,25 @@ def gate_b3c(
     return verdicts
 
 
-def gate_b3d(chunks_per_min: float | None, thresholds: GateThresholds) -> GateVerdict:
+def gate_backfill(
+    chunks_per_min: float | None, thresholds: GateThresholds
+) -> GateVerdict:
     if chunks_per_min is None:
         return not_run("backfill/throughput", "backfill throughput absent")
     return GateVerdict(
         "backfill/throughput",
         "report",
         f"{chunks_per_min:.0f} chunks/min; proposal floor "
-        f"{thresholds.b3d_chunks_per_min:.0f}; report-only, no pass/fail",
+        f"{thresholds.backfill_min_chunks_per_min:.0f}; report-only, no pass/fail",
     )
 
 
-def gate_b4(survival: float | None, thresholds: GateThresholds) -> GateVerdict:
+def gate_rerank_survival(
+    survival: float | None, thresholds: GateThresholds
+) -> GateVerdict:
     if survival is None:
         return not_run("rerank-survival", "reranker survival absent")
-    floor = thresholds.b4_survival
+    floor = thresholds.rerank_min_survival
     if survival >= floor:
         return GateVerdict(
             "rerank-survival",
@@ -231,7 +238,7 @@ def gate_b4(survival: float | None, thresholds: GateThresholds) -> GateVerdict:
     )
 
 
-def gate_b5(
+def gate_ablation(
     metric: str,
     both_value: float,
     entity_only_value: float,
@@ -292,7 +299,7 @@ def evaluate_gates(
             )
         elif domain == "terminology":
             verdicts.append(
-                gate_b2a_j(
+                gate_terminology_entity_hit(
                     domain,
                     entity.dense_mean,
                     entity.hybrid_mean,
@@ -303,7 +310,7 @@ def evaluate_gates(
             )
         else:
             verdicts.append(
-                gate_b2a_g(
+                gate_general_entity_hit(
                     domain,
                     entity.dense_mean,
                     entity.hybrid_mean,
@@ -324,7 +331,7 @@ def evaluate_gates(
                     )
                     continue
                 verdicts.append(
-                    gate_b2b_j(
+                    gate_terminology_chunk_quality(
                         domain,
                         metric,
                         comp.dense_mean,
@@ -341,7 +348,7 @@ def evaluate_gates(
                 )
             else:
                 verdicts.append(
-                    gate_b2b_g(
+                    gate_general_chunk_quality(
                         domain,
                         comp.dense_mean,
                         comp.hybrid_mean,
@@ -354,7 +361,7 @@ def evaluate_gates(
         gate_p95_overhead(
             "retrieval-latency/retrieval-p95",
             inputs.retrieval_p95_overhead,
-            thresholds.b3a_p95_overhead,
+            thresholds.retrieval_latency_overhead_limit,
         )
         if inputs.retrieval_p95_overhead is not None
         else not_run("retrieval-latency/retrieval-p95", "latency not measured")
@@ -363,19 +370,19 @@ def evaluate_gates(
         gate_p95_overhead(
             "answer-latency/answer-p95",
             inputs.answer_p95_overhead,
-            thresholds.b3b_p95_overhead,
+            thresholds.answer_latency_overhead_limit,
         )
         if inputs.answer_p95_overhead is not None
         else not_run("answer-latency/answer-p95", "answer latency not measured")
     )
     verdicts.extend(
-        gate_b3c(inputs.upsert_increase, inputs.gin_vector_ratio, thresholds)
+        gate_write_amp(inputs.upsert_increase, inputs.gin_vector_ratio, thresholds)
     )
-    verdicts.append(gate_b3d(inputs.backfill_chunks_per_min, thresholds))
-    verdicts.append(gate_b4(inputs.rerank_survival, thresholds))
+    verdicts.append(gate_backfill(inputs.backfill_chunks_per_min, thresholds))
+    verdicts.append(gate_rerank_survival(inputs.rerank_survival, thresholds))
     if inputs.ablation is None:
         verdicts.append(not_run("ablation/all", "ablation not measured"))
     else:
         for metric, (both, entity_only, chunk_only) in inputs.ablation.items():
-            verdicts.append(gate_b5(metric, both, entity_only, chunk_only))
+            verdicts.append(gate_ablation(metric, both, entity_only, chunk_only))
     return verdicts

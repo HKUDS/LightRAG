@@ -369,10 +369,13 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
                 timeout=config.request_timeout,
             )
             arm_entities[arm][qid] = entities
-    b5_per_query: dict[str, dict[str, dict[str, float]]] = {}
+    ablation_per_query: dict[str, dict[str, dict[str, float]]] = {}
     if "ablation" in phase_set:
-        for combo, (entity_hybrid, chunk_hybrid) in arms_mod.B5_COMBINATIONS.items():
-            b5_per_query[combo] = {}
+        for combo, (
+            entity_hybrid,
+            chunk_hybrid,
+        ) in arms_mod.ABLATION_COMBINATIONS.items():
+            ablation_per_query[combo] = {}
             for qid, query in dataset.queries.items():
                 hits, entities = await asyncio.wait_for(
                     arms_mod.retrieve_combined(
@@ -395,13 +398,13 @@ async def _run_arms(rag, dataset, config, ingest, truth, phase_set):
                     entry["entity_hit"] = hit_at_k(
                         entities, truth.per_query[qid], config.top_k
                     )
-                b5_per_query[combo][qid] = entry
+                ablation_per_query[combo][qid] = entry
     return (
         arm_docs,
         arm_entities,
         lexical_positive_hits,
         skipped,
-        b5_per_query,
+        ablation_per_query,
         seeding_fallbacks,
     )
 
@@ -516,7 +519,7 @@ async def run_dataset(
             arm_entities,
             lexical_hits,
             skipped,
-            b5_per_query,
+            ablation_per_query,
             seeding_fallbacks,
         ) = await _run_arms(rag, dataset, config, ingest, truth, args.phase_set)
         result["skipped"].update(skipped)
@@ -559,21 +562,21 @@ async def run_dataset(
         }
         result["_scored"] = scored
         result["_entity_scored"] = entity_scored
-        if b5_per_query:
+        if ablation_per_query:
 
-            def _b5_mean(entries: dict, key: str) -> float:
+            def _ablation_mean(entries: dict, key: str) -> float:
                 values = [e[key] for e in entries.values() if key in e]
                 return mean(values) if values else 0.0
 
             result["ablation"] = {
                 combo: {
-                    f"recall@{k}": _b5_mean(entries, "recall"),
-                    f"ndcg@{k}": _b5_mean(entries, "ndcg"),
-                    f"entity_hit@{k}": _b5_mean(entries, "entity_hit"),
+                    f"recall@{k}": _ablation_mean(entries, "recall"),
+                    f"ndcg@{k}": _ablation_mean(entries, "ndcg"),
+                    f"entity_hit@{k}": _ablation_mean(entries, "entity_hit"),
                 }
-                for combo, entries in b5_per_query.items()
+                for combo, entries in ablation_per_query.items()
             }
-            result["_b5_per_query"] = b5_per_query
+            result["_ablation_per_query"] = ablation_per_query
         if "latency" in args.phase_set:
             result["latency"] = await _run_latency(rag, dataset, config)
         if "write-amp" in args.phase_set and config.storage == "pg":
@@ -691,8 +694,8 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
     )
     survival = surviving_hits / scored_hits if scored_hits else None
     ablation = None
-    b5_members = [d for d in datasets if d.get("_b5_per_query")]
-    if b5_members:
+    ablation_members = [d for d in datasets if d.get("_ablation_per_query")]
+    if ablation_members:
         ablation = {}
         for metric, key in (
             (f"recall@{args.top_k}", "recall"),
@@ -700,11 +703,11 @@ def _gate_inputs(datasets: list[dict], args: argparse.Namespace) -> GateInputs:
             (f"entity_hit@{args.top_k}", "entity_hit"),
         ):
             pooled = {}
-            for combo in arms_mod.B5_COMBINATIONS:
+            for combo in arms_mod.ABLATION_COMBINATIONS:
                 values = [
                     entry[key]
-                    for d in b5_members
-                    for entry in d["_b5_per_query"][combo].values()
+                    for d in ablation_members
+                    for entry in d["_ablation_per_query"][combo].values()
                     if key in entry
                 ]
                 pooled[combo] = mean(values) if values else 0.0
@@ -753,7 +756,7 @@ async def run_bench(args: argparse.Namespace) -> dict:
     for dataset in datasets:
         dataset.pop("_scored", None)
         dataset.pop("_entity_scored", None)
-        dataset.pop("_b5_per_query", None)
+        dataset.pop("_ablation_per_query", None)
     config = _base_config(args, "appendix")
     results = {
         "synthetic": config.synthetic,

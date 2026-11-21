@@ -48,7 +48,7 @@ from lightrag.utils import logger
 ARMS = ("dense", "hybrid", "lexical")
 #: Report annotation naming the entity-seeding measurement protocol.
 ENTITY_SEEDING_PROTOCOL = "production-faithful-multi-keyword"
-B5_COMBINATIONS = {
+ABLATION_COMBINATIONS = {
     "entity_only": (True, False),
     "chunk_only": (False, True),
     "both": (True, True),

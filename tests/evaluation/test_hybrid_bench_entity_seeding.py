@@ -392,12 +392,12 @@ async def test_run_arms_extracts_once_per_query_and_annotates_fallbacks(tmp_path
         )
         vdb = _RecordingVDB([{"entity_name": "optocoupler"}])
         rag.entities_vdb = vdb
-        arm_docs, arm_entities, _, _, b5, fallbacks = await cli._run_arms(
+        arm_docs, arm_entities, _, _, ablation, fallbacks = await cli._run_arms(
             rag, dataset, config, ingest, truth, set()
         )
         assert len(llm.keyword_prompts) == 2
         assert fallbacks == {"q2": "zero_keywords"}
-        assert b5 == {}
+        assert ablation == {}
         assert arm_docs["dense"]["q1"] and arm_docs["dense"]["q1"][0] == "d1"
         for arm in ("dense", "hybrid"):
             assert arm_entities[arm]["q1"] == ["optocoupler"]

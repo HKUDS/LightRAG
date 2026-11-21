@@ -250,12 +250,12 @@ async def test_cli_ablation_drives_the_combined_path_per_combination(
             return await real(rag_, query, entity_hybrid, chunk_hybrid, *rest)
 
         monkeypatch.setattr(cli.arms_mod, "retrieve_combined", recording)
-        _, _, _, _, b5, _ = await cli._run_arms(
+        _, _, _, _, ablation, _ = await cli._run_arms(
             rag, dataset, config, ingest, truth, {"ablation"}
         )
         assert recorded == [(True, False), (False, True), (True, True)]
-        assert set(b5) == {"entity_only", "chunk_only", "both"}
-        for entries in b5.values():
+        assert set(ablation) == {"entity_only", "chunk_only", "both"}
+        for entries in ablation.values():
             assert entries["q1"]["recall"] == 1.0
     finally:
         await rag.finalize_storages()

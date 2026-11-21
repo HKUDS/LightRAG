@@ -13,15 +13,15 @@ from lightrag.evaluation.hybrid_bench.gates import (
     GateThresholds,
     MetricComparison,
     evaluate_gates,
-    gate_b2a_g,
-    gate_b2a_j,
-    gate_b2b_g,
-    gate_b2b_j,
-    gate_b3c,
-    gate_b3d,
-    gate_b4,
-    gate_b5,
+    gate_ablation,
+    gate_backfill,
+    gate_general_chunk_quality,
+    gate_general_entity_hit,
     gate_p95_overhead,
+    gate_rerank_survival,
+    gate_terminology_chunk_quality,
+    gate_terminology_entity_hit,
+    gate_write_amp,
 )
 
 pytestmark = pytest.mark.offline
@@ -30,16 +30,16 @@ T = GateThresholds()
 
 
 def test_proposal_threshold_values_are_pinned():
-    assert T.b2a_j_relative_gain == 0.15
-    assert T.b2a_g_relative_floor == -0.01
-    assert T.b2b_j_relative_gain == 0.10
-    assert T.b2b_g_absolute_delta == 0.005
-    assert T.b3a_p95_overhead == 0.25
-    assert T.b3b_p95_overhead == 0.15
-    assert T.b3c_upsert_p95_increase == 0.10
-    assert T.b3c_gin_vector_ratio == 1.5
-    assert T.b3d_chunks_per_min == 5000.0
-    assert T.b4_survival == 0.50
+    assert T.terminology_entity_gain_threshold == 0.15
+    assert T.general_entity_regression_floor == -0.01
+    assert T.terminology_chunk_gain_threshold == 0.10
+    assert T.general_chunk_equivalence_delta == 0.005
+    assert T.retrieval_latency_overhead_limit == 0.25
+    assert T.answer_latency_overhead_limit == 0.15
+    assert T.write_amp_upsert_increase_limit == 0.10
+    assert T.write_amp_gin_vector_ratio_limit == 1.5
+    assert T.backfill_min_chunks_per_min == 5000.0
+    assert T.rerank_min_survival == 0.50
 
 
 @pytest.mark.parametrize(
@@ -54,8 +54,10 @@ def test_proposal_threshold_values_are_pinned():
     ],
     ids=["at-threshold", "below-threshold", "ci-at-zero"],
 )
-def test_b2a_j_boundaries(hybrid, ci_lower, status):
-    verdict = gate_b2a_j("terminology", 100.0, hybrid, ci_lower, T, "entity_hit@10")
+def test_terminology_entity_hit_boundaries(hybrid, ci_lower, status):
+    verdict = gate_terminology_entity_hit(
+        "terminology", 100.0, hybrid, ci_lower, T, "entity_hit@10"
+    )
     assert verdict.status == status
     assert verdict.gate_id == "entity-hit/terminology/entity_hit@10"
 
@@ -73,15 +75,17 @@ def test_b2a_j_boundaries(hybrid, ci_lower, status):
     ],
     ids=["at-floor", "ci-at-band", "below-floor"],
 )
-def test_b2a_g_boundaries(hybrid, ci_upper, status):
-    verdict = gate_b2a_g("general", 100.0, hybrid, ci_upper, T, "entity_hit@10")
+def test_general_entity_hit_boundaries(hybrid, ci_upper, status):
+    verdict = gate_general_entity_hit(
+        "general", 100.0, hybrid, ci_upper, T, "entity_hit@10"
+    )
     assert verdict.status == status
     assert verdict.gate_id == "entity-hit/general/entity_hit@10"
 
 
-def test_b2a_zero_dense_is_not_run():
-    assert gate_b2a_j("J", 0.0, 0.5, 0.1, T, "m").status == "not-run"
-    assert gate_b2a_g("G", 0.0, 0.5, 0.0, T, "m").status == "not-run"
+def test_entity_hit_zero_dense_is_not_run():
+    assert gate_terminology_entity_hit("J", 0.0, 0.5, 0.1, T, "m").status == "not-run"
+    assert gate_general_entity_hit("G", 0.0, 0.5, 0.0, T, "m").status == "not-run"
 
 
 @pytest.mark.parametrize(
@@ -93,8 +97,8 @@ def test_b2a_zero_dense_is_not_run():
     ],
     ids=["at-threshold", "below-threshold", "negative-ci"],
 )
-def test_b2b_j_boundaries(hybrid, ci_lower, status):
-    verdict = gate_b2b_j("J", "recall@10", 1.0, hybrid, ci_lower, T)
+def test_terminology_chunk_quality_boundaries(hybrid, ci_lower, status):
+    verdict = gate_terminology_chunk_quality("J", "recall@10", 1.0, hybrid, ci_lower, T)
     assert verdict.status == status
 
 
@@ -111,8 +115,8 @@ def test_b2b_j_boundaries(hybrid, ci_lower, status):
     ],
     ids=["at-limit", "past-limit", "ci-at-limit"],
 )
-def test_b2b_g_boundaries(hybrid, ci_upper, status):
-    verdict = gate_b2b_g("general", 0.0, hybrid, ci_upper, T)
+def test_general_chunk_quality_boundaries(hybrid, ci_upper, status):
+    verdict = gate_general_chunk_quality("general", 0.0, hybrid, ci_upper, T)
     assert verdict.status == status
 
 
@@ -128,7 +132,7 @@ def test_b2b_g_boundaries(hybrid, ci_upper, status):
     ids=["retrieval-at", "retrieval-past", "answer-at", "answer-past", "absent"],
 )
 def test_p95_overhead_boundaries(overhead, limit, status):
-    assert gate_p95_overhead("B3x", overhead, limit).status == status
+    assert gate_p95_overhead("latency-test", overhead, limit).status == status
 
 
 @pytest.mark.parametrize(
@@ -141,15 +145,15 @@ def test_p95_overhead_boundaries(overhead, limit, status):
     ],
     ids=["both-at", "upsert-past", "gin-past", "absent"],
 )
-def test_b3c_boundaries(increase, ratio, statuses):
-    verdicts = gate_b3c(increase, ratio, T)
+def test_write_amp_boundaries(increase, ratio, statuses):
+    verdicts = gate_write_amp(increase, ratio, T)
     assert [v.status for v in verdicts] == statuses
 
 
-def test_b3d_is_report_only():
-    assert gate_b3d(100.0, T).status == "report"
-    assert gate_b3d(99999.0, T).status == "report"
-    assert gate_b3d(None, T).status == "not-run"
+def test_backfill_is_report_only():
+    assert gate_backfill(100.0, T).status == "report"
+    assert gate_backfill(99999.0, T).status == "report"
+    assert gate_backfill(None, T).status == "not-run"
 
 
 @pytest.mark.parametrize(
@@ -162,8 +166,8 @@ def test_b3d_is_report_only():
     ],
     ids=["at-floor", "below-floor", "zero", "absent"],
 )
-def test_b4_survival_is_residue_not_fail(survival, status):
-    assert gate_b4(survival, T).status == status
+def test_rerank_survival_is_residue_not_fail(survival, status):
+    assert gate_rerank_survival(survival, T).status == status
 
 
 @pytest.mark.parametrize(
@@ -176,8 +180,8 @@ def test_b4_survival_is_residue_not_fail(survival, status):
     ],
     ids=["all-equal", "both-best", "below-entity", "below-chunk"],
 )
-def test_b5_both_ge_each_single(both, entity_only, chunk_only, status):
-    assert gate_b5("recall@10", both, entity_only, chunk_only).status == status
+def test_ablation_both_ge_each_single(both, entity_only, chunk_only, status):
+    assert gate_ablation("recall@10", both, entity_only, chunk_only).status == status
 
 
 def _comparison(dense, hybrid, diff_ci, reverse_ci, abs_ci):
