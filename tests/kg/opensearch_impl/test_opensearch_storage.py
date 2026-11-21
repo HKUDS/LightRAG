@@ -4743,49 +4743,49 @@ class TestVectorStorage:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "mget",
+        ("mget", "strict_ids"),
         [
-            AsyncMock(side_effect=OpenSearchException("transport error")),
-            AsyncMock(
-                return_value={
-                    "docs": [
-                        {"_id": "a", "found": True, "_source": {"content": "x"}},
-                        {"_id": "b", "error": {"type": "shard_failure"}},
-                    ]
-                }
+            (AsyncMock(side_effect=OpenSearchException("transport error")), None),
+            (
+                AsyncMock(
+                    return_value={
+                        "docs": [
+                            {"_id": "a", "found": True, "_source": {"content": "x"}},
+                            {"_id": "b", "error": {"type": "shard_failure"}},
+                        ]
+                    }
+                ),
+                None,
+            ),
+            (
+                AsyncMock(
+                    return_value={
+                        "docs": [
+                            {"_id": "a", "found": True, "_source": {"content": "x"}},
+                            {"_id": "b", "found": False},
+                        ]
+                    }
+                ),
+                ["a", None],
             ),
         ],
-        ids=["transport-error", "item-error"],
+        ids=["transport-error", "item-error", "confirmed-absent"],
     )
-    async def test_strict_read_raises_where_get_by_ids_reports_a_miss(
-        self, global_config, embed_func, mock_client, mget
+    async def test_strict_read_returns_none_only_for_confirmed_absence(
+        self, global_config, embed_func, mock_client, mget, strict_ids
     ):
+        # get_by_ids reads all three as a miss for "b"; only the last is one.
         mock_client.mget = mget
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            lenient = await s.get_by_ids(["a", "b"])
-            assert lenient[1] is None  # the failure reads as a miss here
-            with pytest.raises((OpenSearchException, RuntimeError)):
-                await s.get_by_ids_strict(["a", "b"])
-
-    @pytest.mark.asyncio
-    async def test_strict_read_answers_none_only_for_confirmed_absence(
-        self, global_config, embed_func, mock_client
-    ):
-        mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {"_id": "a", "found": True, "_source": {"content": "x"}},
-                    {"_id": "b", "found": False},
-                ]
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            rows = await s.get_by_ids_strict(["a", "b"])
-            assert [row and row["id"] for row in rows] == ["a", None]
+            assert (await s.get_by_ids(["a", "b"]))[1] is None
+            if strict_ids is None:
+                with pytest.raises((OpenSearchException, RuntimeError)):
+                    await s.get_by_ids_strict(["a", "b"])
+            else:
+                rows = await s.get_by_ids_strict(["a", "b"])
+                assert [row and row["id"] for row in rows] == strict_ids
 
     @pytest.mark.asyncio
     async def test_initialize_creates_knn_index(

@@ -411,23 +411,6 @@ async def test_rebuild_chunks_payload_from_kv_records():
 
 
 @pytest.mark.asyncio
-async def test_rebuild_chunks_skips_records_without_content():
-    kv = RowKV(
-        {
-            "chunk-1": {"content": "ok", "full_doc_id": "doc-1"},
-            "chunk-2": {"full_doc_id": "doc-1"},  # no content
-        }
-    )
-    vdb = MockVDB()
-
-    stats = await rebuild_chunks_vdb(kv, vdb)
-
-    assert stats["rebuilt"] == 1
-    assert stats["skipped"] == 1
-    assert "chunk-2" not in vdb.records
-
-
-@pytest.mark.asyncio
 async def test_rebuild_chunks_covers_all_id_schemes():
     # Chunks live under several id schemes that no single prefix matches:
     # custom KG ("chunk-<hash>"), the text pipeline ("{doc_id}-chunk-{order}",
@@ -1601,24 +1584,38 @@ def _source_failing_on_second_page(first_page):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target", ["entities", "relationships", "chunks"])
+@pytest.mark.parametrize(
+    ("target", "fault", "error"),
+    [
+        ("entities", "second-page", "source unreadable"),
+        ("relationships", "second-page", "source unreadable"),
+        ("chunks", "second-page", "source unreadable"),
+        ("entities", "node-absent", "'Alice' was listed but could not be read"),
+        ("entities", "node-undecodable", "'Alice' was listed but could not be read"),
+    ],
+)
 async def test_rebuild_reads_the_whole_source_before_dropping_the_target(
-    target, tmp_path, monkeypatch
+    target, fault, error, tmp_path, monkeypatch
 ):
-    # The whole source is spooled before drop(), so a page failing late --
-    # an OpenSearch PIT or Mongo cursor that expired during a slow embedding
-    # flush -- leaves the target untouched instead of half rebuilt.
+    # The whole source is read (and spooled) before drop(), so any source
+    # fault -- a page failing late as an OpenSearch PIT or Mongo cursor that
+    # expired during a slow flush would, or a listed node whose payload cannot
+    # be read -- leaves the target untouched instead of half rebuilt.
     monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
     graph = make_graph(nodes=[node("Alice")], edges=[edge("Alice", "Bob")])
-    graph.iter_labels = _source_failing_on_second_page(["Alice"])
-    graph.iter_edges = _source_failing_on_second_page([edge("Alice", "Bob")])
     kv = RowKV({})
+    if fault == "second-page":
+        graph.iter_labels = _source_failing_on_second_page(["Alice"])
+        graph.iter_edges = _source_failing_on_second_page([edge("Alice", "Bob")])
 
-    async def rows(*, page_size=200):
-        yield {"_id": "chunk-1", "content": "text"}
-        raise StorageCapabilityError("source unreadable")
+        async def rows(*, page_size=200):
+            yield {"_id": "chunk-1", "content": "text"}
+            raise StorageCapabilityError("source unreadable")
 
-    kv.iter_rows = rows
+        kv.iter_rows = rows
+    else:
+        batch_read = {} if fault == "node-absent" else {"Alice": '{"broken json'}
+        graph.get_nodes_batch = AsyncMock(return_value=batch_read)
     vdb = MockVDB()
     rebuild = {
         "entities": lambda: rebuild_entities_vdb(graph, vdb, {}),
@@ -1626,24 +1623,10 @@ async def test_rebuild_reads_the_whole_source_before_dropping_the_target(
         "chunks": lambda: rebuild_chunks_vdb(kv, vdb),
     }[target]
 
-    with pytest.raises(StorageCapabilityError, match="source unreadable"):
+    with pytest.raises((StorageCapabilityError, RuntimeError), match=error):
         await rebuild()
     vdb.drop.assert_not_awaited()
     assert list(tmp_path.iterdir()) == []  # the spool went with the failure
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "batch_read", [{}, {"Alice": '{"broken json'}], ids=["absent", "undecodable"]
-)
-async def test_rebuild_entities_refuses_a_listed_node_it_cannot_read(batch_read):
-    graph = make_graph(nodes=[node("Alice")])
-    graph.get_nodes_batch = AsyncMock(return_value=batch_read)
-    vdb = MockVDB()
-
-    with pytest.raises(RuntimeError, match="'Alice' was listed but could not be read"):
-        await rebuild_entities_vdb(graph, vdb, {})
-    vdb.drop.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1824,7 +1807,9 @@ async def test_check_reports_a_fresh_chunk_rebuild_consistent():
     # inconsistent forever.
     kv = RowKV({"c1": {"content": "hello"}, "c2": {"content": ""}, "c3": {}})
     chunks_vdb = MockVDB()
-    await rebuild_chunks_vdb(kv, chunks_vdb, batch_size=2)
+    stats = await rebuild_chunks_vdb(kv, chunks_vdb, batch_size=2)
+    assert (stats["rebuilt"], stats["skipped"]) == (1, 2)
+    assert list(chunks_vdb.records) == ["c1"]
 
     report = await check_vdb_consistency(
         make_graph(),
