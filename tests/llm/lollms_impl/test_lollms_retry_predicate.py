@@ -7,10 +7,10 @@ property of the call itself (bad credentials, a malformed request) must still
 fail fast: retrying it only re-buys the same failure.
 
 The binding uses the shared ``is_transient_aiohttp_error`` classification,
-whose own cases are pinned in ``tests/llm/test_embedding_rerank_client_timeout.py``.
-These tests pin the wiring: the attempt matrix runs through the real decorator
-with the session stubbed, and two local-server tests cover the HTTP path end to
-end (a dropped connection, and an expired ``ClientTimeout``).
+whose whole table is pinned in ``tests/llm/test_aiohttp_retry.py``. These tests
+pin the wiring: one case per branch runs through the real decorator with the
+session stubbed, and two local-server tests cover the HTTP path end to end (a
+dropped connection, and an expired ``ClientTimeout``).
 """
 
 import asyncio
@@ -26,11 +26,6 @@ from yarl import URL
 from lightrag.llm.lollms import lollms_model_if_cache
 
 pytestmark = pytest.mark.offline
-
-# An upstream that is not ready yet: a timeout, a conflict, a throttle, or 5xx.
-_TRANSIENT_STATUSES = [408, 409, 429, 500, 502, 503, 504]
-# A property of the request or the configuration, not of the moment.
-_PERMANENT_STATUSES = [400, 401, 403, 404, 422]
 
 _URL = URL("http://127.0.0.1:9600/lollms_generate")
 
@@ -84,66 +79,35 @@ async def _attempts_against(monkeypatch, error):
         lambda *args, **kwargs: _RaisingSession(counter, error),
     )
 
-    with pytest.raises(type(error)):
+    # reraise=True: the caller sees the transport error itself, not an opaque
+    # tenacity.RetryError. The pipeline's FAILED summary renders the exception
+    # message, so wrapping it would bury the only actionable half.
+    with pytest.raises(type(error)) as exc_info:
         await lollms_model_if_cache("test-model", "hello")
 
+    assert exc_info.value is error
     return counter["n"]
 
 
-async def test_connection_failure_is_retried(monkeypatch):
-    """A refused connection: the server is restarting, not gone."""
-    error = aiohttp.ClientConnectionError("Cannot connect to host")
-    assert await _attempts_against(monkeypatch, error) == 3
-
-
-@pytest.mark.parametrize("status", _TRANSIENT_STATUSES)
-async def test_transient_status_is_retried(monkeypatch, status):
-    assert await _attempts_against(monkeypatch, _http_status_error(status)) == 3
-
-
-@pytest.mark.parametrize("status", _PERMANENT_STATUSES)
-async def test_permanent_status_fails_on_the_first_attempt(monkeypatch, status):
-    """A bad key or a malformed request is not worth three requests."""
-    assert await _attempts_against(monkeypatch, _http_status_error(status)) == 1
-
-
 @pytest.mark.parametrize(
-    "error",
+    ("error", "attempts"),
     [
-        pytest.param(ValueError("boom"), id="bug"),
+        # A refused connection: the server is restarting, not gone.
+        pytest.param(
+            aiohttp.ClientConnectionError("Cannot connect to host"),
+            3,
+            id="connection",
+        ),
+        # A server still loading its model.
+        pytest.param(_http_status_error(503), 3, id="transient-status"),
+        # A bad key is not worth three requests.
+        pytest.param(_http_status_error(401), 1, id="permanent-status"),
         # A malformed base_url: no retry can fix the configuration.
-        pytest.param(aiohttp.InvalidURL("htp//bad"), id="invalid-url"),
+        pytest.param(aiohttp.InvalidURL("htp//bad"), 1, id="invalid-url"),
     ],
 )
-async def test_permanent_error_is_not_retried(monkeypatch, error):
-    assert await _attempts_against(monkeypatch, error) == 1
-
-
-async def test_timeout_is_retried(monkeypatch):
-    """An expired ``ClientTimeout(total=...)`` is a bare TimeoutError, not a
-    ``ClientError``; a slow server is as transient as a restarting one."""
-    assert await _attempts_against(monkeypatch, asyncio.TimeoutError()) == 3
-
-
-async def test_the_transport_error_survives_the_exhausted_loop(monkeypatch):
-    """The caller sees the transport error, not an opaque tenacity.RetryError.
-
-    The pipeline's FAILED summary renders the exception message, so wrapping it
-    would bury the only actionable half. Same reasoning as
-    ``lightrag.llm._error_utils``.
-    """
-    counter = {"n": 0}
-    monkeypatch.setattr(
-        "lightrag.llm.lollms.aiohttp.ClientSession",
-        lambda *args, **kwargs: _RaisingSession(
-            counter, aiohttp.ClientConnectionError("Cannot connect to host")
-        ),
-    )
-
-    with pytest.raises(aiohttp.ClientConnectionError) as exc_info:
-        await lollms_model_if_cache("test-model", "hello")
-
-    assert "Cannot connect to host" in str(exc_info.value)
+async def test_retry_follows_the_shared_classification(monkeypatch, error, attempts):
+    assert await _attempts_against(monkeypatch, error) == attempts
 
 
 class _FlakyServer:
@@ -174,7 +138,11 @@ class _FlakyServer:
                 pass
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # shutdown() waits for serve_forever's next poll; the 0.5 s default
+        # would be most of this test's runtime.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, args=(0.01,), daemon=True
+        )
 
     def __enter__(self):
         self._thread.start()
@@ -222,7 +190,7 @@ async def test_an_expired_total_timeout_is_retried_end_to_end():
                 "test-model",
                 "hello",
                 base_url=f"http://127.0.0.1:{port}",
-                timeout=0.2,
+                timeout=0.1,
             )
     finally:
         server.close()

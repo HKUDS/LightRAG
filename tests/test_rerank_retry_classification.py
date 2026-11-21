@@ -74,28 +74,19 @@ async def _rerank(session: Mock):
         )
 
 
-@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 422])
-async def test_permanent_status_is_not_retried(status):
-    """Bad key, exhausted balance or a malformed request fails on attempt one."""
+@pytest.mark.parametrize(
+    ("status", "attempts"),
+    [pytest.param(401, 1, id="permanent"), pytest.param(503, 3, id="transient")],
+)
+async def test_status_retry_follows_the_shared_classification(status, attempts):
+    """One status per branch; the full table is in tests/llm/test_aiohttp_retry.py."""
     session = _session(*[_response(status) for _ in range(3)])
 
     # reraise=True: the provider's own exception, never tenacity.RetryError.
     with pytest.raises(aiohttp.ClientResponseError) as excinfo:
         await _rerank(session)
 
-    assert session.post.call_count == 1, f"a permanent {status} must not be retried"
-    assert excinfo.value.status == status
-
-
-@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504])
-async def test_transient_status_is_retried(status):
-    """Timeouts, conflicts, rate limits and 5xx are retried to the stop limit."""
-    session = _session(*[_response(status) for _ in range(3)])
-
-    with pytest.raises(aiohttp.ClientResponseError) as excinfo:
-        await _rerank(session)
-
-    assert session.post.call_count == 3
+    assert session.post.call_count == attempts
     assert excinfo.value.status == status
 
 
@@ -110,31 +101,22 @@ async def test_transient_status_then_success_returns_results():
     assert result == [{"index": 1, "relevance_score": 0.9}]
 
 
-async def test_invalid_url_is_not_retried():
-    """A malformed base_url raises InvalidURL, which no retry can fix."""
-    session = _session(*[aiohttp.InvalidURL("not-a-url") for _ in range(3)])
-
-    with pytest.raises(aiohttp.InvalidURL):
-        await _rerank(session)
-
-    assert session.post.call_count == 1
-
-
 @pytest.mark.parametrize(
-    "make_exc",
+    ("make_exc", "attempts"),
     [
-        lambda: aiohttp.ClientConnectionError("connection reset"),
-        lambda: aiohttp.ServerDisconnectedError(),
-        lambda: aiohttp.ClientPayloadError("response body truncated"),
+        pytest.param(lambda: aiohttp.InvalidURL("not-a-url"), 1, id="invalid-url"),
+        pytest.param(
+            lambda: aiohttp.ClientConnectionError("connection reset"),
+            3,
+            id="connection",
+        ),
     ],
-    ids=["connection-error", "server-disconnected", "payload-error"],
 )
-async def test_connection_and_payload_errors_are_retried(make_exc):
-    """Dropped connections and truncated bodies are retried to the limit."""
-    first = make_exc()
+async def test_transport_retry_follows_the_shared_classification(make_exc, attempts):
+    """A transport failure raised by ``session.post`` reaches the same policy."""
     session = _session(*[make_exc() for _ in range(3)])
 
-    with pytest.raises(type(first)):
+    with pytest.raises(type(make_exc())):
         await _rerank(session)
 
-    assert session.post.call_count == 3
+    assert session.post.call_count == attempts

@@ -18,14 +18,12 @@ import contextlib
 import functools
 from types import SimpleNamespace
 
-import aiohttp
 import numpy as np
 import pytest
 from aiohttp import web
 from tenacity import wait_none
 
 from lightrag import LightRAG
-from lightrag.llm._aiohttp_retry import is_transient_aiohttp_error
 from lightrag.utils import (
     EmbeddingFunc,
     Tokenizer,
@@ -54,11 +52,15 @@ class _Recorded(Exception):
 async def _stub(*, first_delay: float = 0.0):
     """Answer every bundled HTTP binding; the first request waits ``first_delay``."""
     hits: list[str] = []
+    # Set on exit, so a first request the client has already abandoned does
+    # not hold runner.cleanup() for the rest of ``first_delay``.
+    released = asyncio.Event()
 
     async def answer(request: web.Request) -> web.StreamResponse:
         hits.append(request.path)
         if len(hits) == 1 and first_delay:
-            await asyncio.sleep(first_delay)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(released.wait(), first_delay)
         path = request.path
         if path.endswith("/api/embed"):
             return web.json_response({"model": "m", "embeddings": [_VECTOR]})
@@ -88,6 +90,7 @@ async def _stub(*, first_delay: float = 0.0):
     try:
         yield f"http://127.0.0.1:{port}", hits
     finally:
+        released.set()
         await runner.cleanup()
 
 
@@ -481,12 +484,6 @@ async def test_lightrag_timeout_reaches_a_partial_of_a_bundled_binding(
 # --------------------------------------------------------------------------
 # A client timeout is retried (it used to be the queue's unretried cancel)
 # --------------------------------------------------------------------------
-
-
-def test_aiohttp_timeout_is_transient():
-    assert is_transient_aiohttp_error(asyncio.TimeoutError())
-    assert not is_transient_aiohttp_error(asyncio.CancelledError())
-    assert not is_transient_aiohttp_error(aiohttp.InvalidURL("x"))
 
 
 @pytest.mark.asyncio

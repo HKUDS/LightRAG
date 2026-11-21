@@ -1,4 +1,4 @@
-"""Regression test: permanent Jina API errors must not be retried."""
+"""Regression test: jina_embed retries only what the shared policy calls transient."""
 
 from unittest.mock import patch
 
@@ -53,42 +53,23 @@ async def _call_count_for(exc: BaseException) -> tuple[int, BaseException]:
     return call_count, excinfo.value
 
 
-@pytest.mark.parametrize("status", [400, 401, 402, 403, 404, 422])
-async def test_permanent_status_is_not_retried(status):
-    """Bad key, exhausted balance or a malformed request fails on attempt one."""
-    calls, raised = await _call_count_for(_client_response_error(status))
-
-    assert calls == 1, f"a permanent {status} must not be retried"
-    assert raised.status == status
-
-
-@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504])
-async def test_transient_status_is_retried(status):
-    """Timeouts, conflicts, rate limits and 5xx are retried to the stop limit."""
-    calls, raised = await _call_count_for(_client_response_error(status))
-
-    assert calls == 3, f"a transient {status} should be retried to the stop limit"
-    assert raised.status == status
-
-
-async def test_invalid_url_is_not_retried():
-    """A malformed base_url raises InvalidURL, which no retry can fix."""
-    calls, _ = await _call_count_for(aiohttp.InvalidURL("not-a-valid-url"))
-
-    assert calls == 1, "InvalidURL is permanent and must not be retried"
-
-
 @pytest.mark.parametrize(
-    "exc",
+    ("exc", "attempts"),
     [
-        aiohttp.ClientConnectionError("connection reset"),
-        aiohttp.ServerDisconnectedError(),
-        aiohttp.ClientPayloadError("response body truncated"),
+        pytest.param(_client_response_error(401), 1, id="permanent-status"),
+        pytest.param(_client_response_error(503), 3, id="transient-status"),
+        pytest.param(aiohttp.InvalidURL("not-a-valid-url"), 1, id="invalid-url"),
+        pytest.param(aiohttp.ClientConnectionError("reset"), 3, id="connection"),
     ],
-    ids=["connection-error", "server-disconnected", "payload-error"],
 )
-async def test_connection_and_payload_errors_are_retried(exc):
-    """Dropped connections and truncated bodies are retried to the limit."""
-    calls, _ = await _call_count_for(exc)
+async def test_retry_follows_the_shared_classification(exc, attempts):
+    """One case per branch of ``is_transient_aiohttp_error``.
 
-    assert calls == 3, "a transient transport error should be retried"
+    The full table is pinned in ``tests/llm/test_aiohttp_retry.py``; this pins
+    that jina_embed uses it, stops at three attempts and re-raises the
+    provider's own exception.
+    """
+    calls, raised = await _call_count_for(exc)
+
+    assert calls == attempts
+    assert raised is exc
