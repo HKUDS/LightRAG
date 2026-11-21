@@ -5285,8 +5285,8 @@ async def kg_query(
     related_chunk_number = retrieval_config.get(
         "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
     )
-    kg_chunk_pick_method = retrieval_config.get(
-        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    kg_chunk_pick_method = normalize_kg_chunk_pick_method(
+        retrieval_config.get("kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD)
     )
     keyword_fallback = _kg_keyword_fallback(
         query_param.mode, ll_keywords_str, hl_keywords_str
@@ -5921,8 +5921,10 @@ async def _perform_kg_search(
     #   - ll_keywords  → used by _get_node_data (entities VDB) in local/hybrid/mix
     #   - hl_keywords  → used by _get_edge_data (relationships VDB) in global/hybrid/mix
     # Batching avoids 2-3 sequential API round-trips.
-    kg_chunk_pick_method = text_chunks_db.global_config.get(
-        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    kg_chunk_pick_method = normalize_kg_chunk_pick_method(
+        text_chunks_db.global_config.get(
+            "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+        )
     )
 
     actual_embedding_func = text_chunks_db.embedding_func
@@ -7105,6 +7107,33 @@ async def _find_most_related_edges_from_entities(
     return all_edges_data
 
 
+KG_CHUNK_PICK_METHODS = ("VECTOR", "WEIGHT")
+
+
+def normalize_kg_chunk_pick_method(value: Any) -> str:
+    """Return the canonical ``kg_chunk_pick_method`` (``'VECTOR'`` or ``'WEIGHT'``), or raise ``ValueError``."""
+    if isinstance(value, str):
+        method = value.strip().upper()
+        if method in KG_CHUNK_PICK_METHODS:
+            return method
+    raise ValueError(
+        "kg_chunk_pick_method (KG_CHUNK_PICK_METHOD) must be "
+        f"'VECTOR' or 'WEIGHT', got {value!r}"
+    )
+
+
+def _missing_vector_pick_prerequisites(
+    query: str | None, chunks_vdb: BaseVectorStorage | None
+) -> str | None:
+    """Name the missing prerequisite(s) for VECTOR chunk selection, or None if ready."""
+    has_query = isinstance(query, str) and bool(query.strip())
+    if has_query and chunks_vdb:
+        return None
+    if not has_query and not chunks_vdb:
+        return "query and chunks_vdb"
+    return "query" if not has_query else "chunks_vdb"
+
+
 def _vector_chunk_quota(max_related_chunks: int, group_count: int) -> int:
     """How many chunks VECTOR-mode selection may draw, scaled by group count.
 
@@ -7181,8 +7210,10 @@ async def _find_related_text_unit_from_entities(
         logger.warning("No entities with text chunks found")
         return []
 
-    kg_chunk_pick_method = text_chunks_db.global_config.get(
-        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    kg_chunk_pick_method = normalize_kg_chunk_pick_method(
+        text_chunks_db.global_config.get(
+            "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+        )
     )
     max_related_chunks = text_chunks_db.global_config.get(
         "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
@@ -7240,43 +7271,53 @@ async def _find_related_text_unit_from_entities(
     # Pick by vector similarity:
     #     The order of text chunks aligns with the naive retrieval's destination.
     #     When reranking is disabled, the text chunks delivered to the LLM tend to favor naive retrieval.
-    if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        num_of_chunks = _vector_chunk_quota(
-            max_related_chunks, len(entities_with_chunks)
-        )
-
-        # Get embedding function from global config
-        actual_embedding_func = text_chunks_db.embedding_func
-        if not actual_embedding_func:
-            logger.warning("No embedding function found, falling back to WEIGHT method")
+    if kg_chunk_pick_method == "VECTOR":
+        missing = _missing_vector_pick_prerequisites(query, chunks_vdb)
+        if missing is not None:
+            logger.warning(
+                f"Vector similarity chunk selection requires {missing}, "
+                "falling back to WEIGHT method"
+            )
             kg_chunk_pick_method = "WEIGHT"
         else:
-            try:
-                selected_chunk_ids = await pick_by_vector_similarity(
-                    query=query,
-                    text_chunks_storage=text_chunks_db,
-                    chunks_vdb=chunks_vdb,
-                    num_of_chunks=num_of_chunks,
-                    entity_info=entities_with_chunks,
-                    embedding_func=actual_embedding_func,
-                    query_embedding=query_embedding,
-                )
+            num_of_chunks = _vector_chunk_quota(
+                max_related_chunks, len(entities_with_chunks)
+            )
 
-                if selected_chunk_ids == []:
-                    kg_chunk_pick_method = "WEIGHT"
-                    logger.warning(
-                        "No entity-related chunks selected by vector similarity, falling back to WEIGHT method"
-                    )
-                else:
-                    logger.info(
-                        f"Selecting {len(selected_chunk_ids)} from {total_entity_chunks} entity-related chunks by vector similarity"
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Error in vector similarity sorting: {e}, falling back to WEIGHT method"
+            # Get embedding function from global config
+            actual_embedding_func = text_chunks_db.embedding_func
+            if not actual_embedding_func:
+                logger.warning(
+                    "No embedding function found, falling back to WEIGHT method"
                 )
                 kg_chunk_pick_method = "WEIGHT"
+            else:
+                try:
+                    selected_chunk_ids = await pick_by_vector_similarity(
+                        query=query,
+                        text_chunks_storage=text_chunks_db,
+                        chunks_vdb=chunks_vdb,
+                        num_of_chunks=num_of_chunks,
+                        entity_info=entities_with_chunks,
+                        embedding_func=actual_embedding_func,
+                        query_embedding=query_embedding,
+                    )
+
+                    if selected_chunk_ids == []:
+                        kg_chunk_pick_method = "WEIGHT"
+                        logger.warning(
+                            "No entity-related chunks selected by vector similarity, falling back to WEIGHT method"
+                        )
+                    else:
+                        logger.info(
+                            f"Selecting {len(selected_chunk_ids)} from {total_entity_chunks} entity-related chunks by vector similarity"
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"Error in vector similarity sorting: {e}, falling back to WEIGHT method"
+                    )
+                    kg_chunk_pick_method = "WEIGHT"
 
     if kg_chunk_pick_method == "WEIGHT":
         # Pick by entity and chunk weight:
@@ -7460,8 +7501,10 @@ async def _find_related_text_unit_from_relations(
         logger.warning("No relation-related chunks found")
         return []
 
-    kg_chunk_pick_method = text_chunks_db.global_config.get(
-        "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+    kg_chunk_pick_method = normalize_kg_chunk_pick_method(
+        text_chunks_db.global_config.get(
+            "kg_chunk_pick_method", DEFAULT_KG_CHUNK_PICK_METHOD
+        )
     )
     max_related_chunks = text_chunks_db.global_config.get(
         "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
@@ -7534,43 +7577,53 @@ async def _find_related_text_unit_from_relations(
     # Step 4: Apply the selected chunk selection algorithm
     selected_chunk_ids = []  # Initialize to avoid UnboundLocalError
 
-    if kg_chunk_pick_method == "VECTOR" and query and chunks_vdb:
-        num_of_chunks = _vector_chunk_quota(
-            max_related_chunks, len(relations_with_chunks)
-        )
-
-        # Get embedding function from global config
-        actual_embedding_func = text_chunks_db.embedding_func
-        if not actual_embedding_func:
-            logger.warning("No embedding function found, falling back to WEIGHT method")
+    if kg_chunk_pick_method == "VECTOR":
+        missing = _missing_vector_pick_prerequisites(query, chunks_vdb)
+        if missing is not None:
+            logger.warning(
+                f"Vector similarity chunk selection requires {missing}, "
+                "falling back to WEIGHT method"
+            )
             kg_chunk_pick_method = "WEIGHT"
         else:
-            try:
-                selected_chunk_ids = await pick_by_vector_similarity(
-                    query=query,
-                    text_chunks_storage=text_chunks_db,
-                    chunks_vdb=chunks_vdb,
-                    num_of_chunks=num_of_chunks,
-                    entity_info=relations_with_chunks,
-                    embedding_func=actual_embedding_func,
-                    query_embedding=query_embedding,
-                )
+            num_of_chunks = _vector_chunk_quota(
+                max_related_chunks, len(relations_with_chunks)
+            )
 
-                if selected_chunk_ids == []:
-                    kg_chunk_pick_method = "WEIGHT"
-                    logger.warning(
-                        "No relation-related chunks selected by vector similarity, falling back to WEIGHT method"
-                    )
-                else:
-                    logger.info(
-                        f"Selecting {len(selected_chunk_ids)} from {total_relation_chunks} relation-related chunks by vector similarity"
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Error in vector similarity sorting: {e}, falling back to WEIGHT method"
+            # Get embedding function from global config
+            actual_embedding_func = text_chunks_db.embedding_func
+            if not actual_embedding_func:
+                logger.warning(
+                    "No embedding function found, falling back to WEIGHT method"
                 )
                 kg_chunk_pick_method = "WEIGHT"
+            else:
+                try:
+                    selected_chunk_ids = await pick_by_vector_similarity(
+                        query=query,
+                        text_chunks_storage=text_chunks_db,
+                        chunks_vdb=chunks_vdb,
+                        num_of_chunks=num_of_chunks,
+                        entity_info=relations_with_chunks,
+                        embedding_func=actual_embedding_func,
+                        query_embedding=query_embedding,
+                    )
+
+                    if selected_chunk_ids == []:
+                        kg_chunk_pick_method = "WEIGHT"
+                        logger.warning(
+                            "No relation-related chunks selected by vector similarity, falling back to WEIGHT method"
+                        )
+                    else:
+                        logger.info(
+                            f"Selecting {len(selected_chunk_ids)} from {total_relation_chunks} relation-related chunks by vector similarity"
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"Error in vector similarity sorting: {e}, falling back to WEIGHT method"
+                    )
+                    kg_chunk_pick_method = "WEIGHT"
 
     if kg_chunk_pick_method == "WEIGHT":
         # Apply linear gradient weighted polling algorithm
