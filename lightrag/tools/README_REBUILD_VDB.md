@@ -155,11 +155,13 @@ Menu options:
   `_old` / `_temp` backups of a schema migration, as it already did on Qdrant
   and PostgreSQL: after a rebuild there is no going back to a LightRAG version
   from before model-named containers without re-embedding.
-- **A refused target is dropped only after you confirm the rebuild.** Choosing
-  the consistency check never destroys anything, so a refusal can be diagnosed
-  before it is acted on. Options 2–4 recover exactly the targets they rebuild:
-  picking option 2 leaves a refused `chunks_vdb` refused until option 3 or 4
-  runs.
+- **A refused target is dropped only after you confirm the rebuild, and only
+  once its source has been read in full.** Choosing the consistency check never
+  destroys anything, so a refusal can be diagnosed before it is acted on; and a
+  rebuild whose source fails to read leaves the refused container in place, so
+  reverting the embedding configuration still brings it back. Options 2–4
+  recover exactly the targets they rebuild: picking option 2 leaves a refused
+  `chunks_vdb` refused until option 3 or 4 runs.
 - **Embedding cost.** A rebuild re-embeds every affected record. On large
   datasets this means real API cost and time. Use the check mode first, and
   rebuild only the storages that need it.

@@ -72,7 +72,7 @@ import shutil
 import tempfile
 import time
 from uuid import uuid4
-from typing import Any, AsyncIterator, Callable, Dict, List
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List
 
 from dotenv import load_dotenv
 
@@ -152,6 +152,7 @@ YELLOW = "\033[1;33m"
 RESET = "\033[0m"
 
 ProgressCallback = Callable[[int, int | None], None]
+BeforeDrop = Callable[[], Awaitable[None]]
 
 
 def _new_stats(label: str, source_total: int) -> Dict[str, Any]:
@@ -442,8 +443,14 @@ async def _stream_upsert(
     prepare_batch,
     *,
     progress_callback: ProgressCallback | None = None,
+    before_drop: BeforeDrop | None = None,
 ) -> Dict[str, Any]:
     """Spool the prepared source to disk, then drop the target and upsert.
+
+    ``before_drop`` runs once the whole source is spooled and before the drop:
+    the place for any other destructive step on the target (the CLI recovers a
+    refused container there), so a source that cannot be read destroys
+    nothing at all.
 
     The source is read to the end BEFORE ``drop()``, and its cursors are never
     held open across embedding work: a backend cursor with an idle timeout
@@ -458,6 +465,8 @@ async def _stream_upsert(
     try:
         spool_path = os.path.join(spool_dir, "payloads.pickle")
         total = await _spool_prepared(source_batches, stats, prepare_batch, spool_path)
+        if before_drop is not None:
+            await before_drop()
         await _drop_vdb(vdb, stats["label"])
         for batch_no, payload in enumerate(_read_spool(spool_path), start=1):
             await _upsert_batch(vdb, payload, batch_no, total, stats)
@@ -484,6 +493,7 @@ async def rebuild_entities_vdb(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     progress_callback: ProgressCallback | None = None,
+    before_drop: BeforeDrop | None = None,
 ) -> Dict[str, Any]:
     """Rebuild the entities vector storage from graph nodes (authoritative source).
 
@@ -541,6 +551,7 @@ async def rebuild_entities_vdb(
         stats,
         prepare,
         progress_callback=progress_callback,
+        before_drop=before_drop,
     )
 
 
@@ -551,6 +562,7 @@ async def rebuild_relationships_vdb(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     progress_callback: ProgressCallback | None = None,
+    before_drop: BeforeDrop | None = None,
 ) -> Dict[str, Any]:
     """Rebuild the relationships vector storage from graph edges (authoritative source).
 
@@ -608,6 +620,7 @@ async def rebuild_relationships_vdb(
         stats,
         prepare,
         progress_callback=progress_callback,
+        before_drop=before_drop,
     )
 
 
@@ -617,6 +630,7 @@ async def rebuild_chunks_vdb(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     progress_callback: ProgressCallback | None = None,
+    before_drop: BeforeDrop | None = None,
 ) -> Dict[str, Any]:
     """Rebuild the chunks vector storage from the text_chunks KV store.
 
@@ -662,6 +676,7 @@ async def rebuild_chunks_vdb(
         stats,
         prepare,
         progress_callback=progress_callback,
+        before_drop=before_drop,
     )
 
 
@@ -1485,13 +1500,14 @@ class RebuildTool:
     async def recover_incompatible(self, labels: List[str]) -> None:
         """Drop + re-initialize each named target that refused to attach.
 
-        The caller must check sources and obtain explicit confirmation first.
-        A corrupt target's files are backed up before any destructive action.
-        Runs immediately before the rebuild of those targets, so a refused
-        container is destroyed only once the operator has confirmed the
-        rebuild. The rebuild helpers drop again straight after; ``drop()`` is
-        idempotent, and paying it twice is cheaper than threading the refusal
-        state through the library API.
+        The caller must obtain explicit confirmation first, and must call it
+        only once the target's whole source has been read: ``run`` does so
+        from the rebuild's ``before_drop`` hook (``_recovery_before_drop``),
+        so a refused container -- still the fallback for reverting the
+        embedding configuration -- is never destroyed by a rebuild whose
+        source then fails to read. A corrupt target's files are backed up
+        before any destructive action. The rebuild drops again straight
+        after; ``drop()`` is idempotent.
         """
         targets = self.vector_targets()
         for label in labels:
@@ -1730,6 +1746,20 @@ class RebuildTool:
         self.print_check_report(report)
         print(f"\n(check took {time.time() - start:.1f}s)")
 
+    def _recovery_before_drop(self, label: str) -> BeforeDrop:
+        """Recover a refused ``label`` only once its source is fully read.
+
+        Recovery drops the refused container, which is still the fallback the
+        operator restores by reverting the embedding configuration. Running it
+        from ``before_drop`` instead of up front means a source that fails to
+        read leaves that fallback in place.
+        """
+
+        async def recover() -> None:
+            await self.recover_incompatible([label])
+
+        return recover
+
     async def run_rebuild_entities_relations(self) -> List[Dict[str, Any]]:
         all_stats = []
         self.print_rebuild_section("entities")
@@ -1739,6 +1769,7 @@ class RebuildTool:
             self.global_config,
             batch_size=self.batch_size,
             progress_callback=self.make_progress_printer("entities"),
+            before_drop=self._recovery_before_drop("entities"),
         )
         await self.commit_baseline("entities", stats)
         all_stats.append(stats)
@@ -1749,6 +1780,7 @@ class RebuildTool:
             self.global_config,
             batch_size=self.batch_size,
             progress_callback=self.make_progress_printer("relationships"),
+            before_drop=self._recovery_before_drop("relationships"),
         )
         await self.commit_baseline("relationships", stats)
         all_stats.append(stats)
@@ -1761,6 +1793,7 @@ class RebuildTool:
             self.chunks_vdb,
             batch_size=self.batch_size,
             progress_callback=self.make_progress_printer("chunks"),
+            before_drop=self._recovery_before_drop("chunks"),
         )
         await self.commit_baseline("chunks", stats)
         return [stats]
@@ -1848,10 +1881,6 @@ class RebuildTool:
                     continue
 
                 start = time.time()
-                selected = (["entities", "relationships"] if include_graph else []) + (
-                    ["chunks"] if include_chunks else []
-                )
-                await self.recover_incompatible(selected)
                 all_stats: List[Dict[str, Any]] = []
                 if include_graph:
                     all_stats.extend(await self.run_rebuild_entities_relations())

@@ -1309,23 +1309,41 @@ async def test_check_without_refusals_is_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
+@pytest.mark.parametrize("source", ["readable", "unreadable"])
+async def test_run_recovers_a_refused_target_only_after_its_source_is_read(
+    monkeypatch, source
+):
+    # Recovery drops the refused container -- the operator's fallback for
+    # reverting the embedding configuration -- so it runs from before_drop,
+    # after the whole source was spooled, never ahead of a source read.
     tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
     tool.setup_storages = AsyncMock(return_value=True)
     tool.embedding_available = True
     tool.print_source_counts = AsyncMock()
+    tool.commit_baseline = AsyncMock()
     monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: True)
+    tool.graph = make_graph(nodes=[node("Alice")])
+    if source == "unreadable":
+        tool.graph.get_nodes_batch = AsyncMock(return_value={"Alice": "{broken"})
+    tool.entities_vdb, tool.relationships_vdb = MockVDB(), MockVDB()
+    tool.global_config = {}
     tool.incompatible_vdbs = {"entities": "refused", "chunks": "refused"}
-    tool.recover_incompatible = AsyncMock()
+    tool.recover_incompatible = AsyncMock(
+        side_effect=lambda labels: tool.entities_vdb.call_order.append(
+            f"recover:{','.join(labels)}"
+        )
+    )
 
-    ok = rebuild_vdb._new_stats("entities", 1)
-    ok["rebuilt"] = 1
-    tool.run_rebuild_entities_relations = AsyncMock(return_value=[ok])
-
-    assert await tool.run() is True
-    # Option 2 rebuilds entities + relationships only, so only those are
-    # recovered; chunks stays refused until its own rebuild.
-    tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
+    if source == "readable":
+        assert await tool.run() is True
+        # Option 2 never recovers chunks; entities recovers right before its drop.
+        assert tool.entities_vdb.call_order[:2] == ["recover:entities", "drop"]
+    else:
+        assert await tool.run() is False  # the source error is reported
+        assert tool.entities_vdb.call_order == []
+    assert all(
+        call.args[0] != ["chunks"] for call in tool.recover_incompatible.await_args_list
+    )
 
 
 # Corruption is recoverable only after confirmation and a successful backup.
