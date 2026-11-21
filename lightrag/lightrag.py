@@ -896,7 +896,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             or DEFAULT_KG_CHUNK_PICK_METHOD
         )
     )
-    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection."""
+    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection.
+
+    Case-insensitive; any other value raises ``ValueError`` at construction.
+    """
 
     enable_content_headings: bool = field(
         default_factory=lambda: get_env_value("ENABLE_CONTENT_HEADINGS", True, bool)
