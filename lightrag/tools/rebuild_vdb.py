@@ -802,7 +802,12 @@ async def check_vdb_consistency(
                 target["source_count"] += len(logical)
                 if blocked_status is not None:
                     continue
-                found = await identify(await vdb.get_by_ids(requested), set(requested))
+                # Strict: a failed read must raise, never come back as a miss
+                # that would be reported as drift. A backend without it is
+                # unverifiable here (inconclusive), not assumed complete.
+                found = await identify(
+                    await vdb.get_by_ids_strict(requested), set(requested)
+                )
                 for candidate_ids, display in logical:
                     if not any(candidate in found for candidate in candidate_ids):
                         target["missing"] += 1

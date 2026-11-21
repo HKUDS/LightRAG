@@ -201,6 +201,16 @@ async def test_exact_count_is_exact_and_scoped_to_the_workspace():
 
 
 @pytest.mark.asyncio
+async def test_strict_read_raises_where_get_by_ids_reports_nothing():
+    s = _make_storage()
+    s._client.retrieve = MagicMock(side_effect=ConnectionError("qdrant down"))
+
+    assert await s.get_by_ids(["a"]) == []
+    with pytest.raises(ConnectionError):
+        await s.get_by_ids_strict(["a"])
+
+
+@pytest.mark.asyncio
 async def test_buffered_read_does_not_touch_the_client():
     s = _make_storage()
     s._pending_vector_docs["a"] = _pending("a")

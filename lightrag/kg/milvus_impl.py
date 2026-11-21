@@ -3524,6 +3524,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order."""
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
 
@@ -3559,6 +3569,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     if row_id is not None:
                         result_map[str(row_id)] = row
             except Exception as e:
+                if strict:
+                    raise
                 logger.error(
                     f"[{self.workspace}] Error retrieving vector data for "
                     f"{len(remaining)} IDs (sample: {remaining[:5]}): {e}"

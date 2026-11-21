@@ -1975,6 +1975,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
 
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Same as ``get_by_ids``: the data is in this process, so no read can
+        fail into a miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self.get_by_ids(ids)
+
     async def get_exact_count(self) -> int:
         """Count the persisted, addressable rows of this namespace.
 

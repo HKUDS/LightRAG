@@ -208,15 +208,18 @@ Records a rebuild skips (a chunk without `content`, a node or edge without an
 id) are skipped by the check too and counted under `skipped`, so a fresh
 rebuild always checks `consistent`.
 
-A probe miss is reported `inconsistent` even when a later read or the count
-fails: the miss is a positive finding.
+Probes use `BaseVectorStorage.get_by_ids_strict()`, which raises on a failed
+read instead of answering it with a miss the way `get_by_ids()` may (OpenSearch,
+for one, returns an empty slot for an item whose shard failed). A miss is
+therefore a confirmed absence, and it is reported `inconsistent` even when a
+later read or the count fails.
 
-**Every bundled persistent vector backend counts exactly** (NanoVectorDB,
-Faiss, PostgreSQL, Milvus, Qdrant, MongoDB, OpenSearch), scoped to the
-workspace the way its reads are. A count is refused while the storage still
-buffers writes, so run the check with no writers. A third-party backend that
-does not implement `BaseVectorStorage.get_exact_count()` still reports missing
-records, but is otherwise `inconclusive`, never `consistent`.
+**Every bundled vector backend implements both strict reads and exact counts**
+(NanoVectorDB, Faiss, PostgreSQL, Milvus, Qdrant, MongoDB, OpenSearch), scoped
+to the workspace the way their reads are. A count is refused while the storage
+still buffers writes, so run the check with no writers. A third-party backend
+that lacks `get_by_ids_strict()` or `get_exact_count()` is
+`inconclusive`, never `consistent`.
 
 A `consistent` verdict rests on these assumptions, accepted because each is
 rare and a rebuild clears whatever it hides:

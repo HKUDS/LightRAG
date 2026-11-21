@@ -1375,6 +1375,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order."""
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
 
@@ -1426,6 +1436,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if original_id is not None:
                         payload_by_original_id[str(original_id)] = payload
             except Exception as e:
+                if strict:
+                    raise
                 logger.error(
                     f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
                 )

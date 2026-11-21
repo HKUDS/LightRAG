@@ -584,3 +584,13 @@ async def test_exact_count_refuses_while_writes_are_buffered(buffered):
         storage._data.count_documents.assert_not_awaited()
     else:
         assert await storage.get_exact_count() == 6
+
+
+@pytest.mark.asyncio
+async def test_strict_read_raises_where_get_by_ids_reports_nothing():
+    storage = _make_storage(MockEmbeddingFunc())
+    storage._data.find = MagicMock(side_effect=ConnectionError("mongo down"))
+
+    assert await storage.get_by_ids(["ent-1"]) == []
+    with pytest.raises(ConnectionError):
+        await storage.get_by_ids_strict(["ent-1"])

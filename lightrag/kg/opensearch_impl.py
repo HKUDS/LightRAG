@@ -7557,16 +7557,30 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
         The ``vector`` field is stripped from each result; see ``get_by_id``.
         """
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
-        # These reads answer a transport failure with a miss rather than an
-        # error (see the except blocks below), so the readiness probe follows
-        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
-        # -- it is a ValueError, and a misconfigured index must stay loud.
+        # Non-strict reads answer a transport failure with a miss rather than
+        # an error (see the except blocks below), so the readiness probe
+        # follows the same convention; strict reads raise at every one of
+        # them. A WorkspaceIndexCollisionError is never swallowed -- it is a
+        # ValueError, and a misconfigured index must stay loud. An index that
+        # is still absent after a probe that did not fail holds nothing, so a
+        # strict read answers None for every id, as get_exact_count answers 0.
         try:
             await self._recheck_index_presence()
         except OpenSearchException:
-            pass
+            if strict:
+                raise
         buffered: dict[str, dict[str, Any] | None] = {}
         remaining: list[str] = []
         async with self._flush_lock:
@@ -7592,7 +7606,20 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     body={"ids": remaining},
                     _source_excludes=["vector"],
                 )
-                for doc in response["docs"]:
+                docs = response["docs"]
+                if strict:
+                    # An item can fail on its own (a shard down) and come back
+                    # as {"error": ...} without "found": not an absence.
+                    # _interpret_mget_item raises on that and on any id or
+                    # shape mismatch; positional, so a short answer raises too.
+                    if len(docs) != len(remaining):
+                        raise RuntimeError(
+                            f"OpenSearch mget answered {len(docs)} of "
+                            f"{len(remaining)} requested ids"
+                        )
+                    for item, requested_id in zip(docs, remaining):
+                        _interpret_mget_item(item, requested_id)
+                for doc in docs:
                     if doc.get("found"):
                         data = doc["_source"]
                         data.pop("vector", None)
@@ -7601,7 +7628,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             except OpenSearchException as e:
                 if _is_missing_index_error(e):
                     self._mark_index_missing()
+                    if strict:
+                        raise
                 else:
+                    if strict:
+                        raise
                     logger.error(
                         f"[{self.workspace}] Error getting vectors by ids: {e}"
                     )

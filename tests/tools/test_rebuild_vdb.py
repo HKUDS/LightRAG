@@ -108,6 +108,7 @@ class MockVDB:
         self.drop = AsyncMock(side_effect=_drop)
         self.upsert = AsyncMock(side_effect=_upsert)
         self.get_by_ids = AsyncMock(side_effect=_get_by_ids)
+        self.get_by_ids_strict = AsyncMock(side_effect=_get_by_ids)
         self.get_exact_count = AsyncMock(side_effect=_get_exact_count)
         self.delete = AsyncMock()
         self.index_done_callback = AsyncMock()
@@ -584,9 +585,10 @@ async def test_check_batches_requests():
     )
 
     assert report["consistent"] is True
-    assert entities_vdb.get_by_ids.await_count == 3  # ceil(5 / 2)
+    assert entities_vdb.get_by_ids_strict.await_count == 3  # ceil(5 / 2)
     assert all(
-        len(call.args[0]) <= 2 for call in entities_vdb.get_by_ids.await_args_list
+        len(call.args[0]) <= 2
+        for call in entities_vdb.get_by_ids_strict.await_args_list
     )
 
 
@@ -1289,11 +1291,11 @@ async def test_check_reports_the_refusal_instead_of_all_records_missing():
     assert report["incompatible"]["entities"]
     assert report["consistent"] is False
     # The refused store is not probed at all, so it reports no false drift.
-    entities_vdb.get_by_ids.assert_not_awaited()
+    entities_vdb.get_by_ids_strict.assert_not_awaited()
     assert report["missing_entities"] == 0
     assert report["graph_entities"] == 2
     # Its healthy sibling is still probed and still reports honestly.
-    relationships_vdb.get_by_ids.assert_awaited()
+    relationships_vdb.get_by_ids_strict.assert_awaited()
     assert report["missing_relations"] == 1
 
 
@@ -1713,20 +1715,28 @@ async def test_check_relationship_verdict(edges, vdb_pairs, status, counts):
     [
         ("get_by_ids", "unidentifiable_probe_record", True, "inconclusive"),
         ("short_probe", "incomplete_probe_response", True, "inconclusive"),
+        # A failed strict read raises; without one a miss is unprovable.
+        ("strict_read", "does not support strict point reads", True, "inconclusive"),
         ("count", "does not support exact persisted counts", True, "inconclusive"),
         # A miss found before the fault is a positive finding and stands.
         ("count", "does not support exact persisted counts", False, "inconsistent"),
     ],
-    ids=["unidentifiable", "short-probe", "count", "miss-then-count"],
+    ids=["unidentifiable", "short-probe", "no-strict-read", "count", "miss-then-count"],
 )
 async def test_check_read_fault_is_never_consistent(fault, reason, seeded, status):
     entities = MockVDB()
     if seeded:
         entities.records[compute_mdhash_id("Alice", prefix="ent-")] = {}
     if fault == "get_by_ids":
-        entities.get_by_ids = AsyncMock(return_value=[{"content": "no id"}])
+        entities.get_by_ids_strict = AsyncMock(return_value=[{"content": "no id"}])
     elif fault == "short_probe":
-        entities.get_by_ids = AsyncMock(return_value=[])
+        entities.get_by_ids_strict = AsyncMock(return_value=[])
+    elif fault == "strict_read":
+        entities.get_by_ids_strict = AsyncMock(
+            side_effect=StorageCapabilityError(
+                "MockVDB does not support strict point reads"
+            )
+        )
     else:
         entities.get_exact_count = AsyncMock(
             side_effect=StorageCapabilityError(

@@ -246,6 +246,15 @@ class TestPostgresVectorEmptinessIsFailLoud:
                 await storage.get_exact_count()
             assert db.query.await_count == (0 if pending else 1)
 
+    async def test_strict_read_raises_where_get_by_ids_reports_nothing(self):
+        db = AsyncMock()
+        db.query = AsyncMock(side_effect=ConnectionError("connection reset"))
+        storage = self._storage(db)
+
+        assert await storage.get_by_ids(["ent-1"]) == []
+        with pytest.raises(ConnectionError):
+            await storage.get_by_ids_strict(["ent-1"])
+
     async def test_a_buffered_upsert_makes_it_non_empty_without_a_query(self):
         db = AsyncMock()
         db.query = AsyncMock(side_effect=AssertionError("must not be reached"))
