@@ -7448,19 +7448,18 @@ class TokenTracker:
         """Add token usage from one LLM call.
 
         Args:
-            token_counts: A dictionary containing prompt_tokens, completion_tokens, total_tokens
+            token_counts: Prompt, completion, and total token counts. A missing
+                or None total is estimated from the available component counts.
         """
-        self.prompt_tokens += token_counts.get("prompt_tokens", 0)
-        self.completion_tokens += token_counts.get("completion_tokens", 0)
+        prompt_tokens = token_counts.get("prompt_tokens") or 0
+        completion_tokens = token_counts.get("completion_tokens") or 0
+        total_tokens = token_counts.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = prompt_tokens + completion_tokens
 
-        # If total_tokens is provided, use it directly; otherwise calculate the sum
-        if "total_tokens" in token_counts:
-            self.total_tokens += token_counts["total_tokens"]
-        else:
-            self.total_tokens += token_counts.get(
-                "prompt_tokens", 0
-            ) + token_counts.get("completion_tokens", 0)
-
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
         self.call_count += 1
 
     def get_usage(self):

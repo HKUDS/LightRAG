@@ -405,6 +405,40 @@ def _make_nonstreaming_client(fake_response):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("reported_total", "expected_total"), [(None, 1), (0, 0)])
+async def test_gemini_returns_text_with_partial_token_counts(
+    monkeypatch, request, reported_total, expected_total
+):
+    """google-genai usage counts may be None; the tracker must get ints.
+
+    A plain recording tracker stands in for ``TokenTracker``: the binding
+    accepts any object with ``add_usage(dict)``, so the normalization has to
+    happen before the call, not inside one particular tracker.
+    """
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    response = _make_fake_gemini_response(regular_text="answer", finish_reason="STOP")
+    response.usage_metadata.candidates_token_count = None
+    response.usage_metadata.total_token_count = reported_total
+    fake_client = _make_nonstreaming_client(response)
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+    recorded: list[dict] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Question",
+        api_key="test-key",
+        token_tracker=tracker,
+    )
+
+    assert result == "answer"
+    assert recorded == [
+        {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": expected_total}
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_gemini_max_tokens_finish_reason_marks_result_truncated(
     monkeypatch, request
 ):

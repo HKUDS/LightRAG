@@ -284,6 +284,27 @@ def _validate_gemini_response_format(response_format: Any | None) -> None:
     )
 
 
+def _usage_counts(usage: Any) -> dict[str, int]:
+    """Map Gemini ``usage_metadata`` onto the token tracker's key names.
+
+    Every google-genai count field is optional and may be ``None`` even on a
+    successful response, and ``token_tracker`` may be any object with
+    ``add_usage(dict)``, so the counts are normalized to ints here rather than
+    left to the tracker. A missing total is the sum of the components; a
+    reported total, including zero, is kept.
+    """
+    prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
+    completion_tokens = getattr(usage, "candidates_token_count", None) or 0
+    total_tokens = getattr(usage, "total_token_count", None)
+    if total_tokens is None:
+        total_tokens = prompt_tokens + completion_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:
     if not history_messages:
         return ""
@@ -593,19 +614,7 @@ async def gemini_complete_if_cache(
             finally:
                 # Track token usage after streaming completes
                 if token_tracker and usage_metadata:
-                    token_tracker.add_usage(
-                        {
-                            "prompt_tokens": getattr(
-                                usage_metadata, "prompt_token_count", 0
-                            ),
-                            "completion_tokens": getattr(
-                                usage_metadata, "candidates_token_count", 0
-                            ),
-                            "total_tokens": getattr(
-                                usage_metadata, "total_token_count", 0
-                            ),
-                        }
-                    )
+                    token_tracker.add_usage(_usage_counts(usage_metadata))
 
         return _async_stream()
 
@@ -645,13 +654,7 @@ async def gemini_complete_if_cache(
     # full-budget generation. The streaming path already tracks in a finally.
     usage = getattr(response, "usage_metadata", None)
     if token_tracker and usage:
-        token_tracker.add_usage(
-            {
-                "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-                "completion_tokens": getattr(usage, "candidates_token_count", 0),
-                "total_tokens": getattr(usage, "total_token_count", 0),
-            }
-        )
+        token_tracker.add_usage(_usage_counts(usage))
 
     def _empty_response_error(thought_len: int) -> Exception:
         """Diagnose an empty Gemini response the way the OpenAI binding does.
@@ -909,12 +912,10 @@ async def gemini_embed(
     # Track token usage if tracker is provided
     # Note: Gemini embedding API may not provide usage metadata
     if token_tracker and hasattr(response, "usage_metadata"):
-        usage = response.usage_metadata
-        token_counts = {
-            "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-            "total_tokens": getattr(usage, "total_token_count", 0),
-        }
-        token_tracker.add_usage(token_counts)
+        counts = _usage_counts(response.usage_metadata)
+        # Embedding responses carry no completion tokens.
+        counts.pop("completion_tokens")
+        token_tracker.add_usage(counts)
 
     logger.debug(
         f"Generated {len(embeddings)} Gemini embeddings with dimension {embeddings.shape[1]}"
