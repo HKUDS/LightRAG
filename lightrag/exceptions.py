@@ -105,6 +105,10 @@ class EmptySummaryResponseError(RuntimeError):
     answer that is empty after think-tag removal and sanitization, including
     ``<think>...</think>`` with nothing after it; the token-limit variant
     raises :class:`EmptyTruncatedResponseError` before it gets there.
+
+    A retry asks the LLM again, except for an answer of control characters
+    only: it is cached before sanitization empties it, so it keeps failing
+    until the LLM cache is cleared.
     """
 
 

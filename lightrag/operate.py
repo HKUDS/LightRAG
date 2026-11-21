@@ -665,12 +665,15 @@ async def _summarize_descriptions(
     # document can be retried. An answer that is empty after think-tag
     # removal is never cached (save_to_cache skips falsy content), so the
     # retry asks the LLM again.
+    # Accepted residue: an answer of control characters only is cached (it is
+    # non-empty until sanitize_text_for_encoding above runs), so a retry
+    # replays it and fails again, loudly, until the LLM cache is cleared.
     if not summary.strip():
         message = (
             f"Received empty summary for {description_type}:{description_name} "
-            f"after think-tag removal ({len(description_list)} descriptions): "
-            "model returned no answer text; if it is a thinking model, consider "
-            "disabling thinking mode for the extract role"
+            f"({len(description_list)} descriptions): the model returned no "
+            "answer text (empty, or reasoning only); if it is a thinking model, "
+            "consider disabling thinking mode for the extract role"
         )
         logger.error(message)
         raise EmptySummaryResponseError(message)
