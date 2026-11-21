@@ -15,8 +15,11 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import numpy as np
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 import pytest
+import tenacity
 
 from lightrag.llm.nvidia_openai import nvidia_openai_embed
 
@@ -90,3 +93,35 @@ async def test_explicit_api_key_is_request_local(monkeypatch):
         api_key="request-nvidia-key",
     )
     assert os.environ["OPENAI_API_KEY"] == "shared-openai-key"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_factory",
+    [
+        lambda req: RateLimitError(
+            "rate limited",
+            response=httpx.Response(429, request=req),
+            body=None,
+        ),
+        lambda req: APIConnectionError(request=req),
+        lambda req: APITimeoutError(request=req),
+    ],
+    ids=["rate_limit", "connection_error", "timeout"],
+)
+async def test_exhausted_retries_reraise_original_exception(monkeypatch, exc_factory):
+    """Exhausted @retry must propagate the original OpenAI exception, not tenacity.RetryError."""
+    req = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/embeddings")
+    expected_exc = exc_factory(req)
+    fake = _FakeAsyncOpenAI(create=AsyncMock(side_effect=expected_exc))
+    monkeypatch.setattr(nvidia_openai_embed.func.retry, "sleep", AsyncMock())
+
+    with patch("lightrag.llm.nvidia_openai.AsyncOpenAI", return_value=fake):
+        with pytest.raises(type(expected_exc)) as exc_info:
+            await nvidia_openai_embed(texts=["hello"], api_key="k")
+
+    assert exc_info.value is expected_exc
+    assert not isinstance(exc_info.value, tenacity.RetryError)
+    assert fake.embeddings.create.await_count == 3
+    assert fake.close.await_count == 3
