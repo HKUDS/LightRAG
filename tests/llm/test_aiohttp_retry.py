@@ -33,11 +33,10 @@ def _status_error(status: int) -> aiohttp.ClientResponseError:
         (408, True),
         (409, True),
         (429, True),
-        # Every 5xx, from the first code on.
+        # Every 5xx: the first code pins the threshold.
         (500, True),
-        (503, True),
-        # Every other status is a property of the request or the account.
-        (400, False),
+        # Every other status is a property of the request or the account;
+        # 499 pins the other side of the 5xx threshold.
         (401, False),
         (499, False),
     ],
