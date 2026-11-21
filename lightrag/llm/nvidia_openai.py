@@ -43,6 +43,7 @@ import numpy as np
     retry=retry_if_exception_type(
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
+    reraise=True,
 )
 async def nvidia_openai_embed(
     texts: list[str],
