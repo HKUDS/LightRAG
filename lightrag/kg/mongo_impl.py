@@ -967,30 +967,40 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Use workspace-specific index names to avoid cross-workspace conflicts
             workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
 
-            # 1. Define all indexes needed with workspace-specific names
+            # 1. Define all indexes needed with workspace-specific names.
+            #
+            # get_docs_paginated sorts by (field, _id) with _id in the SAME
+            # direction as the field, so each (field, _id) index below
+            # serves both asc and desc (MongoDB walks it backwards), and the
+            # status-prefixed variants serve a status $in filter through a
+            # SORT_MERGE. A sort with no matching index is a COLLSCAN plus an
+            # in-memory sort on every page request, so keep these in step
+            # with the sort fields get_docs_paginated accepts.
             all_indexes = [
-                # Original pagination indexes
                 {
-                    "name": f"{workspace_prefix}status_updated_at",
-                    "keys": [("status", 1), ("updated_at", -1)],
+                    "name": f"{workspace_prefix}updated_at_id",
+                    "keys": [("updated_at", -1), ("_id", -1)],
                 },
                 {
-                    "name": f"{workspace_prefix}status_created_at",
-                    "keys": [("status", 1), ("created_at", -1)],
+                    "name": f"{workspace_prefix}status_updated_at_id",
+                    "keys": [("status", 1), ("updated_at", -1), ("_id", -1)],
                 },
-                {"name": f"{workspace_prefix}updated_at", "keys": [("updated_at", -1)]},
-                {"name": f"{workspace_prefix}created_at", "keys": [("created_at", -1)]},
+                {
+                    "name": f"{workspace_prefix}created_at_id",
+                    "keys": [("created_at", -1), ("_id", -1)],
+                },
                 {"name": f"{workspace_prefix}id", "keys": [("_id", 1)]},
                 {"name": f"{workspace_prefix}track_id", "keys": [("track_id", 1)]},
-                # New file_path indexes with Chinese collation and workspace-specific names
+                # file_path sorts use the Chinese pinyin collation; an index
+                # serves a sort only when its collation matches the query's.
                 {
-                    "name": f"{workspace_prefix}file_path_zh_collation",
-                    "keys": [("file_path", 1)],
+                    "name": f"{workspace_prefix}file_path_id_zh_collation",
+                    "keys": [("file_path", 1), ("_id", 1)],
                     "collation": collation_config,
                 },
                 {
-                    "name": f"{workspace_prefix}status_file_path_zh_collation",
-                    "keys": [("status", 1), ("file_path", 1)],
+                    "name": f"{workspace_prefix}status_file_path_id_zh_collation",
+                    "keys": [("status", 1), ("file_path", 1), ("_id", 1)],
                     "collation": collation_config,
                 },
                 # Partial index on content_hash for content-based dedup lookups.
@@ -1007,27 +1017,27 @@ class MongoDocStatusStorage(DocStatusStorage):
                 # matches the MUST sort of get_docs_by_statuses_page
                 # ((created_at ASC, _id ASC) within each status branch of a
                 # status $in — the server merges the per-status keysets).
+                # It also serves get_docs_paginated's status-filtered
+                # created_at sort in either direction.
                 {
                     "name": f"{workspace_prefix}status_created_at_id_asc",
                     "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
                 },
-                # Tie-breaker indexes for get_docs_paginated's default sort
-                # (updated_at, with _id appended so tied updated_at values
-                # resolve deterministically). A compound index can still
-                # serve the opposite scan direction (MongoDB reads it
-                # backwards), so one index per shape covers both asc and
-                # desc callers as long as the tie-breaker's direction
-                # matches the primary sort's, which get_docs_paginated
-                # guarantees.
-                {
-                    "name": f"{workspace_prefix}updated_at_id_tiebreak",
-                    "keys": [("updated_at", -1), ("_id", -1)],
-                },
-                {
-                    "name": f"{workspace_prefix}status_updated_at_id_tiebreak",
-                    "keys": [("status", 1), ("updated_at", -1), ("_id", -1)],
-                },
             ]
+
+            # Indexes from earlier versions whose keys are a prefix of an
+            # index above, mapped to that replacement. They are dropped only
+            # once the replacement exists, so no sort is ever left without
+            # an index; an older version started on the same collection
+            # simply recreates them.
+            superseded_indexes = {
+                f"{workspace_prefix}updated_at": f"{workspace_prefix}updated_at_id",
+                f"{workspace_prefix}status_updated_at": f"{workspace_prefix}status_updated_at_id",
+                f"{workspace_prefix}created_at": f"{workspace_prefix}created_at_id",
+                f"{workspace_prefix}status_created_at": f"{workspace_prefix}status_created_at_id_asc",
+                f"{workspace_prefix}file_path_zh_collation": f"{workspace_prefix}file_path_id_zh_collation",
+                f"{workspace_prefix}status_file_path_zh_collation": f"{workspace_prefix}status_file_path_id_zh_collation",
+            }
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
             legacy_index_names = [
@@ -1075,6 +1085,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                         await self._data.create_index(
                             index_info["keys"], **create_kwargs
                         )
+                        existing_index_names.add(index_name)
                         logger.debug(
                             f"[{self.workspace}] Created index '{index_name}' for collection {self._collection_name}"
                         )
@@ -1086,6 +1097,24 @@ class MongoDocStatusStorage(DocStatusStorage):
                 else:
                     logger.debug(
                         f"[{self.workspace}] Index '{index_name}' already exists for collection {self._collection_name}"
+                    )
+
+            # 4. Drop superseded indexes whose replacement now exists
+            for old_name, replacement in superseded_indexes.items():
+                if (
+                    old_name not in existing_index_names
+                    or replacement not in existing_index_names
+                ):
+                    continue
+                try:
+                    await self._data.drop_index(old_name)
+                    existing_index_names.discard(old_name)
+                    logger.info(
+                        f"[{self.workspace}] Dropped index '{old_name}' from collection {self._collection_name}: superseded by '{replacement}'"
+                    )
+                except PyMongoError as drop_error:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to drop superseded index '{old_name}' from collection {self._collection_name}: {drop_error}"
                     )
 
         except PyMongoError as e:
@@ -1149,16 +1178,12 @@ class MongoDocStatusStorage(DocStatusStorage):
         skip = (page - 1) * page_size
 
         # Build sort criteria. created_at/updated_at/file_path are not unique,
-        # so without a tie-breaker MongoDB's order for tied documents is
-        # unspecified and can differ between the page-1 and page-2 queries,
-        # letting a document be skipped or repeated across pages. Append the
-        # unique _id as a secondary key, unless it is already the primary
-        # sort field. The tie-breaker uses the SAME direction as the primary
-        # sort field (not a fixed ascending), because a compound index
-        # declaring both keys in one direction can serve either asc or desc
-        # callers (MongoDB scans such an index backwards for the opposite
-        # direction); a mismatched tie-breaker direction cannot use it at
-        # all and falls back to an in-memory sort over the full result set.
+        # and MongoDB returns tied documents in an unspecified order that can
+        # differ between two page queries, skipping or repeating a document.
+        # Append _id as a tie-breaker in the SAME direction as the primary
+        # field: the (field, _id) indexes from
+        # create_and_migrate_indexes_if_not_exists then serve both directions,
+        # while a mismatched direction falls back to a COLLSCAN + SORT.
         sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
         sort_criteria = [(sort_field, sort_direction_value)]
         if sort_field != "_id":
