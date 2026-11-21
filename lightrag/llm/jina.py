@@ -110,7 +110,9 @@ async def jina_embed(
 
 
     Returns:
-        A numpy array of embeddings, one per input text.
+        A numpy array of embeddings in input order. Indexed responses are
+        validated and reordered; responses without indices retain
+        their response order for compatibility with custom endpoints.
 
     Raises:
         aiohttp.ClientError: If there is a connection error with the Jina API.
@@ -165,6 +167,15 @@ async def jina_embed(
             raise ValueError(
                 f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts"
             )
+
+        # Vector stores consume rows positionally, not by the provider's index.
+        if any("index" in row for row in data_list):
+            indices = [row.get("index") for row in data_list]
+            if any(type(index) is not int for index in indices) or set(indices) != set(
+                range(len(texts))
+            ):
+                raise ValueError("Jina API returned invalid embedding indices")
+            data_list = sorted(data_list, key=lambda row: row["index"])
 
         embeddings = np.array(
             [
