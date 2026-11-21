@@ -329,6 +329,7 @@ def _split_text_with_spans(
     keep_separator: bool | str,
     is_separator_regex: bool,
     strip_whitespace: bool,
+    known_length: int | None = None,
 ) -> list[_SpanPiece]:
     """Mirror ``RecursiveCharacterTextSplitter._split_text`` with offsets.
 
@@ -343,9 +344,16 @@ def _split_text_with_spans(
     (GHSA-26pm-px5v-8c4w).
 
     The loop below reaches the same state the recursion would, minus the wasted
-    encodes, so the output is unchanged.
+    encodes, so the output is unchanged. That holds only because the skip first
+    checks the piece's length: LangChain sends a piece below ``chunk_size`` to the
+    merge step instead of recursing, so a short text whose first separator is a
+    no-op must stop here rather than fall through to a weaker separator (down to
+    ``""``), which would fragment it. The length is computed at most once per
+    call, and not at all when the caller passes ``known_length`` (the parent has
+    already measured the piece it recurses into).
     """
     remaining: Sequence[str] = separators
+    unsplit_length: int | None = known_length
     while True:
         separator = remaining[-1]
         new_separators: Sequence[str] = []
@@ -369,17 +377,21 @@ def _split_text_with_spans(
             base_offset=base_offset,
         )
 
-        # A no-op split: one piece, identical to the input. Recursing on it would
-        # re-encode the whole text to discover it is still oversized and then land
-        # exactly here with the next separator, so advance in place instead. When
-        # no separators remain the loop exits and the piece is emitted whole, as
-        # the recursion would have.
+        # A no-op split: one piece, identical to the input. If it is oversized,
+        # recursing on it would land exactly here with the next separator, so
+        # advance in place instead. If it fits, LangChain keeps it for the merge
+        # step instead, so stop here. When no separators remain the loop exits and
+        # the piece is emitted whole, as the recursion would have.
         if (
             new_separators
             and len(splits) == 1
             and splits[0][0] == text
             and splits[0][1] == base_offset
         ):
+            if unsplit_length is None:
+                unsplit_length = length_function(text)
+            if unsplit_length < chunk_size:
+                break
             remaining = new_separators
             continue
         break
@@ -388,7 +400,8 @@ def _split_text_with_spans(
     good_splits: list[_SpanPiece] = []
     merge_separator = "" if keep_separator else separator
     for split in splits:
-        if length_function(split[0]) < chunk_size:
+        split_length = length_function(split[0])
+        if split_length < chunk_size:
             good_splits.append(split)
         else:
             if good_splits:
@@ -417,6 +430,7 @@ def _split_text_with_spans(
                         keep_separator=keep_separator,
                         is_separator_regex=is_separator_regex,
                         strip_whitespace=strip_whitespace,
+                        known_length=split_length,
                     )
                 )
     if good_splits:
