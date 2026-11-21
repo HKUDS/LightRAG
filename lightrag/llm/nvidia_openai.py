@@ -43,6 +43,12 @@ import numpy as np
     retry=retry_if_exception_type(
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # matching every other provider's retry decorator in lightrag/llm/ (see
+    # openai_embed and rerank.py), so upstream `except RateLimitError` /
+    # isinstance checks keep working and failure messages carry the
+    # provider's own text instead of a generic RetryError wrapper.
+    reraise=True,
 )
 async def nvidia_openai_embed(
     texts: list[str],
