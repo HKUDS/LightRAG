@@ -12,6 +12,13 @@ on:
     branches: [ main, dev, 'dev-*' ]
     types: [opened, synchronize, reopened, ready_for_review]
 
+# A new push to a pull request cancels that PR's runs still in progress, so
+# superseded commits stop holding runner slots. Push, dispatch and other events
+# group by run id and are never cancelled: every commit on main is still tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   offline-tests:
     name: Offline Tests (${{ matrix.python-version }}, ${{ matrix.shard }})
