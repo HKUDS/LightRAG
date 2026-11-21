@@ -314,6 +314,44 @@ def test_gemini_custom_base_url_is_preserved(monkeypatch, request):
 
 
 @pytest.mark.offline
+@pytest.mark.parametrize("value", ["true", "True", "1"])
+def test_gemini_vertexai_env_is_parsed_like_the_sdk(monkeypatch, request, value):
+    """google-genai enables Vertex AI for "true" or "1", so LightRAG must too.
+
+    Otherwise "1" is read as AI Studio mode: an API key is demanded, and the
+    client built with it is switched to Vertex AI by the SDK anyway.
+    """
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    gemini_module._get_gemini_client.cache_clear()
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", value)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    monkeypatch.delenv("LLM_BINDING_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    key = gemini_module._ensure_api_key(None)
+    client = gemini_module._get_gemini_client(key, None)
+
+    assert key == ""
+    assert client.kwargs["vertexai"] is True
+    assert client.kwargs["project"] == "test-project"
+    assert "api_key" not in client.kwargs
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("value", ["false", "0", ""])
+def test_gemini_vertexai_env_off_uses_api_key(monkeypatch, request, value):
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    gemini_module._get_gemini_client.cache_clear()
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", value)
+
+    client = gemini_module._get_gemini_client("test-key", None)
+
+    assert client.kwargs["api_key"] == "test-key"
+    assert client.kwargs["vertexai"] is False
+
+
+@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, request):
     gemini_module = _load_gemini_module(monkeypatch, request)
@@ -363,6 +401,40 @@ def _make_nonstreaming_client(fake_response):
             models=SimpleNamespace(generate_content=_fake_generate_content)
         )
     )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reported_total", "expected_total"), [(None, 1), (0, 0)])
+async def test_gemini_returns_text_with_partial_token_counts(
+    monkeypatch, request, reported_total, expected_total
+):
+    """google-genai usage counts may be None; the tracker must get ints.
+
+    A plain recording tracker stands in for ``TokenTracker``: the binding
+    accepts any object with ``add_usage(dict)``, so the normalization has to
+    happen before the call, not inside one particular tracker.
+    """
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    response = _make_fake_gemini_response(regular_text="answer", finish_reason="STOP")
+    response.usage_metadata.candidates_token_count = None
+    response.usage_metadata.total_token_count = reported_total
+    fake_client = _make_nonstreaming_client(response)
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+    recorded: list[dict] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Question",
+        api_key="test-key",
+        token_tracker=tracker,
+    )
+
+    assert result == "answer"
+    assert recorded == [
+        {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": expected_total}
+    ]
 
 
 @pytest.mark.offline
@@ -518,9 +590,16 @@ async def test_gemini_non_length_empty_response_stays_retryable(monkeypatch, req
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, request):
-    """Scope: only the token-limit case escalates. A reasoning-only response
-    that ended normally still returns empty content, with a warning."""
+@pytest.mark.parametrize("enable_cot", [True, False])
+async def test_gemini_thinking_only_stop_response_stays_retryable(
+    monkeypatch, request, enable_cot
+):
+    """A reasoning-only response that ended normally raises the retryable
+    type with enable_cot=True, exactly as it does with enable_cot=False: the
+    <think> wrapper must not turn it into an empty "answer" that skips the
+    retry (and that the query path would return as the result)."""
+    from lightrag.exceptions import EmptyTruncatedResponseError
+
     gemini_module = _load_gemini_module(monkeypatch, request)
 
     fake_client = _make_nonstreaming_client(
@@ -528,14 +607,17 @@ async def test_gemini_thinking_only_stop_response_is_unchanged(monkeypatch, requ
     )
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
 
-    result = await gemini_module.gemini_complete_if_cache(
-        model="gemini-model",
-        prompt="Extract entities",
-        api_key="test-key",
-        enable_cot=True,
-    )
+    # __wrapped__ to skip the retry loop's real backoff sleeps.
+    with pytest.raises(gemini_module.InvalidResponseError) as excinfo:
+        await gemini_module.gemini_complete_if_cache.__wrapped__(
+            model="gemini-model",
+            prompt="Extract entities",
+            api_key="test-key",
+            enable_cot=enable_cot,
+        )
 
-    assert result == ""
+    assert not isinstance(excinfo.value, EmptyTruncatedResponseError)
+    assert "model returned reasoning-only output" in str(excinfo.value)
 
 
 @pytest.mark.offline
@@ -695,3 +777,76 @@ def test_gemini_embed_retry_predicate_matches_native_genai_server_error(
     )
 
     assert would_retry is True
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_complete_exhausted_retries_reraise_the_sdk_error(
+    monkeypatch, request
+):
+    """A 503 that persists through every attempt must surface as the SDK's
+    own ServerError, not as tenacity.RetryError, so the document's error_msg
+    keeps Gemini's message and callers can still catch the SDK error."""
+    from tenacity import wait_none
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    monkeypatch.setattr(
+        gemini_module.gemini_complete_if_cache.retry, "wait", wait_none()
+    )
+
+    calls = {"n": 0}
+
+    async def _failing_generate_content(**kwargs):
+        calls["n"] += 1
+        raise _FakeGeminiServerError(503)
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(generate_content=_failing_generate_content)
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    with pytest.raises(_FakeGeminiServerError, match="503"):
+        await gemini_module.gemini_complete_if_cache(
+            model="gemini-model", prompt="hi", api_key="test-key"
+        )
+
+    assert calls["n"] == 3
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_embed_exhausted_retries_reraise_the_sdk_error(
+    monkeypatch, request
+):
+    """Same exhausted-retry path in gemini_embed: a persistent 429 must reach
+    the caller as the SDK's ClientError, not as tenacity.RetryError."""
+    from tenacity import wait_none
+
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    monkeypatch.setattr(gemini_module.gemini_embed.func.retry, "wait", wait_none())
+    monkeypatch.setattr(
+        gemini_module.types,
+        "EmbedContentConfig",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+        raising=False,
+    )
+
+    calls = {"n": 0}
+
+    async def _failing_embed_content(**kwargs):
+        calls["n"] += 1
+        raise _FakeGeminiClientError(429)
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(embed_content=_failing_embed_content)
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    with pytest.raises(_FakeGeminiClientError, match="429"):
+        await gemini_module.gemini_embed.func(["hello"], api_key="test-key")
+
+    assert calls["n"] == 3

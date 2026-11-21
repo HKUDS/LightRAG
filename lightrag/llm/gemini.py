@@ -105,6 +105,16 @@ def _normalize_gemini_base_url(base_url: str | None) -> str | None:
     return normalized
 
 
+def _use_vertexai() -> bool:
+    """Whether GOOGLE_GENAI_USE_VERTEXAI enables Vertex AI mode.
+
+    Accepts the values the google-genai SDK accepts ("true" or "1", any case).
+    The client is always built with an explicit ``vertexai`` flag, so this
+    decision, not the SDK's own environment lookup, selects the mode.
+    """
+    return os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+
+
 @lru_cache(maxsize=8)
 def _get_gemini_client(
     api_key: str, base_url: str | None, timeout: int | None = None
@@ -124,7 +134,7 @@ def _get_gemini_client(
     normalized_base_url = _normalize_gemini_base_url(base_url)
 
     # Add Vertex AI support
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = _use_vertexai()
     if use_vertexai:
         # Vertex AI mode: use project/location, NOT api_key
         client_kwargs["vertexai"] = True
@@ -139,7 +149,10 @@ def _get_gemini_client(
                 "GOOGLE_CLOUD_PROJECT must be set when using Vertex AI mode"
             )
     else:
-        # Standard Gemini API mode: use api_key
+        # Standard Gemini API mode: use api_key. Pass vertexai=False explicitly,
+        # otherwise the SDK re-reads its own environment variables (including
+        # GOOGLE_GENAI_USE_ENTERPRISE) and may still switch to Vertex AI.
+        client_kwargs["vertexai"] = False
         client_kwargs["api_key"] = api_key
 
     if normalized_base_url is not None or timeout is not None:
@@ -160,7 +173,7 @@ def _get_gemini_client(
 
 def _ensure_api_key(api_key: str | None) -> str:
     # In Vertex AI mode, API key is not required
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = _use_vertexai()
     if use_vertexai:
         # Return empty string for Vertex AI mode (not used)
         return ""
@@ -271,6 +284,27 @@ def _validate_gemini_response_format(response_format: Any | None) -> None:
     )
 
 
+def _usage_counts(usage: Any) -> dict[str, int]:
+    """Map Gemini ``usage_metadata`` onto the token tracker's key names.
+
+    Every google-genai count field is optional and may be ``None`` even on a
+    successful response, and ``token_tracker`` may be any object with
+    ``add_usage(dict)``, so the counts are normalized to ints here rather than
+    left to the tracker. A missing total is the sum of the components; a
+    reported total, including zero, is kept.
+    """
+    prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
+    completion_tokens = getattr(usage, "candidates_token_count", None) or 0
+    total_tokens = getattr(usage, "total_token_count", None)
+    if total_tokens is None:
+        total_tokens = prompt_tokens + completion_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:
     if not history_messages:
         return ""
@@ -340,6 +374,10 @@ def _extract_response_text(
         | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Gemini's message and callers can
+    # still catch google.genai.errors.APIError.
+    reraise=True,
 )
 async def gemini_complete_if_cache(
     model: str,
@@ -381,6 +419,8 @@ async def gemini_complete_if_cache(
 
     COT Integration:
     - When enable_cot=True: Thought content is wrapped in <think>...</think> tags
+      on the streaming path. A non-streaming result never carries thoughts,
+      and one with no regular text raises like any empty response.
     - When enable_cot=False: Thought content is filtered out, only regular content returned
     - Thought content is identified by the 'thought' attribute on response parts
     - Requires thinking_config to be enabled in generation_config for API to return thoughts
@@ -415,6 +455,10 @@ async def gemini_complete_if_cache(
     Raises:
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
     """
     key = _ensure_api_key(api_key)
     # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
@@ -570,19 +614,7 @@ async def gemini_complete_if_cache(
             finally:
                 # Track token usage after streaming completes
                 if token_tracker and usage_metadata:
-                    token_tracker.add_usage(
-                        {
-                            "prompt_tokens": getattr(
-                                usage_metadata, "prompt_token_count", 0
-                            ),
-                            "completion_tokens": getattr(
-                                usage_metadata, "candidates_token_count", 0
-                            ),
-                            "total_tokens": getattr(
-                                usage_metadata, "total_token_count", 0
-                            ),
-                        }
-                    )
+                    token_tracker.add_usage(_usage_counts(usage_metadata))
 
         return _async_stream()
 
@@ -622,13 +654,7 @@ async def gemini_complete_if_cache(
     # full-budget generation. The streaming path already tracks in a finally.
     usage = getattr(response, "usage_metadata", None)
     if token_tracker and usage:
-        token_tracker.add_usage(
-            {
-                "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-                "completion_tokens": getattr(usage, "candidates_token_count", 0),
-                "total_tokens": getattr(usage, "total_token_count", 0),
-            }
-        )
+        token_tracker.add_usage(_usage_counts(usage))
 
     def _empty_response_error(thought_len: int) -> Exception:
         """Diagnose an empty Gemini response the way the OpenAI binding does.
@@ -677,21 +703,13 @@ async def gemini_complete_if_cache(
 
     final_text = remove_think_tags(final_text)
 
-    # A thinking model that spent its whole budget on the reasoning trace
-    # reaches here with final_text == "<think>...</think>", which the line
-    # above strips to nothing: empty AFTER sanitization is the same broken
-    # response as empty before it, and used to be returned as a successful
-    # (if truncated) empty string. Only escalated for the token-limit case,
-    # which is deterministic and actionable; a reasoning-only response that
-    # ended normally keeps its previous behavior with a warning.
+    # A reasoning-only response reaches here with final_text ==
+    # "<think>...</think>" when enable_cot=True, which the line above strips
+    # to nothing. Empty AFTER sanitization is the same broken response as
+    # empty before it, so it raises the same way the enable_cot=False path
+    # does: fail fast on the token limit, retry otherwise.
     if not final_text.strip():
-        if length_limited:
-            raise _empty_response_error(len((thought_text or "").strip()))
-        logger.warning(
-            "Gemini response contained only reasoning content "
-            f"(finish_reason={getattr(finish_reason, 'name', finish_reason)}), "
-            "returning empty content"
-        )
+        raise _empty_response_error(len((thought_text or "").strip()))
 
     # Flag token-limit truncation so the cache layer skips persisting partial
     # output. Must stay the last transformation of final_text: any later
@@ -761,6 +779,8 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_genai_errors.ServerError)
         | retry_if_exception(_is_retryable_gemini_client_error)
     ),
+    # Same as gemini_complete_if_cache: raise the last attempt's exception.
+    reraise=True,
 )
 async def gemini_embed(
     texts: list[str],
@@ -816,6 +836,10 @@ async def gemini_embed(
     Raises:
         ValueError: If API key is not provided or configured.
         RuntimeError: If the response from Gemini is invalid or empty.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
 
     Note:
         - For dimension 3072: Embeddings are already normalized by the API
@@ -888,12 +912,10 @@ async def gemini_embed(
     # Track token usage if tracker is provided
     # Note: Gemini embedding API may not provide usage metadata
     if token_tracker and hasattr(response, "usage_metadata"):
-        usage = response.usage_metadata
-        token_counts = {
-            "prompt_tokens": getattr(usage, "prompt_token_count", 0),
-            "total_tokens": getattr(usage, "total_token_count", 0),
-        }
-        token_tracker.add_usage(token_counts)
+        counts = _usage_counts(response.usage_metadata)
+        # Embedding responses carry no completion tokens.
+        counts.pop("completion_tokens")
+        token_tracker.add_usage(counts)
 
     logger.debug(
         f"Generated {len(embeddings)} Gemini embeddings with dimension {embeddings.shape[1]}"

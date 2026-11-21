@@ -875,6 +875,67 @@ def test_docx_table_without_leading_header_row_has_no_table_headers(
     assert block.get("table_headers", [None]) == [None]
 
 
+def _one_row_table_with_first_cell_span(span_val: str | None):
+    """A 1x3 table (A, B, C) whose first cell carries ``w:gridSpan``.
+
+    ``span_val=None`` emits the element without ``w:val``.
+    """
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    for cell, text in zip(table.rows[0].cells, "ABC"):
+        _populate_cell(cell, text)
+    grid_span = OxmlElement("w:gridSpan")
+    if span_val is not None:
+        grid_span.set(qn("w:val"), span_val)
+    table.rows[0].cells[0]._tc.get_or_add_tcPr().append(grid_span)
+    return table
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("span_val", ["1", "0", "-1", "-5", None, "", "abc"])
+def test_table_grid_span_below_one_or_malformed_is_one_column(span_val) -> None:
+    """A ``w:gridSpan`` below 1, missing its value, or non-integer must not
+    shift, overwrite, or drop cells, nor fail the document."""
+    table = _one_row_table_with_first_cell_span(span_val)
+
+    assert TableExtractor.extract(table) == [["A", "B", "C"]]
+
+
+@pytest.mark.offline
+def test_table_grid_span_valid_merge_still_advances() -> None:
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    merged = table.rows[0].cells[0].merge(table.rows[0].cells[1])
+    _populate_cell(merged, "AB")
+    _populate_cell(table.rows[0].cells[2], "C")
+
+    assert TableExtractor.extract(table) == [["AB", "", "C"]]
+
+
+@pytest.mark.offline
+def test_table_grid_span_past_the_grid_keeps_first_cell() -> None:
+    """An oversized span only pushes the remaining cells off the grid."""
+    table = _one_row_table_with_first_cell_span("999999999")
+
+    assert TableExtractor.extract(table) == [["A", "", ""]]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("before_val", ["0", "-2", None, "", "abc"])
+def test_table_grid_before_below_zero_or_malformed_skips_nothing(
+    before_val,
+) -> None:
+    """``w:gridBefore`` shares the gridSpan parsing with a floor of 0."""
+    document = Document()
+    table = _filled_table(document, 1, 3)
+    node = OxmlElement("w:gridBefore")
+    if before_val is not None:
+        node.set(qn("w:val"), before_val)
+    table.rows[0]._tr.get_or_add_trPr().append(node)
+
+    assert _saved_table_metadata(document)["rows"] == [["r0c0", "r0c1", "r0c2"]]
+
+
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------
 
 

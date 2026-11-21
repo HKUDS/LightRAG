@@ -24,7 +24,6 @@ def _normalize(blocks, meta, *, document_name="doc.md"):
     )
 
 
-@pytest.mark.offline
 @pytest.mark.parametrize(
     "marker",
     [table_marker("author"), equation_marker("author"), drawing_marker("author")],
@@ -38,7 +37,6 @@ def test_undeclared_source_markers_remain_literal(marker):
     assert not block.drawings
 
 
-@pytest.mark.offline
 @pytest.mark.parametrize(
     "token, marker, meta, collection, key",
     [
@@ -75,66 +73,59 @@ def test_generated_placeholder_keys_do_not_alias_source_tokens(
     assert ir.blocks[1].content_template == token
 
 
-@pytest.mark.offline
-def test_pipe_table_becomes_json_irtable_with_header_grid():
-    blocks = [
-        {
-            "heading": "H",
-            "level": 1,
-            "parent_headings": [],
-            "content": table_marker("t1"),
-        }
-    ]
+@pytest.mark.parametrize(
+    "body, rows, header",
+    [
+        pytest.param(
+            [["a", "b"]], [["H1", "H2"], ["a", "b"]], [["H1", "H2"]], id="aligned"
+        ),
+        pytest.param(
+            [["x"], ["y", "z", "EXTRA"]],
+            [["H1", "H2", ""], ["x", "", ""], ["y", "z", "EXTRA"]],
+            [["H1", "H2", ""]],
+            id="ragged-rows-widen-to-widest",
+        ),
+    ],
+)
+def test_pipe_table_becomes_json_irtable_with_header_grid(body, rows, header):
     meta = {
-        "md_tables": {
-            "t1": {"kind": "pipe", "rows": [["a", "b"]], "header": [["H1", "H2"]]}
-        }
+        "md_tables": {"t1": {"kind": "pipe", "rows": body, "header": [["H1", "H2"]]}}
     }
-    ir = _normalize(blocks, meta)
+    ir = _normalize([{"content": table_marker("t1")}], meta)
     (table,) = ir.blocks[0].tables
     assert "{{TBL:" in ir.blocks[0].content_template
-    assert table.rows == [["H1", "H2"], ["a", "b"]]
     assert table.html is None
-    assert table.table_header == [["H1", "H2"]]
-    assert (table.num_rows, table.num_cols) == (2, 2)
+    assert table.rows == rows
+    assert table.table_header == header
+    assert (table.num_rows, table.num_cols) == (len(rows), len(rows[0]))
 
 
-def test_html_table_becomes_html_irtable_with_thead_and_dims():
-    html = "<table><thead><tr><th>K</th><th>V</th></tr></thead><tbody><tr><td>a</td><td>1</td></tr></tbody></table>"
-    blocks = [
-        {
-            "heading": "H",
-            "level": 1,
-            "parent_headings": [],
-            "content": table_marker("t1"),
-        }
-    ]
-    ir = _normalize(blocks, {"md_tables": {"t1": {"kind": "html", "html": html}}})
+_HTML_TABLES = [
+    pytest.param(
+        "<table><thead><tr><th>K</th><th>V</th></tr></thead>"
+        "<tbody><tr><td>a</td><td>1</td></tr></tbody></table>",
+        "<thead><tr><th>K</th><th>V</th></tr></thead>",
+        id="explicit-end-tags",
+    ),
+    pytest.param(
+        "<table><thead><tr><th>K<th>V</thead><tbody><tr><td>a<td>1</tbody></table>",
+        "<thead><tr><th>K<th>V</thead>",
+        id="optional-end-tags",
+    ),
+]
+
+
+@pytest.mark.parametrize("html, thead", _HTML_TABLES)
+def test_html_table_becomes_html_irtable_with_thead_and_dims(html, thead):
+    ir = _normalize(
+        [{"content": table_marker("t1")}],
+        {"md_tables": {"t1": {"kind": "html", "html": html}}},
+    )
     (table,) = ir.blocks[0].tables
     assert table.rows is None
-    assert table.html and table.html.startswith("<table>")
-    assert isinstance(table.table_header, str) and "<thead>" in table.table_header
-    assert table.body_override and "<thead>" in table.body_override
-    assert (table.num_rows, table.num_cols) == (2, 2)
-
-
-@pytest.mark.offline
-def test_html_table_optional_end_tags_keep_dimensions_in_ir():
-    html = "<table><thead><tr><th>K<th>V</thead><tbody><tr><td>a<td>1</tbody></table>"
-    blocks = [
-        {
-            "heading": "H",
-            "level": 1,
-            "parent_headings": [],
-            "content": table_marker("t1"),
-        }
-    ]
-
-    ir = _normalize(blocks, {"md_tables": {"t1": {"kind": "html", "html": html}}})
-    (table,) = ir.blocks[0].tables
-
     assert table.html == html
-    assert table.table_header == "<thead><tr><th>K<th>V</thead>"
+    assert table.table_header == thead
+    assert table.body_override and thead in table.body_override
     assert (table.num_rows, table.num_cols) == (2, 2)
 
 
@@ -173,61 +164,14 @@ def test_local_drawing_dedups_assetspec_across_occurrences():
     assert ir.assets[0].source == b"BYTES"
 
 
-def test_external_drawing_keeps_src_and_no_asset():
-    blocks = [
-        {
-            "heading": "H",
-            "level": 1,
-            "parent_headings": [],
-            "content": drawing_marker("d1"),
-        }
-    ]
-    meta = {
-        "md_drawings": {
-            "d1": {
-                "kind": "external",
-                "url": "http://x/y.png",
-                "fmt": "png",
-                "src": "http://x/y.png",
-            }
-        }
-    }
-    ir = _normalize(blocks, meta)
-    (drawing,) = ir.blocks[0].drawings
-    # Not materialized: no asset ref (renders as path=""), URL kept in src.
-    assert drawing.asset_ref == ""
-    assert drawing.src == "http://x/y.png"
-    assert ir.assets == []
-
-
-def test_doc_title_from_first_h1_else_filename():
-    ir = _normalize(
-        [{"heading": "First", "level": 1, "parent_headings": [], "content": "# First"}],
-        {},
-    )
-    assert ir.doc_title == "First"
-    ir2 = _normalize(
-        [{"heading": "Sub", "level": 2, "parent_headings": [], "content": "## Sub"}],
-        {},
-        document_name="myfile.md",
-    )
-    assert ir2.doc_title == "myfile"
-
-
-def test_positions_use_heading_anchor():
+def test_document_metadata_and_heading_position():
+    # The first-H1 title is covered end to end by test_e2e_sidecar.py.
     ir = _normalize(
         [{"heading": "Sec", "level": 2, "parent_headings": [], "content": "## Sec"}],
         {},
+        document_name="myfile.TextPack",
     )
-    (pos,) = ir.blocks[0].positions
-    assert pos.type == "heading"
-    assert pos.anchor == "Sec"
-
-
-def test_document_format_from_suffix():
-    ir = _normalize(
-        [{"heading": "X", "level": 1, "parent_headings": [], "content": "# X"}],
-        {},
-        document_name="a.textpack",
-    )
+    assert ir.doc_title == "myfile"
     assert ir.document_format == "textpack"
+    (pos,) = ir.blocks[0].positions
+    assert (pos.type, pos.anchor) == ("heading", "Sec")

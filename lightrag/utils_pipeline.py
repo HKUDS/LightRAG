@@ -1250,6 +1250,26 @@ def parsed_artifact_dir_for(
 #   - Unknown sentinel: literal string ``"unknown_source"``
 
 _LEGACY_WINDOWS_AUTHORITY_RE = re.compile(r"[A-Za-z]:\\")
+# A literal drive marker (``C:`` or the legacy ``C|``), which is what
+# ``url2pathname`` reads as a drive. Whatever follows it decides whether the
+# path is rooted: see ``_is_drive_relative_uri_path``.
+_URI_DRIVE_MARKER_RE = re.compile(r"^/*[A-Za-z][:|](.*)$", re.DOTALL)
+
+
+def _is_drive_relative_uri_path(path: str) -> bool:
+    """Return True for a URI path naming a drive with no separator after it.
+
+    Such a path (``/C:tmp/x/``) depends on the drive's current directory. It
+    is detected before ``url2pathname`` because CPython < 3.12 inserts a
+    separator after the drive and silently returns the absolute ``C:\\tmp\\x``.
+    The rest is decoded once, so an encoded separator (``%2F``, ``%5C``) still
+    counts as one, exactly as the converter reads it.
+    """
+    m = _URI_DRIVE_MARKER_RE.match(path)
+    if m is None:
+        return False
+    rest = unquote(m.group(1))
+    return bool(rest) and rest[0] not in "/\\"
 
 
 def sidecar_uri_for(parsed_artifact_dir: Path | str) -> str:
@@ -1273,6 +1293,9 @@ def _windows_sidecar_path(netloc: str, path: str) -> str | None:
         if path == "/" and _LEGACY_WINDOWS_AUTHORITY_RE.match(legacy):
             return legacy
         return None  # A UNC host: not supported, see the conventions above.
+    if _is_drive_relative_uri_path(path):
+        logger.warning(f"Unresolvable sidecar URI path {path!r}: drive-relative")
+        return None
     try:
         # Decodes exactly once and drops the slash before the drive letter.
         return url2pathname(path)

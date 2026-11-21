@@ -86,12 +86,23 @@ _RAGAS_IMPORT_ERROR: ImportError | None = None
 try:
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics import (
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
-    )
+
+    # ragas 0.4 deprecates these top-level exports in favour of
+    # ragas.metrics.collections, but the collections metrics are not accepted
+    # by ragas.evaluate() and reject LangchainLLMWrapper, so they are not a
+    # drop-in replacement. Silence only this import's notice, scoped locally.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Importing \w+ from 'ragas\.metrics' is deprecated",
+            category=DeprecationWarning,
+        )
+        from ragas.metrics import (
+            AnswerRelevancy,
+            ContextPrecision,
+            ContextRecall,
+            Faithfulness,
+        )
     from ragas.llms import LangchainLLMWrapper
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from tqdm.auto import tqdm

@@ -23,6 +23,7 @@ def _make_fake_response(content_text: str = "hello world") -> SimpleNamespace:
     """A minimal object that looks like an Anthropic Messages response."""
 
     class _Content:
+        type = "text"
         text = content_text
 
     class _Message:

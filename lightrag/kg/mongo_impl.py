@@ -134,6 +134,16 @@ _DUPLICATE_KEY_CODE = 11000
 # migration's progress cadence).
 _EDGE_MIGRATION_PROGRESS_INTERVAL = 50_000
 
+# Atlas Vector Search rejects a $vectorSearch stage whose limit exceeds
+# numCandidates ("limit should be less than or equal to numCandidates") and
+# one whose numCandidates is outside [1..10000]; the query fails rather than
+# returning fewer rows. numCandidates therefore only widens to top_k: a top_k
+# at or below the floor keeps the previous fixed pool of 100, so the default
+# query is unchanged. top_k above the ceiling (core API only; the REST
+# endpoints cap it at MAX_QUERY_TOP_K) is clamped to the ceiling too.
+_VECTOR_SEARCH_MIN_NUM_CANDIDATES = 100
+_VECTOR_SEARCH_MAX_NUM_CANDIDATES = 10_000
+
 # Ceiling on how many same-depth candidates get a degree lookup before the
 # max_nodes cap in the bidirectional BFS. node_degrees_batch itself chunks
 # its $in queries at this same size (see _NODE_DEGREES_BATCH_CHUNK_SIZE), so
@@ -967,30 +977,40 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Use workspace-specific index names to avoid cross-workspace conflicts
             workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
 
-            # 1. Define all indexes needed with workspace-specific names
+            # 1. Define all indexes needed with workspace-specific names.
+            #
+            # get_docs_paginated sorts by (field, _id) with _id in the SAME
+            # direction as the field, so each (field, _id) index below
+            # serves both asc and desc (MongoDB walks it backwards), and the
+            # status-prefixed variants serve a status $in filter through a
+            # SORT_MERGE. A sort with no matching index is a COLLSCAN plus an
+            # in-memory sort on every page request, so keep these in step
+            # with the sort fields get_docs_paginated accepts.
             all_indexes = [
-                # Original pagination indexes
                 {
-                    "name": f"{workspace_prefix}status_updated_at",
-                    "keys": [("status", 1), ("updated_at", -1)],
+                    "name": f"{workspace_prefix}updated_at_id",
+                    "keys": [("updated_at", -1), ("_id", -1)],
                 },
                 {
-                    "name": f"{workspace_prefix}status_created_at",
-                    "keys": [("status", 1), ("created_at", -1)],
+                    "name": f"{workspace_prefix}status_updated_at_id",
+                    "keys": [("status", 1), ("updated_at", -1), ("_id", -1)],
                 },
-                {"name": f"{workspace_prefix}updated_at", "keys": [("updated_at", -1)]},
-                {"name": f"{workspace_prefix}created_at", "keys": [("created_at", -1)]},
+                {
+                    "name": f"{workspace_prefix}created_at_id",
+                    "keys": [("created_at", -1), ("_id", -1)],
+                },
                 {"name": f"{workspace_prefix}id", "keys": [("_id", 1)]},
                 {"name": f"{workspace_prefix}track_id", "keys": [("track_id", 1)]},
-                # New file_path indexes with Chinese collation and workspace-specific names
+                # file_path sorts use the Chinese pinyin collation; an index
+                # serves a sort only when its collation matches the query's.
                 {
-                    "name": f"{workspace_prefix}file_path_zh_collation",
-                    "keys": [("file_path", 1)],
+                    "name": f"{workspace_prefix}file_path_id_zh_collation",
+                    "keys": [("file_path", 1), ("_id", 1)],
                     "collation": collation_config,
                 },
                 {
-                    "name": f"{workspace_prefix}status_file_path_zh_collation",
-                    "keys": [("status", 1), ("file_path", 1)],
+                    "name": f"{workspace_prefix}status_file_path_id_zh_collation",
+                    "keys": [("status", 1), ("file_path", 1), ("_id", 1)],
                     "collation": collation_config,
                 },
                 # Partial index on content_hash for content-based dedup lookups.
@@ -1007,11 +1027,27 @@ class MongoDocStatusStorage(DocStatusStorage):
                 # matches the MUST sort of get_docs_by_statuses_page
                 # ((created_at ASC, _id ASC) within each status branch of a
                 # status $in — the server merges the per-status keysets).
+                # It also serves get_docs_paginated's status-filtered
+                # created_at sort in either direction.
                 {
                     "name": f"{workspace_prefix}status_created_at_id_asc",
                     "keys": [("status", 1), ("created_at", 1), ("_id", 1)],
                 },
             ]
+
+            # Indexes from earlier versions whose keys are a prefix of an
+            # index above, mapped to that replacement. They are dropped only
+            # once the replacement exists, so no sort is ever left without
+            # an index; an older version started on the same collection
+            # simply recreates them.
+            superseded_indexes = {
+                f"{workspace_prefix}updated_at": f"{workspace_prefix}updated_at_id",
+                f"{workspace_prefix}status_updated_at": f"{workspace_prefix}status_updated_at_id",
+                f"{workspace_prefix}created_at": f"{workspace_prefix}created_at_id",
+                f"{workspace_prefix}status_created_at": f"{workspace_prefix}status_created_at_id_asc",
+                f"{workspace_prefix}file_path_zh_collation": f"{workspace_prefix}file_path_id_zh_collation",
+                f"{workspace_prefix}status_file_path_zh_collation": f"{workspace_prefix}status_file_path_id_zh_collation",
+            }
 
             # 2. Handle legacy index cleanup: only drop old indexes that exist in THIS collection
             legacy_index_names = [
@@ -1059,6 +1095,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                         await self._data.create_index(
                             index_info["keys"], **create_kwargs
                         )
+                        existing_index_names.add(index_name)
                         logger.debug(
                             f"[{self.workspace}] Created index '{index_name}' for collection {self._collection_name}"
                         )
@@ -1070,6 +1107,24 @@ class MongoDocStatusStorage(DocStatusStorage):
                 else:
                     logger.debug(
                         f"[{self.workspace}] Index '{index_name}' already exists for collection {self._collection_name}"
+                    )
+
+            # 4. Drop superseded indexes whose replacement now exists
+            for old_name, replacement in superseded_indexes.items():
+                if (
+                    old_name not in existing_index_names
+                    or replacement not in existing_index_names
+                ):
+                    continue
+                try:
+                    await self._data.drop_index(old_name)
+                    existing_index_names.discard(old_name)
+                    logger.info(
+                        f"[{self.workspace}] Dropped index '{old_name}' from collection {self._collection_name}: superseded by '{replacement}'"
+                    )
+                except PyMongoError as drop_error:
+                    logger.warning(
+                        f"[{self.workspace}] Failed to drop superseded index '{old_name}' from collection {self._collection_name}: {drop_error}"
                     )
 
         except PyMongoError as e:
@@ -1132,9 +1187,17 @@ class MongoDocStatusStorage(DocStatusStorage):
         # Calculate skip value
         skip = (page - 1) * page_size
 
-        # Build sort criteria
+        # Build sort criteria. created_at/updated_at/file_path are not unique,
+        # and MongoDB returns tied documents in an unspecified order that can
+        # differ between two page queries, skipping or repeating a document.
+        # Append _id as a tie-breaker in the SAME direction as the primary
+        # field: the (field, _id) indexes from
+        # create_and_migrate_indexes_if_not_exists then serve both directions,
+        # while a mismatched direction falls back to a COLLSCAN + SORT.
         sort_direction_value = 1 if sort_direction.lower() == "asc" else -1
         sort_criteria = [(sort_field, sort_direction_value)]
+        if sort_field != "_id":
+            sort_criteria.append(("_id", sort_direction_value))
 
         # Query for paginated data with Chinese collation for file_path sorting
         if sort_field == "file_path":
@@ -4763,6 +4826,12 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Convert numpy array to a list to ensure compatibility with MongoDB
             query_vector = embedding[0].tolist()
 
+        # Atlas rejects limit > numCandidates and numCandidates > 10000 (see
+        # _VECTOR_SEARCH_MIN_NUM_CANDIDATES above): widen the candidate pool
+        # to top_k, never below the previous fixed 100.
+        limit = min(top_k, _VECTOR_SEARCH_MAX_NUM_CANDIDATES)
+        num_candidates = max(limit, _VECTOR_SEARCH_MIN_NUM_CANDIDATES)
+
         # Define the aggregation pipeline with the converted query vector
         pipeline = [
             {
@@ -4770,8 +4839,8 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     "index": self._index_name,  # Use stored index name for consistency
                     "path": "vector",
                     "queryVector": query_vector,
-                    "numCandidates": 100,  # Adjust for performance
-                    "limit": top_k,
+                    "numCandidates": num_candidates,
+                    "limit": limit,
                 }
             },
             {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
@@ -5077,6 +5146,23 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         return await collection.count_documents({}, limit=1) == 0
 
+    async def get_exact_count(self) -> int:
+        """Exact document count of this collection. See ``BaseVectorStorage``.
+
+        No ``except``: a failed read propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+            if self._data is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] MongoDB collection is not connected, "
+                    f"so {self.namespace} cannot be counted"
+                )
+            collection = self._data
+
+        return int(await collection.count_documents({}))
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer.
 
@@ -5110,6 +5196,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order."""
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
 
@@ -5141,6 +5237,8 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     key = str(result_dict.get("id", result_dict.get("_id")))
                     formatted_map[key] = result_dict
             except Exception as e:
+                if strict:
+                    raise
                 logger.error(
                     f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
                 )

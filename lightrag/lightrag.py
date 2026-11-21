@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 import asyncio
+import math
 import contextvars
 import os
 import threading
@@ -25,7 +26,6 @@ from typing import (
     Awaitable,
     Callable,
     Coroutine,
-    Iterator,
     NoReturn,
     TypeVar,
     cast,
@@ -78,6 +78,7 @@ from lightrag.constants import (
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_RERANK_TIMEOUT,
     DEFAULT_SOURCE_IDS_LIMIT_METHOD,
+    SOURCE_IDS_LIMIT_METHOD_FIFO,
     DEFAULT_MAX_FILE_PATHS,
     DEFAULT_MAX_PARALLEL_ANALYZE,
     DEFAULT_MAX_PARALLEL_PARSE_NATIVE,
@@ -99,7 +100,7 @@ from lightrag.constants import (
     KG_WRITE_STATE_PRE_GRAPH,
 )
 from lightrag.utils import get_env_value
-from lightrag.parser.routing import _chunk_env_int
+from lightrag.parser.routing import _chunk_env_int, validate_chunk_token_sizes
 
 from lightrag.kg import (
     deprecated_storage_message,
@@ -159,6 +160,8 @@ from lightrag.operate import (
     kg_query,
     merge_nodes_and_edges,
     naive_query,
+    normalize_keyword_extraction_json_mode,
+    normalize_kg_chunk_pick_method,
     rebuild_knowledge_from_chunks,
 )
 from lightrag.utils_pipeline import (
@@ -229,6 +232,9 @@ from lightrag.utils import (
     make_relation_vdb_ids,
     subtract_source_ids,
     make_relation_chunk_key,
+    apply_source_ids_limit,
+    has_chunk_tracking_row,
+    merge_source_ids,
     normalize_entity_name,
     normalize_source_ids_limit_method,
     normalize_string_list,
@@ -236,6 +242,7 @@ from lightrag.utils import (
     TokenLimitTruncationTally,
     LLM_TRUNCATION_METADATA_KEY,
     merge_truncation_metadata,
+    reject_reasoning_only_answer,
 )
 from lightrag.types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -271,8 +278,10 @@ _SyncResultT = TypeVar("_SyncResultT")
 # ``adelete_by_relation``, ``aedit_entity``, ``aedit_relation``,
 # ``acreate_entity``, ``acreate_relation``, ``amerge_entities``,
 # ``ainsert_custom_kg``) run their body inside ``LightRAG._admin_write_gate``.
-# On a graph storage that declares ``requires_single_writer`` (only
-# ``NetworkXStorage``) the gate takes, in this fixed order:
+# Where ``_admin_write_gate_required()`` holds (a ``requires_single_writer``
+# graph storage, i.e. ``NetworkXStorage``, or chunk tracking on a KV storage
+# that buffers per process, i.e. ``OpenSearchKVStorage``) the gate takes, in
+# this fixed order:
 #
 #     admin lock (WAITS, bounded)  ->  pipeline ``busy`` reservation (REFUSES)
 #                                  ->  the per-entity / per-edge keyed locks
@@ -288,6 +297,12 @@ _SyncResultT = TypeVar("_SyncResultT")
 # the lock order above trivially acyclic.
 ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX = "GraphAdmin"
 ADMIN_WRITE_LOCK_KEY = "admin"
+
+# Re-flushes of a chunk-tracking write a commit kept after a transient failure,
+# and the first backoff (doubled per attempt: 0.5 s, 1 s, 2 s). Spent while the
+# caller still holds ``busy``; see ``LightRAG._require_tracking_commit_landed``.
+_TRACKING_RETAINED_FLUSH_RETRIES = 3
+_TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS = 0.5
 
 # How long an admin write waits for a peer admin write to finish before it is
 # refused (HTTP 409 with ``ADMIN_WRITE_LOCK_BUSY_PREFIX``). Admin writes are
@@ -749,6 +764,62 @@ def _run_sync(
 _REFERENCE_CARRYING_CACHE_TYPES: frozenset[str] = frozenset({"extract"})
 
 
+def _custom_kg_chunk_ids(source_id: Any) -> list[str]:
+    """Split a stored ``source_id`` into real chunk ids, dropping the
+    no-source placeholders (``UNKNOWN`` / ``manual_creation``)."""
+    if not isinstance(source_id, str):
+        return []
+    return [
+        chunk_id
+        for chunk_id in (part.strip() for part in source_id.split(GRAPH_FIELD_SEP))
+        if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+    ]
+
+
+def _custom_kg_tracking_baseline(stored_row: Any, existing_source_id: Any) -> list[str]:
+    """The chunk list an ``ainsert_custom_kg`` write merges its chunk into.
+
+    The tracking row is authoritative whenever it is present, even empty; the
+    graph object's ``source_id`` is the baseline only when no row exists, the
+    same order the pipeline merge and the purge read them in.
+    """
+    if has_chunk_tracking_row(stored_row):
+        return [
+            chunk_id
+            for chunk_id in stored_row["chunk_ids"]
+            if chunk_id and chunk_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+        ]
+    return _custom_kg_chunk_ids(existing_source_id)
+
+
+def _merge_custom_kg_file_paths(
+    existing_file_path: Any,
+    new_file_path: str,
+    *,
+    max_file_paths: int,
+    placeholder: str,
+    limit_method: str,
+) -> str:
+    """Union an existing ``file_path`` with a custom KG one, capped the way the
+    pipeline merge caps it (``max_file_paths`` plus a ``...placeholder...``
+    marker)."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    existing = existing_file_path if isinstance(existing_file_path, str) else ""
+    for path in [*existing.split(GRAPH_FIELD_SEP), new_file_path]:
+        path = path.strip()
+        if not path or path.startswith(f"...{placeholder}") or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    if len(paths) > max_file_paths:
+        if limit_method == SOURCE_IDS_LIMIT_METHOD_FIFO:
+            paths = paths[-max_file_paths:] + [f"...{placeholder}...(FIFO)"]
+        else:
+            paths = paths[:max_file_paths] + [f"...{placeholder}...(KEEP Old)"]
+    return GRAPH_FIELD_SEP.join(paths)
+
+
 @final
 @dataclass
 class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
@@ -818,9 +889,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     """Number of related chunks to grab from single entity or relation."""
 
     kg_chunk_pick_method: str = field(
-        default=get_env_value("KG_CHUNK_PICK_METHOD", DEFAULT_KG_CHUNK_PICK_METHOD, str)
+        default_factory=lambda: (
+            get_env_value(
+                "KG_CHUNK_PICK_METHOD", DEFAULT_KG_CHUNK_PICK_METHOD, str
+            ).strip()
+            or DEFAULT_KG_CHUNK_PICK_METHOD
+        )
     )
-    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection."""
+    """Method for selecting text chunks: 'WEIGHT' for weight-based selection, 'VECTOR' for embedding similarity-based selection.
+
+    Case-insensitive; any other value raises ``ValueError`` at construction.
+    """
 
     enable_content_headings: bool = field(
         default_factory=lambda: get_env_value("ENABLE_CONTENT_HEADINGS", True, bool)
@@ -1435,8 +1514,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS``; an explicit value below the
     embedding timeout is refused in ``__post_init__``.
 
-    Applies only where the graph storage declares ``requires_single_writer``
-    (``NetworkXStorage``); other backends never take the gate.
+    Applies only where ``_admin_write_gate_required()`` holds (a
+    ``requires_single_writer`` graph storage, or chunk tracking on a KV storage
+    that buffers per process); other backends never take the gate.
 
     Declared LAST, away from the ``default_embedding_timeout`` it is derived
     from, because ``LightRAG`` is a plain dataclass without ``kw_only``: field
@@ -1491,6 +1571,30 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     ``working_dir`` (``WORKING_DIR/<workspace>/kv_workspace_config.json``);
     no setting moves it. See docs/design/ConfigurationStorageContract.md.
     """
+
+    keyword_extraction_json_mode: str = field(
+        default_factory=lambda: os.getenv("KEYWORD_EXTRACTION_JSON_MODE") or "auto"
+    )
+    """``response_format`` policy for query keyword extraction: ``auto``, ``json_object``
+    or ``none``.
+
+    - ``auto`` (default): ask for ``response_format={"type": "json_object"}`` first, and
+      retry the same prompt once *without* it, but only when the provider rejects that
+      field itself. This keeps the API-enforced JSON constraint everywhere it works and
+      confines the fallback to servers that cannot accept it (LM Studio, for example,
+      allows only ``json_schema``/``text`` and answers HTTP 400).
+    - ``json_object``: always send the constraint. Pick this for a provider known to
+      accept it when you also want failures to be loud rather than silently retried.
+    - ``none``: never send it, for a provider known to reject it. The keyword parser
+      tolerates fenced and repaired JSON, but it cannot turn genuinely free-form text
+      into keywords, so expect empty results from models that would have honored the
+      constraint.
+
+    Default: ``auto``. Set ``KEYWORD_EXTRACTION_JSON_MODE=auto|json_object|none`` in
+    .env.
+
+    Declared at the end, away from ``entity_extraction_use_json``: field order is
+    public API. See ``tests/test_dataclass_positional_compatibility.py``."""
 
     def _mark_addon_params_dirty(self) -> None:
         self._addon_params_dirty = True
@@ -1556,8 +1660,25 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         return self._addon_params
 
     def _set_runtime_addon_params(self, addon_params: Mapping[str, Any] | None) -> None:
-        self._replace_addon_params(addon_params, mark_dirty=True)
-        self._apply_chunk_size_overlay()
+        # All-or-nothing: a replacement the overlay rejects (a chunk size
+        # below MIN_CHUNK_TOKEN_SIZE) must leave the previous configuration
+        # in force, not a half-applied one.
+        previous = (
+            self._addon_params,
+            self.chunk_token_size,
+            self.chunk_overlap_token_size,
+        )
+        try:
+            self._replace_addon_params(addon_params, mark_dirty=True)
+            self._apply_chunk_size_overlay()
+        except BaseException:
+            (
+                self._addon_params,
+                self.chunk_token_size,
+                self.chunk_overlap_token_size,
+            ) = previous
+            self._mark_addon_params_dirty()
+            raise
 
     def _apply_chunk_size_overlay(self) -> None:
         """Reconcile chunk-size config across all four configuration tiers.
@@ -1668,6 +1789,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 sub = {}
                 chunker_cfg[strategy_key] = sub
             sub.setdefault("chunk_token_size", size_val)
+
+        # Every slot is resolved now, so this one check covers env, the
+        # legacy constructor fields and addon_params alike.
+        validate_chunk_token_sizes(chunker_cfg)
 
         # Back-fill legacy instance fields → always int afterwards.
         # Overlap mirrors the F-strategy resolved value, matching the
@@ -1816,6 +1941,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 self.doc_status_storage,
                 self.config_storage or default_configuration_storage(self.kv_storage),
             ),
+        )
+
+        # Fail fast on a mistyped policy instead of at the first query, and store
+        # the canonical spelling so a constructor argument such as "AUTO" works.
+        self.keyword_extraction_json_mode = normalize_keyword_extraction_json_mode(
+            self.keyword_extraction_json_mode
+        )
+        self.kg_chunk_pick_method = normalize_kg_chunk_pick_method(
+            self.kg_chunk_pick_method
         )
 
         # Bounded scheduling page size: 0 disables paging (single-scan legacy
@@ -3716,6 +3850,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # write PROCESSED (the commit record) last with the
                     # journal cleared.
                     await self._insert_done()
+                    # A retained tracking write would outlive busy; raising
+                    # sends the operation down the op_failed discard path.
+                    await self._require_tracking_commit_landed()
 
                     # Patch mode AND resumed creates, not patch alone. Patch
                     # merges pass None for the anchor storages, so this union
@@ -5095,6 +5232,69 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 pipeline_status["latest_message"] = log_message
                 append_pipeline_history(pipeline_status, log_message)
 
+    async def _require_tracking_commit_landed(self) -> None:
+        """Fail when chunk tracking is still buffered after a commit returned.
+
+        Call it after ``_insert_done()`` and BEFORE the PROCESSED write, from a
+        caller that holds the pipeline ``busy`` reservation and has a failure
+        path that discards the buffers (the document pipeline's batch abort,
+        ``ainsert_custom_chunks``' ``op_failed`` branch, the admin-write
+        gate's failure exit for ``ainsert_custom_kg``). It never discards
+        anything itself: on the pipeline other in-flight documents share the
+        buffer, and dropping their rows before the abort flag is set lets one
+        of them reach PROCESSED with its tracking gone.
+
+        A tracking row is a whole row produced by read-modify-write. Retained
+        in a per-process buffer past ``busy`` (``OpenSearchKVStorage`` keeps a
+        retryable bulk failure and returns normally), it lands later over
+        whatever another worker committed in between and erases that writer's
+        attribution. So a retained write is re-flushed a few times with
+        backoff while ``busy`` is still held, and when it still does not land
+        the caller fails with ``IndexFlushError``: the same path, and the same
+        recovery, as a tracking flush that raised. Only storages declaring
+        ``buffers_writes_per_process`` are asked. See *Per-process tracking
+        buffers* in ``docs/design/PipelineConcurrencyContract.md``.
+        """
+        storages = [
+            storage_inst
+            for storage_inst in (
+                getattr(self, "entity_chunks", None),
+                getattr(self, "relation_chunks", None),
+            )
+            if storage_inst is not None
+            and getattr(type(storage_inst), "buffers_writes_per_process", False)
+        ]
+        retained: list = []
+        for attempt in range(_TRACKING_RETAINED_FLUSH_RETRIES + 1):
+            retained = [
+                storage_inst
+                for storage_inst in storages
+                if await storage_inst.has_retained_writes()
+            ]
+            if not retained or attempt == _TRACKING_RETAINED_FLUSH_RETRIES:
+                break
+            delay = _TRACKING_RETAINED_FLUSH_BACKOFF_SECONDS * (2**attempt)
+            logger.warning(
+                "Chunk tracking kept a transiently failed write buffered "
+                f"({', '.join(str(s.namespace) for s in retained)}); "
+                f"re-flushing in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{_TRACKING_RETAINED_FLUSH_RETRIES})"
+            )
+            await asyncio.sleep(delay)
+            await self._flush_storages(retained)
+        if not retained:
+            return
+        storage_inst = retained[0]
+        namespace = getattr(storage_inst, "final_namespace", None) or getattr(
+            storage_inst, "namespace", ""
+        )
+        cause = RuntimeError(
+            "chunk tracking was not made durable: the storage kept a "
+            "transiently failed write buffered after "
+            f"{_TRACKING_RETAINED_FLUSH_RETRIES} re-flushes"
+        )
+        raise IndexFlushError(type(storage_inst).__name__, namespace, cause) from cause
+
     async def _insert_done_with_cleanup(self) -> None:
         """``_insert_done`` for UPSERT-oriented direct (non-pipeline) callers,
         discarding the pending buffers on a flush failure.
@@ -5156,6 +5356,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         evidence sources. Explicit weights may boost that baseline; omit the
         relationship ``source_id`` to use a fractional source-less weight.
 
+        Writing an entity or relation that already exists replaces its
+        description, type and keywords but MERGES its provenance: the custom
+        chunk joins the ``entity_chunks`` / ``relation_chunks`` row, the graph
+        ``source_id`` and ``file_path``, and an existing relationship endpoint
+        gains the relationship's chunk. A merged relation keeps
+        ``max(custom weight, stored weight, evidence count)``. Without the
+        merge, deleting an earlier document would delete the curated object
+        with it (see ``docs/ProgramingWithCore.md``, *Insert Custom KG*).
+
         .. warning:: (direct-writer audit)
            This path is OUTSIDE the document-level recovery guarantee. It has
            no durable operation journal and does not prewrite
@@ -5186,6 +5395,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             interrupted: BaseException | None = None
             try:
                 from lightrag.utils_graph import (
+                    _persist_graph_updates,
+                    apply_relation_weight_floor,
                     relation_evidence_source_ids,
                     validate_relation_weight,
                 )
@@ -5429,22 +5640,235 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 workspace = self.workspace or ""
                 namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
 
+                async def _merge_existing_provenance(
+                    global_config: dict[str, Any],
+                ) -> dict[str, Any]:
+                    """Fold this call's chunks into the objects already stored.
+
+                    The caller's description, type and keywords replace the
+                    stored ones, but provenance is MERGED the way the pipeline
+                    merge does it: each tracking row (the purge's authority)
+                    gains the custom chunks, an entity also gains the chunks of
+                    the relationships naming it, and the graph ``source_id`` /
+                    ``file_path`` keep what earlier documents contributed.
+                    Without this, deleting an earlier document finds no
+                    remaining source in the tracking row and deletes the
+                    curated object with it.
+
+                    Mutates ``entity_nodes`` / ``all_entities_data`` in place
+                    and returns what the writes below need: the tracking rows,
+                    the merged edge fields keyed by the sorted endpoint pair,
+                    the updated stored endpoints, and the ``source_id`` of each
+                    placeholder endpoint.
+                    """
+                    limit_method = global_config["source_ids_limit_method"]
+
+                    def _merge_paths(existing: Any, new: str) -> str:
+                        return _merge_custom_kg_file_paths(
+                            existing,
+                            new,
+                            max_file_paths=global_config["max_file_paths"],
+                            placeholder=global_config["file_path_more_placeholder"],
+                            limit_method=limit_method,
+                        )
+
+                    def _merge_tracking(
+                        stored_row: Any, stored_source_id: Any, new_ids: list[str]
+                    ) -> tuple[list[str], bool]:
+                        baseline = _custom_kg_tracking_baseline(
+                            stored_row, stored_source_id
+                        )
+                        full = merge_source_ids(baseline, new_ids)
+                        changed = bool(full) and (
+                            not has_chunk_tracking_row(stored_row) or full != baseline
+                        )
+                        return full, changed
+
+                    # Every chunk this call attributes to each entity: its own
+                    # declaration first, then each relationship naming it.
+                    entity_new_ids: dict[str, list[str]] = {
+                        name: _custom_kg_chunk_ids(node_data["source_id"])
+                        for name, node_data in entity_nodes
+                    }
+                    first_relation_source: dict[str, str] = {}
+                    for relationship_data in deduped_relationships.values():
+                        for name in (
+                            relationship_data["src_id"],
+                            relationship_data["tgt_id"],
+                        ):
+                            entity_new_ids.setdefault(name, []).extend(
+                                _custom_kg_chunk_ids(relationship_data["source_id"])
+                            )
+                            first_relation_source.setdefault(
+                                name, relationship_data["source_id"]
+                            )
+
+                    names = sorted(entity_new_ids)
+                    stored_nodes: dict[str, dict] = {}
+                    entity_rows: dict[str, Any] = {}
+                    if names:
+                        stored_nodes = (
+                            await self.chunk_entity_relation_graph.get_nodes_batch(
+                                names
+                            )
+                        )
+                        entity_rows = dict(
+                            zip(names, await self.entity_chunks.get_by_ids(names))
+                        )
+
+                    explicit = {name: node_data for name, node_data in entity_nodes}
+                    entity_vdb_data = {
+                        dp["entity_name"]: dp for dp in all_entities_data
+                    }
+                    entity_tracking: dict[str, dict[str, Any]] = {}
+                    endpoint_updates: list[tuple[str, dict[str, Any]]] = []
+                    placeholder_source_ids: dict[str, str] = {}
+                    for name in names:
+                        stored = stored_nodes.get(name)
+                        full, changed = _merge_tracking(
+                            entity_rows.get(name),
+                            stored.get("source_id") if stored else None,
+                            entity_new_ids[name],
+                        )
+                        if changed:
+                            entity_tracking[name] = {
+                                "chunk_ids": full,
+                                "count": len(full),
+                            }
+                        limited = apply_source_ids_limit(
+                            full,
+                            global_config["max_source_ids_per_entity"],
+                            limit_method,
+                            identifier=f"`{name}`",
+                        )
+                        merged_source_id = GRAPH_FIELD_SEP.join(limited)
+                        node_data = explicit.get(name)
+                        if node_data is not None:
+                            if merged_source_id:
+                                node_data["source_id"] = merged_source_id
+                            if stored is not None:
+                                node_data["file_path"] = _merge_paths(
+                                    stored.get("file_path"), node_data["file_path"]
+                                )
+                            entity_vdb_data[name]["source_id"] = node_data["source_id"]
+                            entity_vdb_data[name]["file_path"] = node_data["file_path"]
+                        elif stored is not None:
+                            # An existing endpoint keeps its own fields and
+                            # only gains the relationships' chunks.
+                            if merged_source_id and merged_source_id != stored.get(
+                                "source_id"
+                            ):
+                                endpoint_updates.append(
+                                    (name, {**stored, "source_id": merged_source_id})
+                                )
+                        else:
+                            placeholder_source_ids[name] = (
+                                merged_source_id or first_relation_source[name]
+                            )
+
+                    relation_tracking: dict[str, dict[str, Any]] = {}
+                    merged_edges: dict[tuple[str, str], dict[str, Any]] = {}
+                    pairs = list(deduped_relationships)
+                    if pairs:
+                        # Every pair is read, in one batch call. Endpoint
+                        # absence is NOT proof of edge absence: data written
+                        # before both endpoints were materialized (MongoDB,
+                        # OpenSearch) can hold an edge whose endpoint has no
+                        # node, and skipping it would overwrite its weight and
+                        # source_id instead of merging them.
+                        stored_edges = (
+                            await self.chunk_entity_relation_graph.get_edges_batch(
+                                [{"src": src, "tgt": tgt} for src, tgt in pairs]
+                            )
+                        )
+                        row_keys = [make_relation_chunk_key(*pair) for pair in pairs]
+                        relation_rows = dict(
+                            zip(
+                                row_keys,
+                                await self.relation_chunks.get_by_ids(row_keys),
+                            )
+                        )
+                    for pair in pairs:
+                        relationship_data = deduped_relationships[pair]
+                        row_key = make_relation_chunk_key(*pair)
+                        stored_edge = stored_edges.get(pair) or stored_edges.get(
+                            (pair[1], pair[0])
+                        )
+                        full, changed = _merge_tracking(
+                            relation_rows.get(row_key),
+                            stored_edge.get("source_id") if stored_edge else None,
+                            _custom_kg_chunk_ids(relationship_data["source_id"]),
+                        )
+                        if changed:
+                            relation_tracking[row_key] = {
+                                "chunk_ids": full,
+                                "count": len(full),
+                            }
+                        if stored_edge is None:
+                            continue
+                        limited = apply_source_ids_limit(
+                            full,
+                            global_config["max_source_ids_per_relation"],
+                            limit_method,
+                            identifier=f"`{pair[0]}`~`{pair[1]}`",
+                        )
+                        source_id = (
+                            GRAPH_FIELD_SEP.join(limited)
+                            if limited
+                            else relationship_data["source_id"]
+                        )
+                        # The weight contract: never below the evidence count of
+                        # the stored edge, and an existing weight (accumulated
+                        # by earlier merges) is not lowered by a curated one.
+                        try:
+                            stored_weight = float(stored_edge.get("weight"))
+                        except (TypeError, ValueError):
+                            stored_weight = 0.0
+                        if not math.isfinite(stored_weight) or stored_weight < 0:
+                            stored_weight = 0.0
+                        merged_edges[pair] = {
+                            "source_id": source_id,
+                            "weight": apply_relation_weight_floor(
+                                max(relationship_data["weight"], stored_weight),
+                                source_id,
+                            ),
+                            "file_path": _merge_paths(
+                                stored_edge.get("file_path"),
+                                normalize_document_file_path(
+                                    relationship_data.get("file_path", "custom_kg")
+                                ),
+                            ),
+                        }
+                    return {
+                        "entity_tracking": entity_tracking,
+                        "relation_tracking": relation_tracking,
+                        "merged_edges": merged_edges,
+                        "endpoint_updates": endpoint_updates,
+                        "placeholder_source_ids": placeholder_source_ids,
+                    }
+
                 async def _do_graph_and_vdb_writes() -> None:
+                    # Skipped entirely when there is nothing to insert (e.g. a
+                    # chunks-only custom_kg) — _build_global_config is real
+                    # work callers with no entities/relationships should not
+                    # pay for. Built at most once per call and shared by the
+                    # provenance merge and both VDB payloads below.
+                    if not (all_entities_data or deduped_relationships):
+                        return
+                    global_config = self._build_global_config()
+                    provenance = await _merge_existing_provenance(global_config)
+                    entity_tracking = provenance["entity_tracking"]
+                    relation_tracking = provenance["relation_tracking"]
+                    merged_edges = provenance["merged_edges"]
+                    endpoint_updates = provenance["endpoint_updates"]
+                    placeholder_source_ids = provenance["placeholder_source_ids"]
                     # Construct and verify the entity VDB payload BEFORE the
                     # first graph mutation below (entity_nodes batch upsert): if
                     # truncation fails (a deterministic, non-retryable
                     # content-shape problem), nothing has been written yet. The
                     # actual VDB upsert I/O still happens after all graph writes,
-                    # at the end of this function. Skipped entirely when there is
-                    # nothing to insert (e.g. a chunks-only custom_kg) —
-                    # _build_global_config is real work callers with no
-                    # entities/relationships should not pay for. Shared with the
-                    # relationship VDB payload built further below in this same
-                    # function, so it is built at most once per call.
-                    global_config: dict[str, Any] | None = None
+                    # at the end of this function.
                     data_for_entities_vdb: dict[str, Any] = {}
-                    if all_entities_data or deduped_relationships:
-                        global_config = self._build_global_config()
                     if all_entities_data:
                         data_for_entities_vdb = {
                             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
@@ -5461,15 +5885,61 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                             }
                             for dp in all_entities_data
                         }
+                    # A stored endpoint that only gains chunks keeps its vector
+                    # in step with its node, as the pipeline's relation merge
+                    # does.
+                    for name, stored in endpoint_updates:
+                        data_for_entities_vdb[
+                            compute_mdhash_id(name, prefix="ent-")
+                        ] = {
+                            "content": _truncate_vdb_content(
+                                f"{name}\n{stored.get('description') or ''}",
+                                global_config,
+                                f"entity:{name}",
+                            ),
+                            "entity_name": name,
+                            "source_id": stored["source_id"],
+                            "description": stored.get("description") or "",
+                            "entity_type": stored.get("entity_type") or "UNKNOWN",
+                            "file_path": stored.get("file_path") or "custom_kg",
+                        }
+
+                    # Tracking rows are written AND committed under the keyed
+                    # lock, before the first graph mutation, as every admin
+                    # creation path does (see ``_persist_graph_updates``):
+                    # - committing after the lock is released would let the
+                    #   next writer of the same keys on another worker read the
+                    #   old row from a per-process-buffered KV backend and drop
+                    #   this call's addition when it merges its own;
+                    # - an immediate-write graph backend makes the node durable
+                    #   at once, so a row still in a buffer would leave an
+                    #   object durable without the row carrying its attribution.
+                    # The rows only GAIN chunks, so an interruption between here
+                    # and the graph writes leaves an object retained, never
+                    # lost, and a retry rewrites the same rows.
+                    if entity_tracking:
+                        await self.entity_chunks.upsert(entity_tracking)
+                    if relation_tracking:
+                        await self.relation_chunks.upsert(relation_tracking)
+                    if entity_tracking or relation_tracking:
+                        await _persist_graph_updates(
+                            entity_chunks_storage=self.entity_chunks
+                            if entity_tracking
+                            else None,
+                            relation_chunks_storage=self.relation_chunks
+                            if relation_tracking
+                            else None,
+                            context="ainsert_custom_kg",
+                        )
 
                     # Batch insert entities (reduces N serial awaits to 1).
                     # Writing entity_nodes here (before the relationship-endpoint
                     # discovery below) means has_nodes_batch naturally sees them,
                     # so a relationship endpoint that is also one of this batch's
                     # own explicit entities is never mistaken for a missing node.
-                    if entity_nodes:
+                    if entity_nodes or endpoint_updates:
                         await self.chunk_entity_relation_graph.upsert_nodes_batch(
-                            entity_nodes
+                            [*entity_nodes, *endpoint_updates]
                         )
 
                     # Insert relationships into knowledge graph (batch for performance)
@@ -5497,6 +5967,20 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         file_path = normalize_document_file_path(
                             relationship_data.get("file_path", "custom_kg")
                         )
+                        # An existing edge keeps the provenance merged above;
+                        # placeholder endpoints still get this call's source.
+                        merged_edge = merged_edges.get(tuple(sorted((src_id, tgt_id))))
+                        edge_source_id = (
+                            merged_edge["source_id"] if merged_edge else source_id
+                        )
+                        edge_file_path = (
+                            merged_edge["file_path"] if merged_edge else file_path
+                        )
+                        edge_weight = (
+                            merged_edge["weight"]
+                            if merged_edge
+                            else relationship_data["weight"]
+                        )
 
                         if source_id == "UNKNOWN":
                             logger.warning(
@@ -5505,12 +5989,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
                         for need_insert_id in [src_id, tgt_id]:
                             if need_insert_id not in existing_nodes:
+                                node_source_id = placeholder_source_ids.get(
+                                    need_insert_id, source_id
+                                )
                                 missing_nodes.append(
                                     (
                                         need_insert_id,
                                         {
                                             "entity_id": need_insert_id,
-                                            "source_id": source_id,
+                                            "source_id": node_source_id,
                                             "description": "UNKNOWN",
                                             "entity_type": "UNKNOWN",
                                             "file_path": file_path,
@@ -5532,7 +6019,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                         f"entity:{need_insert_id}",
                                     ),
                                     "entity_name": need_insert_id,
-                                    "source_id": source_id,
+                                    "source_id": node_source_id,
                                     "description": "UNKNOWN",
                                     "entity_type": "UNKNOWN",
                                     "file_path": file_path,
@@ -5542,11 +6029,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                         normalized_src_id, normalized_tgt_id = sorted((src_id, tgt_id))
 
                         edge_data = {
-                            "weight": relationship_data["weight"],
+                            "weight": edge_weight,
                             "description": relationship_data["description"],
                             "keywords": relationship_data["keywords"],
-                            "source_id": source_id,
-                            "file_path": file_path,
+                            "source_id": edge_source_id,
+                            "file_path": edge_file_path,
                             "created_at": int(time.time()),
                         }
                         edge_list.append((src_id, tgt_id, edge_data))
@@ -5557,9 +6044,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 "tgt_id": normalized_tgt_id,
                                 "description": relationship_data["description"],
                                 "keywords": relationship_data["keywords"],
-                                "source_id": source_id,
-                                "weight": relationship_data["weight"],
-                                "file_path": file_path,
+                                "source_id": edge_source_id,
+                                "weight": edge_weight,
+                                "file_path": edge_file_path,
                                 "created_at": int(time.time()),
                             }
                         )
@@ -5669,13 +6156,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     await self._insert_done_with_cleanup()
                     if interrupted is not None:
                         mark_cancellation_deferred(interrupted)
+            # Success path only: every failure exit has already propagated, and
+            # the gate drops the buffered tracking writes on those.
+            if update_storage:
+                await self._require_tracking_commit_landed()
 
     def query(
         self,
         query: str,
         param: QueryParam = QueryParam(),
         system_prompt: str | None = None,
-    ) -> str | Iterator[str]:
+    ) -> str | AsyncIterator[str]:
         """
         Perform a sync query.
 
@@ -5685,12 +6176,22 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             system_prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
-            str: The result of the query execution.
+            str | AsyncIterator[str]: The same value :meth:`aquery` returns.
+                With ``param.stream=False`` this is always a ``str``. With
+                ``param.stream=True`` it is an ``AsyncIterator[str]`` when
+                the answer is streamed, and still a ``str`` on a query-cache
+                hit, when no context is found, or when the model does not
+                stream.
+
+            There is no synchronous stream: the iterator can only be consumed
+            with ``async for``. Streaming callers should use
+            ``await aquery(...)``; synchronous scripts that need text should
+            pass ``stream=False``.
 
         Raises:
             Exception: a failed query raises, as in :meth:`aquery_llm`.
         """
-        return _run_sync(  # type: ignore
+        return _run_sync(
             lambda: self.aquery(query, param, system_prompt),
             sync_name="query",
             async_name="aquery",
@@ -6059,6 +6560,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 enable_cot=True,
                 stream=param.stream,
             )
+            # A reasoning trace with no answer is a failed generation.
+            reject_reasoning_only_answer(response)
             # isinstance, not exact type: a truncated non-streaming
             # response arrives as TruncatedResponse (a str subclass) and
             # must not be misclassified as a streaming iterator.
@@ -6348,6 +6851,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ``DELETE /documents?clear_llm_cache=true``, which runs inside the
             destructive reservation. There is deliberately no endpoint that
             calls it without one.
+
+        Gotcha: clearing the cache beside documents that stay makes every
+        later deletion re-extract, with the LLM, the surviving chunks it
+        rebuilds from, and a re-extraction may name things differently. See
+        *Deletion rebuild evidence* in
+        ``docs/design/PurgeRecoveryContract.md``.
 
         Raises:
             Exception: propagated from the storage; the cache may be partly
@@ -6944,7 +7453,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Does NOT touch:
             - ``doc_status`` / ``full_docs`` records — caller manages those.
-            - ``llm_response_cache`` — orthogonal to KG cleanup.
+            - ``llm_response_cache``, except that a rebuild which re-extracts a
+              surviving chunk replaces that chunk's unusable extract row and
+              writes the new rows through the usual reference-before-row path.
             - Pipeline busy-flag — assumes the caller already holds the
               pipeline (i.e. this runs inside a pipeline run).
 
@@ -7056,6 +7567,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 rebuild_policy=rebuild_policy,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
+                # A journal from an earlier attempt means its step 2 may have
+                # persisted narrowed tracking before its rebuild failed.
+                resuming=proof is not None and proof.journal_phase is not None,
             )
             if journaled and proof is not None:
                 await self._write_kg_purge_phase(
@@ -7160,6 +7674,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         rebuild_policy: Literal["best_effort", "rollback"],
         pipeline_status: dict,
         pipeline_status_lock: Any,
+        resuming: bool = False,
     ) -> KGRebuildReport:
         """Steps 1-6 of :py:meth:`_purge_kg_contributions`.
 
@@ -7180,8 +7695,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         the anchor rows cannot name yet (an in-flight custom-chunk patch
         journal). They are additive only, so they can never mask a missing
         anchor: an empty union with absent anchors still resolves to nothing.
+
+        ``resuming``: an earlier attempt of this journaled purge may already
+        have persisted step 2's narrowed tracking and then failed in its
+        rebuild. Its candidates then show no tracking delta, and a capped graph
+        ``source_id`` need not name the deleted chunks either, so every
+        candidate with remaining sources is rebuilt, as under ``rollback``.
         """
         rebuild_report = KGRebuildReport()
+        rebuild_every_survivor = resuming or rebuild_policy == "rollback"
 
         # Set view for membership/intersection checks below (chunk_ids stays a list
         # so it satisfies the storage delete contract: ``delete(ids: list[str])``).
@@ -7321,7 +7843,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     entities_to_rebuild[node_label] = remaining_sources
                     entity_chunk_updates[node_label] = remaining_sources
@@ -7391,7 +7913,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 elif (
                     remaining_sources != existing_sources
                     or graph_references_deleted_chunks
-                    or rebuild_policy == "rollback"
+                    or rebuild_every_survivor
                 ):
                     relationships_to_rebuild[edge_tuple] = remaining_sources
                     relation_chunk_updates[edge_tuple] = remaining_sources
@@ -7587,6 +8109,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     entity_chunks_storage=self.entity_chunks,
                     relation_chunks_storage=self.relation_chunks,
                     rebuild_policy=rebuild_policy,
+                    doc_status_storage=self.doc_status,
                 )
             except Exception as e:
                 logger.error(f"[purge] Failed to rebuild knowledge from chunks: {e}")
@@ -7617,8 +8140,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         This method orchestrates a comprehensive deletion process for a given document ID.
         It ensures that not only the document itself but also all its derived and associated
-        data across different storage layers are removed or rebuiled. If entities or relationships
-        are partially affected, they will be rebuilded using LLM cached from remaining documents.
+        data across different storage layers are removed or rebuilt. If entities or relationships
+        are partially affected, they are rebuilt from the extraction cache of the remaining
+        documents' chunks; a surviving chunk whose initial extraction is not cached is
+        re-extracted with the LLM, and a failure leaves the document ``DELETING`` for a retry
+        (*Deletion rebuild evidence* in ``docs/design/PurgeRecoveryContract.md``).
 
         **Concurrency Control Design:**
 
@@ -7671,7 +8197,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         deletion_operations_started = False
         deletion_fully_completed = False
         in_final_delete_stage = False
-        original_exception = None
         doc_llm_cache_ids: list[str] = []
         deletion_stage = "initializing"
         doc_status_data: dict[str, Any] | None = None
@@ -8143,7 +8668,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # retrying unchanged will refuse again — the operator has to run
             # the integrity audit first. The message is written to be
             # client-safe and names that remedy.
-            original_exception = e
             error_message = str(e)
             logger.error(f"Refusing to delete document {doc_id}: {e}")
             try:
@@ -8171,7 +8695,6 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
 
         except Exception as e:
-            original_exception = e
             error_message = f"Error while deleting document {doc_id}: {e}"
             logger.error(error_message)
             logger.error(traceback.format_exc())
@@ -8304,18 +8827,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                                 doc_id,
                                 persistence_error,
                             )
-                        elif original_exception is None:
-                            # Deletion stages were in-flight but the try-block return was never
-                            # reached; treat the persistence failure as the primary error.
-                            return DeletionResult(
-                                status="fail",
-                                doc_id=doc_id,
-                                message=f"Deletion completed but failed to persist changes: {persistence_error}",
-                                status_code=500,
-                                file_path=file_path,
-                            )
-                        # If there was an original exception, log the persistence error but
-                        # don't override it — the original error result was already returned.
+                        # Otherwise an except block already returned the fail result, or a
+                        # BaseException (e.g. a cancellation) is propagating. Only log the
+                        # persistence error: a return here would swallow that exception.
                 else:
                     logger.debug(
                         f"No deletion operations were started for document {doc_id}, skipping persistence"
@@ -8365,22 +8879,38 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # ------------------------------------------------------------------
 
     def _admin_write_gate_required(self) -> bool:
-        """Whether this instance's graph storage needs the admin-write gate.
+        """Whether this instance's storages need the admin-write gate.
 
-        Decided by the graph storage's class-level ``requires_single_writer``
-        declaration and by nothing else. Only the graph storage can lose an
-        uncommitted mutation to a peer commit: ``NanoVectorDBStorage`` and
+        Decided by two class-level declarations and by nothing else:
+
+        * the graph storage's ``requires_single_writer`` (``NetworkXStorage``):
+          its reload on a peer commit discards an uncommitted mutation;
+        * a chunk-tracking KV storage's ``buffers_writes_per_process``
+          (``OpenSearchKVStorage``): the pipeline's tracking writes stay in
+          its worker's buffer until the document is flushed, so an admin write
+          on another worker would merge into a row that lacks them and
+          overwrite the pipeline's addition. Holding ``busy`` excludes that,
+          because the pipeline flushes every document before it releases
+          ``busy``.
+
+        Nothing else qualifies. ``NanoVectorDBStorage`` and
         ``FaissVectorDBStorage`` replay their pending buffers over a reloaded
         snapshot, ``JsonKVStorage`` / ``JsonDocStatusStorage`` have no reload
-        path at all (their data is a shared Manager mapping), and every
-        server-backed store has row/transaction-level concurrency of its own.
-        So a server-backed graph store combined with file-backed KV or vector
-        storages runs ungated -- serializing it workspace-wide would be a
-        throughput regression for no correctness gain.
+        path at all (their data is a shared Manager mapping), and every other
+        server-backed store writes immediately with row/transaction-level
+        concurrency of its own. Those combinations run ungated -- serializing
+        them workspace-wide would be a throughput regression for no
+        correctness gain.
         """
-        return bool(
-            getattr(
-                type(self.chunk_entity_relation_graph), "requires_single_writer", False
+        if getattr(
+            type(self.chunk_entity_relation_graph), "requires_single_writer", False
+        ):
+            return True
+        return any(
+            getattr(type(storage), "buffers_writes_per_process", False)
+            for storage in (
+                getattr(self, "entity_chunks", None),
+                getattr(self, "relation_chunks", None),
             )
         )
 
@@ -8406,9 +8936,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         """Refuse a hold ceiling that cannot survive one embedding round-trip.
 
         Called from ``__post_init__`` once the graph storage exists, and ONLY
-        when ``_admin_write_gate_required()`` -- a server-backed graph store
-        never takes the gate, so it must not be refused startup over a knob it
-        does not use.
+        when ``_admin_write_gate_required()`` -- a backend combination that
+        never takes the gate must not be refused startup over a knob it does
+        not use.
 
         The relation was documented in ``env.example`` and enforced nowhere. A
         ceiling below the embedding timeout stops every admin write that
@@ -8458,8 +8988,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Wraps the body of every public admin graph writer -- the seven
         ``utils_graph`` flows plus ``ainsert_custom_kg``. A no-op unless
-        ``_admin_write_gate_required()``, i.e. unless the graph storage's class
-        declares ``requires_single_writer`` (``NetworkXStorage`` only).
+        ``_admin_write_gate_required()``: the graph storage's class declares
+        ``requires_single_writer`` (``NetworkXStorage``), or a chunk-tracking
+        KV storage declares ``buffers_writes_per_process``
+        (``OpenSearchKVStorage``).
 
         Two halves, one fixed acquisition order::
 
@@ -8619,6 +9151,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # commits successfully WITHOUT the changes it made.
             if entered_body:
                 self._discard_uncommitted_graph_mutations(operation)
+                self._discard_buffered_tracking_writes(operation)
             # Only a real cancellation suppresses the release-time drive:
             # driving the pipeline from a cancelled task would start work
             # nobody is waiting for, and the mailbox flag is sticky so the next
@@ -8630,6 +9163,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # reservation lock's exit can leave ``busy`` ours, which is why
             # ``reserved`` is set before the acquire.
             cancelled = isinstance(exc, asyncio.CancelledError)
+            raise
+        except Exception:
+            # A failed write must not leave chunk-tracking rows in a
+            # per-process buffer: released from the gate, a later flush would
+            # publish them over whatever another worker committed since. Every
+            # failure exit drops them here, in one place, rather than in each
+            # flow -- see ``_discard_buffered_tracking_writes``.
+            if entered_body:
+                self._discard_buffered_tracking_writes(operation)
             raise
         finally:
             try:
@@ -8679,6 +9221,42 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 f"Failed to discard uncommitted graph mutations after the "
                 f"interrupted admin write `{operation}`: {e}"
             )
+
+    def _discard_buffered_tracking_writes(self, operation: str) -> None:
+        """Drop chunk-tracking writes a failed admin write left buffered.
+
+        Called on EVERY failure exit of the gate's body -- an exception, a
+        cancellation, the hold ceiling -- while the admin lock and the
+        reservation are still held. A tracking row is a whole row produced by
+        read-modify-write, so one that outlives its operation in a per-process
+        buffer is flushed later over a newer commit and erases that writer's
+        attribution. What is dropped leaves a row too broad or stale, never an
+        object without attribution it had.
+
+        Only a storage declaring ``buffers_writes_per_process`` has anything to
+        drop. Synchronous and never raising, for the reasons given on
+        :meth:`_discard_uncommitted_graph_mutations`.
+        """
+        for name in ("entity_chunks", "relation_chunks"):
+            storage = getattr(self, name, None)
+            if storage is None or not getattr(
+                type(storage), "buffers_writes_per_process", False
+            ):
+                continue
+            try:
+                dropped = storage.discard_buffered_writes()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.error(
+                    f"Failed to discard buffered {name} writes after the failed "
+                    f"admin write `{operation}`: {e}"
+                )
+                continue
+            if dropped:
+                logger.warning(
+                    f"Admin write `{operation}` failed with {dropped} uncommitted "
+                    f"{name} write(s) buffered; they were discarded so they "
+                    "cannot overwrite a later commit."
+                )
 
     async def _drive_pipeline_if_deferred(self, workspace: str) -> None:
         """Start the release-time queue drive when the hold turned a start away.

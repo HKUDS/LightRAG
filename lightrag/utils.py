@@ -48,6 +48,7 @@ from lightrag.exceptions import (
     ChunkBlockMatchError,
     CommitBookkeepingError,
     EmptyTruncatedResponseError,
+    ReasoningOnlyResponseError,
 )
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -321,6 +322,12 @@ def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[
         return None
 
 
+# Spellings accepted for boolean env values. A blank value counts as false,
+# matching the historical "anything not true is false" reading of ``KEY=``.
+ENV_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
+ENV_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -334,7 +341,13 @@ def get_env_value(
         special_none (bool): If True, return None when value is "None"
 
     Returns:
-        any: Converted value from environment or default
+        any: Converted value from environment or default. A value that does
+        not convert falls back to ``default``; a non-blank one also logs a
+        warning, a blank one (``KEY=`` in .env/Compose) does not.
+
+    For ``bool`` the accepted spellings are ``ENV_BOOL_TRUE_WORDS`` and
+    ``ENV_BOOL_FALSE_WORDS`` (blank reads as ``False``); anything else, such
+    as the typo ``ture``, warns and returns ``default``.
     """
     value = os.getenv(env_key)
     if value is None:
@@ -345,7 +358,20 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        return value.strip().lower() in ("true", "1", "yes", "t", "on")
+        text = value.strip().lower()
+        if text in ENV_BOOL_TRUE_WORDS:
+            return True
+        if text in ENV_BOOL_FALSE_WORDS:
+            return False
+        logger.warning(
+            "Environment variable %s=%r is not a recognized boolean "
+            "(expected one of %s), using default %r",
+            env_key,
+            value,
+            "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+            default,
+        )
+        return default
 
     # Handle list type with JSON parsing
     if value_type is list:
@@ -370,6 +396,16 @@ def get_env_value(
     try:
         converted = value_type(value)
     except (ValueError, TypeError):
+        # A blank value is the usual "unset" idiom in .env/Compose and falls
+        # back quietly; anything else is a typo the operator should hear about.
+        if value.strip():
+            logger.warning(
+                "Environment variable %s=%r is not a valid %s, using default %r",
+                env_key,
+                value,
+                getattr(value_type, "__name__", value_type),
+                default,
+            )
         return default
 
     # Reject non-finite floats so env-backed thresholds cannot become NaN/Inf.
@@ -1029,7 +1065,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
     """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
 
     Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
-    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    falling back to `{stem}_{unix_seconds}{ext}` if all numeric slots are taken;
+    an occupied timestamp name advances the suffix by one until a free name is
+    found, so the suffix may run ahead of the clock.
+
+    The name is only free when checked: the caller renames separately, so two
+    concurrent callers can still pick the same name.
     """
     original_path = Path(original_name)
     base_name = original_path.stem
@@ -1043,7 +1084,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
         if not (target_dir / new_name).exists():
             return new_name
 
-    return f"{base_name}_{int(time.time())}{extension}"
+    # Probe existing timestamp names too. The caller still chooses and renames
+    # separately, so this only avoids overwriting a file already on disk.
+    suffix = int(time.time())
+    while (target_dir / f"{base_name}_{suffix}{extension}").exists():
+        suffix += 1
+    return f"{base_name}_{suffix}{extension}"
 
 
 async def move_file_to_parsed_dir(
@@ -5094,11 +5140,11 @@ async def aexport_data(
         entities_data.append(entity_row)
 
     # --- Relations ---
-    for src_entity in all_entities:
-        for tgt_entity in all_entities:
-            if src_entity == tgt_entity:
-                continue
-
+    # Relations are undirected: has_edge(a, b) and has_edge(b, a) answer for
+    # the same edge, so probe each unordered pair once. Probing ordered pairs
+    # exported every relation twice, once per orientation.
+    for src_index, src_entity in enumerate(all_entities):
+        for tgt_entity in all_entities[src_index + 1 :]:
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 src_entity, tgt_entity
             )
@@ -5806,6 +5852,67 @@ def _reject_empty_truncated_response(
     )
     logger.error(message)
     raise EmptyTruncatedResponseError(message)
+
+
+def is_reasoning_only_answer(response: Any) -> bool:
+    """Return True for a non-streaming answer that is a reasoning trace only.
+
+    True when nothing is left after ``remove_think_tags``, or when what is
+    left is an unclosed ``<think>`` block (inline reasoning cut off
+    mid-trace). False for streaming iterators, empty strings and any answer
+    that carries text outside the think block. Never raises.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return False
+    cleaned = remove_think_tags(response)
+    unclosed_think = cleaned.startswith("<think>") and "</think>" not in cleaned
+    return not cleaned or unclosed_think
+
+
+def reject_reasoning_only_answer(response: Any) -> None:
+    """Fail a non-streaming query answer that is reasoning and nothing else.
+
+    Call it on the answering LLM's result BEFORE the query-cache write
+    (``kg_query``, ``naive_query``, bypass mode). The query paths pass
+    ``enable_cot=True``, and a ``<think>...</think>`` wrapper with no answer
+    after it is a NON-empty string, so without this check it is returned and
+    cached as the answer. The bindings with a retry policy (OpenAI, OpenAI
+    Responses, Gemini) already raise on that shape in their non-streaming
+    path; this is the safety net for every other source of it: Zhipu, models
+    that put the trace inline in ``content``, and custom LLM functions.
+
+    Raises :class:`EmptyTruncatedResponseError` for a ``TruncatedResponse``
+    and :class:`ReasoningOnlyResponseError` otherwise. Streaming responses and
+    answers with text outside the think block pass through. Only lengths are
+    logged, never content.
+    """
+    if not is_reasoning_only_answer(response):
+        return
+    truncated = is_truncated_response(response)
+    diagnostics = format_response_diagnostics(
+        truncated=truncated,
+        response_len=len(response),
+        answer_len=0,
+    )
+    if truncated:
+        hint = empty_length_truncated_hint(
+            "consider raising the LLM's output token limit or disabling "
+            "thinking mode for the query role",
+            reasoning_consumed_budget=True,
+        )
+    else:
+        hint = (
+            "model returned reasoning-only output; consider disabling thinking "
+            "mode or lowering the reasoning effort for the query role"
+        )
+    message = (
+        "Query answer carried no text outside the reasoning trace "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    if truncated:
+        raise EmptyTruncatedResponseError(message)
+    raise ReasoningOnlyResponseError(message)
 
 
 def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
@@ -7341,19 +7448,18 @@ class TokenTracker:
         """Add token usage from one LLM call.
 
         Args:
-            token_counts: A dictionary containing prompt_tokens, completion_tokens, total_tokens
+            token_counts: Prompt, completion, and total token counts. A missing
+                or None total is estimated from the available component counts.
         """
-        self.prompt_tokens += token_counts.get("prompt_tokens", 0)
-        self.completion_tokens += token_counts.get("completion_tokens", 0)
+        prompt_tokens = token_counts.get("prompt_tokens") or 0
+        completion_tokens = token_counts.get("completion_tokens") or 0
+        total_tokens = token_counts.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = prompt_tokens + completion_tokens
 
-        # If total_tokens is provided, use it directly; otherwise calculate the sum
-        if "total_tokens" in token_counts:
-            self.total_tokens += token_counts["total_tokens"]
-        else:
-            self.total_tokens += token_counts.get(
-                "prompt_tokens", 0
-            ) + token_counts.get("completion_tokens", 0)
-
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
         self.call_count += 1
 
     def get_usage(self):
@@ -7419,6 +7525,11 @@ async def apply_rerank_if_enabled(
             )
             document_texts.append(content)
 
+        # Custom rerank functions bypass generic_rerank_api's check, and the
+        # legacy-format slice below would treat a negative top_n as "drop N".
+        if top_n is not None and top_n < 0:
+            raise ValueError(f"top_n must be non-negative, got {top_n}")
+
         # Call the new rerank function that returns index-based results
         rerank_results = await rerank_func(
             query=query,
@@ -7435,7 +7546,11 @@ async def apply_rerank_if_enabled(
             # Check if results are in the new index-based format
             if first_object is not None and "index" in first_object:
                 # New format: [{"index": 0, "relevance_score": 0.85}, ...]
-                reranked_docs = []
+                # One entry per document: a repeated index would otherwise
+                # take several chunk_top_k slots. Keep its highest score,
+                # as chunk score aggregation does, because provider order
+                # is not trusted (see the sort below).
+                best_by_index: dict[int, dict] = {}
                 for result in rerank_results:
                     normalized_result, _ = normalize_rerank_result(
                         result, len(retrieved_docs)
@@ -7445,17 +7560,28 @@ async def apply_rerank_if_enabled(
 
                     index = normalized_result["index"]
                     relevance_score = normalized_result["relevance_score"]
+                    kept = best_by_index.get(index)
+                    if kept is not None and kept["rerank_score"] >= relevance_score:
+                        continue
 
                     # Get original document and add rerank score
                     doc = retrieved_docs[index].copy()
                     doc["rerank_score"] = relevance_score
-                    reranked_docs.append(doc)
+                    best_by_index[index] = doc
 
+                reranked_docs = list(best_by_index.values())
                 if not reranked_docs:
                     logger.warning(
                         "Rerank returned no usable results, using original chunks"
                     )
                     return retrieved_docs
+
+                # Sort by score instead of trusting the provider already
+                # returned results in relevance order: callers slice this
+                # list positionally (chunk_top_k truncation), so an
+                # unsorted response would silently keep the wrong chunks
+                # despite every chunk carrying a correct rerank_score.
+                reranked_docs.sort(key=lambda d: d["rerank_score"], reverse=True)
 
                 logger.info(
                     f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"

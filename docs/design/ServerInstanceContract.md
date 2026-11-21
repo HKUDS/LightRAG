@@ -72,12 +72,14 @@ Everything else is **unsupported**:
 ## Workspace names every backend keeps apart
 
 Each row is a pair of different workspaces that one backend stores in one
-partition. Only OpenSearch notices; everywhere else the two instances read,
-write and delete each other's data without an error.
+partition. Only OpenSearch and the Neo4j full-text index notice; everywhere
+else the two instances read, write and delete each other's data without an
+error.
 
 | backend | workspaces that share a partition | detected |
 | --- | --- | --- |
-| `Neo4JStorage`, `MemgraphStorage` | the empty workspace and `base` (both become the graph label `base`). `Neo4JStorage` also derives its full-text index name by stripping leading and trailing `_` and prefixing `ws_` to a name that starts with a digit, so `foo` / `_foo_`, `_` / `base` and `1abc` / `ws_1abc` share an index, and label search in the second of each pair silently finds nothing | no |
+| `Neo4JStorage`, `MemgraphStorage` | the empty workspace and `base` (both become the graph label `base`) | no |
+| `Neo4JStorage` full-text index | the index is named `entity_id_fulltext_idx_<suffix>`, where the suffix is the workspace label with every run of characters outside `[A-Za-z0-9_]` folded to one `_`, leading and trailing `_` stripped, `base` when nothing is left and `ws_` prefixed when it starts with a digit. So interior punctuation (`foo-bar` / `foo_bar` / `foo bar` / `foo.bar`), non-ASCII names (an all-CJK name / `base` / the empty workspace), outer underscores (`foo` / `_foo_`, `_` / `base`) and digit prefixes (`1abc` / `ws_1abc`) each share one index name | **refused** at startup when the existing index's `labelsOrTypes` names a different workspace label (`WorkspaceIndexCollisionError`), before the index is reused or dropped for recreation. The empty workspace and `base` share the label as well (row above), so they pass the check. Accepted residue: two instances on different hosts or process trees that start for the first time at the same moment can both see no index; the second `CREATE FULLTEXT INDEX` then fails, is logged as an error and the instance starts anyway, with `search_labels` returning nothing from the full-text branch. Nothing is lost, and the next start of that instance is refused. Making the name injective (for example by appending a hash of the label) was rejected: it moves every existing deployment onto a new index and orphans the old one, and keeping workspace names apart is the operator's job until LightRAG generates them |
 | `QdrantVectorDBStorage` | the empty workspace and `_` (the payload value it stores for the empty one) | no |
 | `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`, `PGTableGraphStorage` | the empty workspace and `default` (the column value stored for the empty one) | no |
 | `PGGraphStorage` | the empty workspace and `default` **in any letter case** (so `Default` shares only the graph with the empty workspace, and its other PostgreSQL rows stay apart); two workspaces whose `<workspace>_chunk_entity_relation` agree in the first 63 bytes, which PostgreSQL keeps of a graph name (any two longer than 41 bytes that share their first 41); and a mixed-case workspace with its lowercase twin, on the raw SQL paths that name the graph unquoted | no |

@@ -239,6 +239,16 @@ def test_tilde_fence_supported():
     assert "## still code" in ex.blocks[0]["content"]
 
 
+def test_one_line_backtick_code_span_does_not_open_a_fence():
+    """A backtick run followed by text holding a backtick is an inline code
+    span, not a fence opener, so it must not swallow the rest of the file."""
+    md = "# Install\n```pip install lightrag```\n## Usage\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+    ex = _extract(md)
+    assert [b["heading"] for b in ex.blocks] == ["Install", "Usage"]
+    assert "```pip install lightrag```" in ex.blocks[0]["content"]
+    assert len(ex.tables) == 1
+
+
 def test_pipe_table_with_header():
     md = "| Name | Age |\n|------|-----|\n| Bob | 30 |\n| Sue | 25 |\n"
     ex = _extract(md)
@@ -629,6 +639,13 @@ def test_inline_dollar_not_recognized_as_equation():
     ex = _extract("cost is $5 and $10 today")
     assert not ex.equations
     assert "$5" in ex.blocks[0]["content"]
+
+
+def test_display_math_followed_by_prose_does_not_open_a_block():
+    md = "# A\n$$E = mc^2$$ relates mass and energy.\n## B\n$$\np = mv\n$$\n"
+    ex = _extract(md)
+    assert [b["heading"] for b in ex.blocks] == ["A", "B"]
+    assert list(ex.equations.values()) == ["p = mv"]
 
 
 def test_unclosed_block_equation_is_plain_text():

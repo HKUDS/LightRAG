@@ -43,7 +43,7 @@ class TestMilvusKwargsParameterBridge:
         assert storage.index_config.hnsw_ef_construction == 300
 
     def test_kwargs_to_index_config_index_and_metric_types(self):
-        """Test that index_type and metric_type are passed from kwargs"""
+        """Test that index_type is passed from kwargs (metric_type is ignored)"""
         mock_embedding_func = MagicMock()
         mock_embedding_func.embedding_dim = 128
 
@@ -65,7 +65,7 @@ class TestMilvusKwargsParameterBridge:
 
         # Verify that parameters were passed to index_config
         assert storage.index_config.index_type == "IVF_FLAT"
-        assert storage.index_config.metric_type == "L2"
+        assert storage.index_config.metric_type == "COSINE"  # deprecated, ignored
         assert storage.index_config.ivf_nlist == 2048
 
     def test_kwargs_to_index_config_sq_parameters(self):
@@ -230,7 +230,7 @@ class TestMilvusKwargsParameterBridge:
 
         # Verify all Milvus parameters were correctly extracted and applied
         assert storage.index_config.index_type == "HNSW"
-        assert storage.index_config.metric_type == "L2"
+        assert storage.index_config.metric_type == "COSINE"  # deprecated, ignored
         assert storage.index_config.hnsw_m == 48
         assert storage.index_config.hnsw_ef_construction == 400
         assert storage.index_config.hnsw_ef == 200
@@ -280,7 +280,7 @@ class TestMilvusKwargsParameterBridge:
 
         # Verify EVERY parameter was correctly applied
         assert storage.index_config.index_type == "HNSW_SQ"
-        assert storage.index_config.metric_type == "IP"
+        assert storage.index_config.metric_type == "COSINE"  # deprecated, ignored
         assert storage.index_config.hnsw_m == 64
         assert storage.index_config.hnsw_ef_construction == 512
         assert storage.index_config.hnsw_ef == 256

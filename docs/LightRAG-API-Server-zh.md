@@ -697,13 +697,29 @@ TOKEN_EXPIRE_HOURS=4
 lightrag-hash-password --username admin
 ```
 
-该命令会安全提示输入密码，并输出可直接粘贴到 `.env` 的 `admin:{bcrypt}...` 条目。
+该命令会安全提示输入密码，并输出可直接粘贴到 `.env` 的 `admin:{bcrypt}...` 条目。bcrypt 只使用密码的前 72 个字节，因此该命令会拒绝更长的密码（按 UTF-8 字节计算，而非字符数）；请改用更短的密码。
 
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
 
-如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
+### WebUI 兼容性变更：受保护访问仅使用账户登录
 
-> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
+`/webui` 和 `/workspace` 均不再提示输入、保存或发送 API Key。API Key 继续用于程序化 API 访问；本次迁移不改变后端凭据接受规则、双凭据失败行为或 token 续期规则。
+
+| 账户（`AUTH_ACCOUNTS`） | 有效 API Key（`LIGHTRAG_API_KEY` 或 `--key`） | WebUI |
+| --- | --- | --- |
+| 未配置 | 未配置 | 保留 guest token 的获取、发送、刷新与续期 |
+| 已配置 | 未配置 | 账户登录，仅发送用户 token |
+| 已配置 | 已配置 | 账户登录，仅发送用户 token |
+| 未配置 | 已配置 | 显示配置提示，不进入 guest 业务界面、不弹出密钥输入框 |
+
+**原 API-key-only WebUI 用户的迁移步骤：** 保留 API Key，配置 `AUTH_ACCOUNTS` 和高强度、非默认的 `TOKEN_SECRET`，重启服务器，刷新所有 WebUI 标签页后登录。不要通过移除 API Key 保护恢复 WebUI 访问。
+请配套部署前后端版本。旧后端缺少模式发现字段时，新 WebUI 无法安全区分完全开放与 API-key-only，因此显示提示而不会猜测为访客模式。已知旧版浏览器设置仅清理 `apiKey`，保留其他设置；未知未来版本的存储保持不变，也不会被用于发送凭据。
+
+完全开放的 WebUI 仍使用 guest token；guest 并非已认证的用户账户。完全开放模式下的程序化请求仍可不携带 token。仅凭 guest token **不能**绕过受保护路由的 API Key 检查。API-key-only 服务器仍可正常启动并服务程序化客户端。
+
+`GET /auth-status` 仅新增非敏感布尔字段 `api_key_configured`，依据服务器实际生效的密钥计算。包括 `auth_configured`（仅表示账户配置）在内的原字段含义不变，`/login` 行为不变。前端据此选择支持的流程，不引入新的后端授权策略；本次迁移也不改变 `WHITELIST_PATHS` 的处理。
+
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个程序化请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。本次 WebUI 迁移不改变这一行为。
 
 ## Azure OpenAI 后端配置
 
@@ -894,6 +910,18 @@ MAX_EXTRACTION_ENTITIES=40
 ```
 
 如果旧 `.env` 中仍包含 `ENTITY_TYPES`，请在启动前移除。该变量已被 prompt profile 替代，服务器会对此进行快速失败校验。
+
+### 关键词抽取配置
+
+关键词抽取在查询链路运行（`KEYWORD` 角色的 LLM），用于 `hybrid` / `local` / `global` 模式，其结构化输出策略独立于 `ENTITY_EXTRACTION_USE_JSON`：
+
+- `KEYWORD_EXTRACTION_JSON_MODE`：关键词抽取的 `response_format` 策略。`auto`（默认）先请求 `response_format={"type": "json_object"}`，仅当 provider 拒绝该字段本身时才去掉它重试一次；`json_object` 始终发送；`none` 从不发送。仅当你明确知道 provider 的取向时才设为 `json_object` 或 `none`：LM Studio 这类服务只接受 `json_schema`/`text` 并返回 HTTP 400，查询链路会表现为"未检索到相关上下文"。
+
+示例：
+
+```bash
+KEYWORD_EXTRACTION_JSON_MODE=auto
+```
 
 ### 支持的存储类型
 

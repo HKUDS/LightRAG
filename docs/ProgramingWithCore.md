@@ -92,7 +92,7 @@ Notes:
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Base maximum LLM concurrency; also caps per-document chunk extraction tasks, while each entity/relation merge phase uses twice this task limit | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias; `EXTRACT_MAX_ASYNC_LLM` can independently limit actual Extract-role requests) |
-| **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
+| **llm_model_kwargs** | `dict` | Additional parameters for LLM generation. A role without its own `RoleLLMConfig(kwargs=...)` receives this dict, unless the role is cross-provider (`is_cross_provider` in its metadata, also set when a runtime update changes its binding away from `base_binding`): such a role receives no base kwargs at all. A role's own kwargs replace this dict as a whole (nothing is merged in). To count token usage, pass a `lightrag.utils.TokenTracker` here (`llm_model_kwargs={"token_tracker": tracker}`), and repeat it in every role's own kwargs (`kwargs` / `model_kwargs`), and in the kwargs of every cross-provider role; the OpenAI (incl. Azure OpenAI and OpenAI Responses), Ollama, Gemini, Anthropic, Bedrock and Zhipu provider functions add each call's usage to it. `with tracker:` only resets the tracker and prints it on exit, it does not attach it to any call. | |
 | **default_llm_timeout** | `int` | Base LLM request timeout in seconds. A role uses it unless its `RoleLLMConfig(timeout=...)` is set. The role's effective timeout sizes its queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the provider client's request timeout: the bundled `*_complete` provider wrappers read it during the role call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `llm_model_func` as an argument; one that calls a provider's `*_if_cache` function directly can apply it with `lightrag.llm_roles.apply_llm_timeout(kwargs)`. A `timeout` in `llm_model_kwargs`, in the role's kwargs or in `openai_client_configs` takes precedence. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and each provider client keeps its SDK default (for example 600 s for OpenAI, 60 s for Bedrock through botocore). | `240` (configured by env var LLM_TIMEOUT) |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
@@ -314,6 +314,37 @@ are filled before chunks: when they use up the budget, no chunk is sent, the ans
 relies on the graph context alone, and a "Token budget left no room" warning is
 logged. Conversation history and provider-specific message framing are outside
 this context budget.
+
+
+### Streaming queries
+
+Use `aquery(..., QueryParam(stream=True))` from async code and consume the
+returned chunks with `async for`. Even with `stream=True`, the result is a
+complete string instead of a stream when the answer comes from the query
+cache, when no context is found, or when the model does not stream, so handle
+both return values.
+
+```python
+from lightrag import QueryParam
+
+
+async def print_answer(rag, question):
+    answer = await rag.aquery(question, param=QueryParam(mode="hybrid", stream=True))
+    if isinstance(answer, str):
+        print(answer)
+        return
+
+    async for chunk in answer:
+        print(chunk, end="", flush=True)
+    print()
+```
+
+Call this helper on the event loop that initialized the LightRAG instance.
+The synchronous `query()` wrapper returns the same value as `aquery()` once
+retrieval has finished and the model call has started, so a streamed answer
+comes back as an async iterator that cannot be read with a plain `for` loop.
+There is no synchronous stream: for synchronous scripts that need a string,
+use `QueryParam(stream=False)`.
 
 
 ## LLM and Embedding Injection
@@ -771,6 +802,14 @@ Contract:
 - **Coverage.** Every path that extracts goes through it: the document pipeline
   and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
   caller supplies the graph directly — so it is not filtered.
+- **It also runs when a document is deleted.** The deletion rebuild re-reads
+  each surviving chunk's extraction cache, which stores the raw LLM answer from
+  *before* the hook ran, and passes those records through the hook again (or
+  through a fresh extraction, when the cache row is gone). So the hook is
+  called again for chunks it already filtered, once per chunk per rebuild: it
+  must give the same answer on a repeat call, and any state it keeps (an audit
+  log) sees the repeat. A hook that raises fails the deletion, which stays
+  retryable.
 - **Multimodal entities are not shown to the hook.** For a drawing / table /
   equation chunk, LightRAG synthesizes one entity from the sidecar and links it
   to the chunk's surviving entities. That injection happens *after* the hook, so
@@ -1512,8 +1551,11 @@ field, copying the stored weight verbatim without touching the graph.
 
 A rebuild re-derives the relation from the extraction results cached for the
 surviving chunks, so — like the rebuilt description and keywords — the weight is
-recomputed rather than preserved: it becomes the summed fragment weights lifted
-to the surviving evidence count. Weight therefore follows evidence downward as a
+recomputed rather than preserved: each surviving chunk contributes the weight of
+its first cached fragment once, even when its extraction states the relation
+several times or in both directions, and the sum is lifted to the surviving
+evidence count. Extraction applies the same rule on insert, counting each new
+source once per merge. Weight therefore follows evidence downward as a
 purge removes chunks, and an importance boost applied through `edit_relation`
 does not survive a rebuild that finds cached fragments. When no cached fragment
 survives, the rebuild keeps the stored weight.
@@ -1527,6 +1569,13 @@ merged weight = max(all input weights, distinct merged real source IDs)
 
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
+
+When `insert_custom_kg` writes a relation that already exists, the same rule
+applies to the stored edge and the custom one:
+
+```text
+weight = max(custom weight, stored weight, distinct merged real source IDs)
+```
 
 ### Chunk tracking across a rename or merge
 
@@ -1622,6 +1671,14 @@ custom_kg = {
 rag.insert_custom_kg(custom_kg)
 ```
 
+Writing an entity or relation that already exists replaces its `description`,
+`entity_type` and `keywords` with the custom values but **merges** its
+provenance: the custom chunk is added to the chunk tracking rows
+(`entity_chunks` / `relation_chunks`), to `source_id` and to `file_path`, and
+an existing relationship endpoint gains the relationship's chunk, as a document
+merge does. Deleting a document that contributed to the object therefore keeps
+it, attributed to the custom chunk.
+
 * Other Entity and Relation Operations
   - **create_entity**: Creates a new entity with specified attributes
   - **edit_entity**: Updates an existing entity's attributes or renames it
@@ -1706,8 +1763,9 @@ deletion is always the recovery step:
 
 #### Concurrent admin writes
 
-On a graph storage that declares `requires_single_writer` — `NetworkXStorage`,
-the only one — every public admin graph writer (`acreate_entity`,
+On a graph storage that declares `requires_single_writer` (`NetworkXStorage`,
+the only one), or when chunk tracking sits on a KV storage that buffers writes
+per process (`OpenSearchKVStorage`, the only one), every public admin graph writer (`acreate_entity`,
 `acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
 `adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
 every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
@@ -1934,9 +1992,10 @@ What remains, and why it is tolerated:
 Serializing admin writers would not remove any of these: they are what a crash
 can leave behind, and the same residue is reachable with no concurrency at all.
 Concurrency is handled separately and per storage: when the graph backend
-declares `requires_single_writer` (`NetworkXStorage`, the only one), public admin
+declares `requires_single_writer` (`NetworkXStorage`, the only one), or chunk
+tracking sits on `OpenSearchKVStorage`, public admin
 graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
-lock plus the pipeline `busy` reservation. Other graph backends do not take that
+lock plus the pipeline `busy` reservation. Other backend combinations do not take that
 gate and rely on the per-entity keyed locks. See
 [Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
 and recovery behavior.
@@ -2058,6 +2117,19 @@ The deletion process:
 3. Rebuild entities/relationships that still exist in other documents
 4. Update all related vector indexes
 5. Clean up document status records
+
+Step 3 rebuilds each shared entity and relation from the extraction cache of
+the surviving chunks. A surviving chunk whose initial extraction is no longer
+cached (the cache was cleared, the row was shared with a document deleted with
+`delete_llm_cache=True`, or `enable_llm_cache_for_entity_extract` was off) is
+**re-extracted with the LLM** during the deletion, so a deletion can make LLM
+calls and fails, retryably, when the LLM is unavailable. A re-extraction may
+name things differently from the original one: the pipeline history then lists
+the surviving documents involved, and reprocessing them (delete with
+`delete_llm_cache=False`, then insert the same content again) merges the new
+names. An entity or relation that no surviving chunk's extraction names is
+kept, with its `source_id` / `file_path` rewritten to the surviving chunks. See
+[Deletion rebuild evidence](design/PurgeRecoveryContract.md#deletion-rebuild-evidence).
 
 **Important Reminders:**
 1. All deletion operations are **irreversible** — use with caution

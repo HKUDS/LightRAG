@@ -26,6 +26,7 @@ from opensearchpy.exceptions import (  # type: ignore
 )
 import lightrag.kg.opensearch_impl
 from lightrag.exceptions import (
+    StorageCapabilityError,
     StorageControlPlaneError,
     VectorSpaceMismatchError,
     flush_may_have_lost_reference,
@@ -4679,6 +4680,112 @@ class TestVectorStorage:
                 },
                 embedding_func=embed_func,
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "refresh_shards,count_shards,expected",
+        [
+            # Unassigned replicas leave a refresh short without failing it.
+            (
+                {"total": 4, "successful": 2, "failed": 0},
+                {"total": 2, "successful": 2, "failed": 0},
+                5,
+            ),
+            (
+                {"total": 4, "successful": 2, "failed": 0},
+                {"total": 2, "successful": 1, "failed": 1},
+                "partial_shard_count",
+            ),
+            ({"total": 4, "successful": 2, "failed": 0}, None, "partial_shard_count"),
+            (
+                {"total": 4, "successful": 1, "failed": 1},
+                {"total": 2, "successful": 2, "failed": 0},
+                "partial_refresh",
+            ),
+        ],
+        ids=["all-shards", "failed-count-shard", "no-count-header", "failed-refresh"],
+    )
+    async def test_exact_count_needs_every_shard_refreshed_and_counted(
+        self,
+        global_config,
+        embed_func,
+        mock_client,
+        refresh_shards,
+        count_shards,
+        expected,
+    ):
+        order: list[str] = []
+
+        async def record_refresh(**kwargs):
+            order.append("refresh")
+            return {"_shards": refresh_shards}
+
+        async def record_count(**kwargs):
+            order.append("count")
+            response = {"count": 5}
+            if count_shards is not None:
+                response["_shards"] = count_shards
+            return response
+
+        mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
+        mock_client.count = AsyncMock(side_effect=record_count)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            order.clear()
+            if isinstance(expected, int):
+                assert await s.get_exact_count() == expected
+            else:
+                with pytest.raises(StorageCapabilityError, match=expected):
+                    await s.get_exact_count()
+            refreshed_only = expected == "partial_refresh"
+            assert order == (["refresh"] if refreshed_only else ["refresh", "count"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("mget", "strict_ids"),
+        [
+            (AsyncMock(side_effect=OpenSearchException("transport error")), None),
+            (
+                AsyncMock(
+                    return_value={
+                        "docs": [
+                            {"_id": "a", "found": True, "_source": {"content": "x"}},
+                            {"_id": "b", "error": {"type": "shard_failure"}},
+                        ]
+                    }
+                ),
+                None,
+            ),
+            (
+                AsyncMock(
+                    return_value={
+                        "docs": [
+                            {"_id": "a", "found": True, "_source": {"content": "x"}},
+                            {"_id": "b", "found": False},
+                        ]
+                    }
+                ),
+                ["a", None],
+            ),
+        ],
+        ids=["transport-error", "item-error", "confirmed-absent"],
+    )
+    async def test_strict_read_returns_none_only_for_confirmed_absence(
+        self, global_config, embed_func, mock_client, mget, strict_ids
+    ):
+        # get_by_ids reads all three as a miss for "b"; only the last is one.
+        mock_client.mget = mget
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert (await s.get_by_ids(["a", "b"]))[1] is None
+            if strict_ids is None:
+                with pytest.raises((OpenSearchException, RuntimeError)):
+                    await s.get_by_ids_strict(["a", "b"])
+            else:
+                rows = await s.get_by_ids_strict(["a", "b"])
+                assert [row and row["id"] for row in rows] == strict_ids
 
     @pytest.mark.asyncio
     async def test_initialize_creates_knn_index(

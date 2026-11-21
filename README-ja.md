@@ -414,12 +414,21 @@ LightRAG は4種類のバックエンドストレージを必要とします:
 - **モデルが出力ループに陥る。** 一部のモデル（特にローカル展開された Qwen モデル）は、特定のテキストで際限のない出力ループに陥ることがあります。これが断続的に発生する場合は、ドキュメントを一度再処理するだけで通常は解消します。
 - **特に参考文献の場合（P チャンク戦略）。** 段落セマンティック（`P`）チャンク戦略（例: `LIGHTRAG_PARSER=...-iteP`）を使用している場合、`CHUNK_P_DROP_REFERENCES=true` を設定すると、チャンク化の前に一致する参考文献ブロックを自動的に削除します。これにより、参考文献が大量の低価値なエンティティ・関係を生成すること（タイムアウトの一般的な原因）を防ぎます。ファイル名のヒント `paper.[-P(drop_rf=true)].pdf` でファイルごとに有効化することもできます。関連する検出パラメータ（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）は `env.example` に記載されています。
 
+### Embedding タイムアウトの解消
+
+`Embedding func: Worker execution timeout after 60s` のようなエラーは Embedding キューから発生します。このキューは独自のタイムアウトを持ち、`LLM_TIMEOUT` には従いません:
+
+- **タイムアウトは `EMBEDDING_TIMEOUT`（デフォルト `30`）です。** LLM のタイムアウトと同様に、実際の実行タイムアウトは設定値の**2倍**になるため、デフォルトでは `60s` と表示されます。`LLM_TIMEOUT` を延長しても Embedding 呼び出しには影響しません。
+- **多くの場合、原因は Embedding サービスの遅さです。** 正常な Embedding バッチは数秒で完了するため、`EMBEDDING_TIMEOUT` を延長しても通常は問題を隠すだけです。まず Embedding サービスを確認してください。
+- **並列数をサービスの処理能力に合わせてください。** LightRAG は最大 `EMBEDDING_FUNC_MAX_ASYNC`（デフォルト `8`）個のバッチを同時に送信します。Ollama では `OLLAMA_NUM_PARALLEL` をその値以上に設定するか `EMBEDDING_FUNC_MAX_ASYNC` を下げ、Embedding モデルをロードしたままにしてください（`OLLAMA_KEEP_ALIVE=-1`、または別の Ollama インスタンス）。VRAM 上で LLM と入れ替わると Embedding リクエストが停滞するためです。
+
 ### ドキュメントクエリに関するその他の重要な設定
 
 ドキュメントクエリ段階では、ニーズに応じて以下の環境変数の調整を検討するとよいでしょう:
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: LLM コンテキストに送信される取得コンテンツのトークン長を制御します。取得コンテンツは `entities`、`relations`、`text chunks` の3つの部分から構成されます。エンティティと関係の長さは独立して制御でき、テキストチャンクの長さは総長からエンティティと関係の長さを差し引いて決まります。
 - **ENABLE_CONTENT_HEADINGS**: テキストチャンクが存在するセクション見出しを LLM に送信するかどうかを制御します。デフォルトで有効で、LLM により豊富なコンテキストを提供し、回答品質を向上させます。
 - **ENABLE_LLM_CACHE**: クエリ結果をキャッシュするかどうか。デフォルトで有効です。同一のクエリ質問、クエリモード、LLM モデルパラメータであれば同じ結果を返します。
+- **KEYWORD_EXTRACTION_JSON_MODE**: クエリのキーワード抽出が LLM に構造化出力を要求する方法を制御します。`auto`（デフォルト）は `response_format={"type": "json_object"}` を要求し、プロバイダーがそのフィールド自体を拒否した場合に限り、それを外して 1 回だけ再試行します。`json_object` は常に送信し、`none` は一切送信しません。`json_object` または `none` は、プロバイダーの対応状況が分かっている場合にのみ設定してください。LM Studio などのサーバーは `json_schema`/`text` のみを受け付けて HTTP 400 を返すため、以前はすべての `hybrid`/`local`/`global` クエリが "No relevant context found" を返していました。
 - **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**: すべてのリクエストの `user_prompt` の前に連結されるグローバル指示（回答プロンプトの「Additional Instructions」セクション）で、LLM の出力を運用側から一括してカスタマイズできます。連結は逐語的でセパレータは挿入されないため、値の末尾に `\n\n` を自分で付けてください。リクエストの `user_prompt` が空の場合、この前置きだけが LLM に送られる指示になります。無効化できるのは API フィールド `disable_user_prompt_prefix` のみで、読み取りや置き換えはできません。長文や複数段落には `USER_PROMPT_PREFIX_FILE`（`PROMPT_DIR/user_prompt` 配下の `.md`/`.txt` ファイル名）を使用してください。`.env` の値は 1 行に収める必要があります。
 
 ### WebUI エントリとデフォルトエントリ
@@ -431,6 +440,8 @@ LightRAG は4種類のバックエンドストレージを必要とします:
 - **ENABLE_AI_CONTENT_NOTICE**: 両方のクエリ UI（`/workspace` と `/webui` の検索パネル）で、**LLM が生成した**回答に AI 生成である旨のラベルを付けます。モデルが書いていないテキスト（コンテキストが見つからない場合の定型応答や、管理パネルのデバッグ出力）にはラベルは付きません。デフォルトは無効です。これは UI 要素のみで、API レスポンスや保存されるチャット履歴には入りません。
 
 エンドユーザーを `/workspace` に誘導する前に知っておくべきことが 2 つあります。1 つ目は、そこでのクエリパラメータが**継承のみで編集不可**である点です。各クエリは同じブラウザーで `/webui` が保存した設定（未保存の場合はフロントエンドのデフォルト値）を使用します。これはブラウザーごとのローカル状態であり、サーバー全体のポリシーではありません。2 つ目は、管理 UI を隠すことは UX 上の分離であって**セキュリティ境界ではない**点です。API は引き続きサーバー側ですべてのエンドポイントを認可します。クエリエントリの完全な挙動については [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry) を参照してください。
+
+**WebUI 認証の移行：** 保護された `/webui` と `/workspace` へのアクセスには、`AUTH_ACCOUNTS` と強力でデフォルト以外の `TOKEN_SECRET` が必要です。API キーはプログラムからのアクセス用で、WebUI では入力も送信もされなくなりました。既存の API-key-only の WebUI ユーザーはキーを残したまま、アカウントとシークレットを設定し、再起動してすべてのタブを再読み込みしてからサインインしてください。完全にオープンなデプロイ（アカウントも有効な API キーもない）では guest トークンのフローが維持されます。詳細は[移行の説明](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access)を参照してください。
 
 ## SDK としての LightRAG の利用
 
@@ -580,6 +591,10 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 クエリモードの LLM キャッシュ（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`）を削除し、コストの高い抽出キャッシュは保持します。
+
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+所有元のチャンクが存在せず、現存するどのチャンクからも参照されていない LLM キャッシュレコードを削除します。これらのレコードはドキュメントの削除では消去されず、抽出プロンプトとその結果を保持しています。既定では報告のみを行い、`--apply` を指定すると、厳密な読み取りでチャンクが存在しないことを確認してから削除します。
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 

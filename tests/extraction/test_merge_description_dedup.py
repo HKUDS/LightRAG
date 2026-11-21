@@ -10,7 +10,9 @@ resume) re-appended the same description, growing the stored fragment count by
 one copy per reprocess (N -> N+1).
 
 These drive the real merge round-trip (``get_node``/``get_edge`` -> merge ->
-``upsert_node``/``upsert_edge``) against an in-memory graph, no DB or LLM.
+``upsert_node``/``upsert_edge``) against an in-memory graph, no DB or LLM. The
+same harness also pins the node ``entity_type`` vote: the stored type wins a
+tie, and an ``UNKNOWN`` placeholder casts no vote.
 """
 
 import pytest
@@ -230,6 +232,49 @@ async def test_node_merge_keeps_distinct_descriptions():
         "Alice leads the platform team.",
     }
     assert len(frags) == 2
+
+
+# --- node entity_type vote -------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_type", "new_types", "expected"),
+    [
+        # The stored type is one vote and must win a 1:1 tie.
+        pytest.param("person", ["organization"], "person", id="tie-keeps-stored"),
+        pytest.param(
+            "person", ["organization", "organization"], "organization", id="majority"
+        ),
+        # A relation-endpoint placeholder is not a vote.
+        pytest.param("UNKNOWN", ["person"], "person", id="placeholder-yields"),
+    ],
+)
+async def test_node_merge_entity_type_vote(stored_type, new_types, expected):
+    graph = _MemGraph()
+    graph.nodes["ALICE"] = {
+        "entity_id": "ALICE",
+        "entity_type": stored_type,
+        "description": "Alice.",
+        "source_id": "chunk-0",
+        "file_path": "doc0.txt",
+    }
+    nodes_data = [
+        {
+            "entity_name": "ALICE",
+            "entity_type": entity_type,
+            "description": f"Alice {i}.",
+            "source_id": f"chunk-{i}",
+            "file_path": "doc1.txt",
+            "timestamp": i,
+        }
+        for i, entity_type in enumerate(new_types, start=1)
+    ]
+
+    await _merge_nodes_then_upsert("ALICE", nodes_data, graph, None, _config())
+
+    assert graph.nodes["ALICE"]["entity_type"] == expected
 
 
 # --- edge merge round-trip --------------------------------------------------

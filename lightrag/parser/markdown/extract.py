@@ -59,7 +59,10 @@ DRAWING_MARKER_RE = re.compile(r'<mddrawing ref="([^"]+)"/>')
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 # Trailing closing-hash run of an ATX heading (``## Foo ##`` → ``Foo``).
 _HEADING_TRAILING_HASHES_RE = re.compile(r"\s+#+\s*$")
-_FENCE_RE = re.compile(r"^(`{3,}|~{3,})(.*)$")
+# A fence opener or closer. As in CommonMark, the info string after a backtick
+# run may not contain a backtick: a line holding only an inline code span such
+# as ```pip install x``` is text, not a fence that swallows the rest of the file.
+_FENCE_RE = re.compile(r"^(`{3,}(?=[^`]*$)|~{3,})(.*)$")
 # A GFM delimiter row: one or more ``---`` cells with optional ``:`` alignment.
 _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 # A single delimiter cell (after splitting on ``|``): ``---`` with optional
@@ -870,6 +873,9 @@ def _consume_block_equation(lines: list[str], start: int) -> tuple[int, str]:
     if inner_first.rstrip().endswith("$$") and len(inner_first.rstrip()) >= 2:
         latex = inner_first.rstrip()[:-2].strip()
         return 1, latex
+    # ``$$ … $$`` followed by prose closes on its own line: not a block.
+    if "$$" in inner_first:
+        return 0, ""
     # Multi-line: collect until a line whose stripped text ends with ``$$``.
     body: list[str] = []
     if inner_first.strip():
@@ -988,7 +994,9 @@ def _consume_pipe_table(
     starts an ATX heading recognized by ``extract_markdown``. An escaped pipe
     counts as cell content once the table is established. This subset still
     requires a pipe in each body row and does not detect all GFM block types.
-    A row may carry fewer cells than the header; the IR builder pads it."""
+    Rows keep the cell count they were written with, shorter or longer than
+    the header; the IR builder pads every row, header included, to the widest
+    one."""
     header = _split_pipe_row(lines[start])
     body: list[list[str]] = []
     j = start + 2  # skip header + delimiter

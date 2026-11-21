@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import codecs
 import io
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -46,6 +49,12 @@ _SVG_BYTES = (
 )
 
 
+@pytest.fixture(scope="module")
+def require_svg_rasterizer():
+    if md_parser.check_svg_rasterizer() is not None:
+        pytest.skip("SVG rendering requires CairoSVG with a working native libcairo")
+
+
 def test_magic_detection():
     assert _image_ext_from_magic(_PNG_BYTES) == "png"
     assert _image_ext_from_magic(b"\xff\xd8\xff\xe0junk") == "jpg"
@@ -61,7 +70,7 @@ def test_looks_like_svg():
     assert _looks_like_svg(b"<html><body>no svg</body></html>") is False
 
 
-def test_svg_rasterized_to_png_via_coerce():
+def test_svg_rasterized_to_png_via_coerce(require_svg_rasterizer):
     coerced = _image_bytes_and_ext(
         _SVG_BYTES, max_bytes=25 * 1024 * 1024, max_svg_pixels=16_000_000
     )
@@ -105,17 +114,18 @@ def test_svg_dimensions_parsed_from_width_height_and_viewbox():
 def test_svg_oversized_canvas_rejected_before_render(monkeypatch):
     # A tiny SVG declaring a huge canvas is rejected on the pre-render pixel
     # budget — cairosvg.svg2png must never be reached.
-    import cairosvg
-
-    def _boom(*a, **k):  # pragma: no cover - must not be called
-        raise AssertionError("cairosvg.svg2png should not run for oversized canvas")
-
-    monkeypatch.setattr(cairosvg, "svg2png", _boom)
+    render = Mock(
+        side_effect=AssertionError(
+            "cairosvg.svg2png should not run for oversized canvas"
+        )
+    )
+    monkeypatch.setitem(sys.modules, "cairosvg", SimpleNamespace(svg2png=render))
     big = b'<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000"/>'
     assert md_parser._rasterize_svg(big, max_pixels=16_000_000) is None
+    render.assert_not_called()
 
 
-def test_base64_svg_decoded_and_rasterized():
+def test_base64_svg_decoded_and_rasterized(require_svg_rasterizer):
     import base64 as _b64
 
     p = _make_parser()
@@ -130,7 +140,7 @@ def test_base64_svg_decoded_and_rasterized():
     assert not warnings
 
 
-def test_textpack_svg_file_rasterized_to_png(tmp_path: Path):
+def test_textpack_svg_file_rasterized_to_png(tmp_path: Path, require_svg_rasterizer):
     pack = tmp_path / "note.textpack"
     with zipfile.ZipFile(pack, "w") as zf:
         zf.writestr("text.markdown", "# N\n\n![logo](assets/logo.svg)\n")
@@ -214,6 +224,32 @@ def test_host_is_public_rejects_rfc8215_local_use_nat64_slash48(monkeypatch):
     # The "low 32 bits" style literals in the same /48 are blocked too.
     assert _host_is_public("64:ff9b:1::7f00:1") is False
     assert _host_is_public("64:ff9b:1::808:808") is False
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "::ffff:0:7f00:1",  # 127.0.0.1 (loopback)
+        "::ffff:0:a00:1",  # 10.0.0.1 (RFC1918)
+        "::ffff:0:a9fe:a9fe",  # 169.254.169.254 (cloud metadata)
+        "::ffff:0:808:808",  # 8.8.8.8 (public: the whole block is denied)
+    ],
+)
+def test_host_is_public_rejects_ipv4_translated_siit_block(monkeypatch, host):
+    # The RFC 2765 IPv4-translated SIIT prefix ::ffff:0:0:0/96 carries the IPv4
+    # in the low 32 bits but is neither IPv4-mapped (``ipv4_mapped`` is None)
+    # nor IPv4-compatible, and CPython classifies it globally routable. A host
+    # whose SIIT translator still uses it would deliver the request to the
+    # embedded IPv4, so the whole reserved block is default-denied.
+    monkeypatch.delenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", raising=False)
+    assert _host_is_public(host) is False
+
+
+def test_ipv4_translated_siit_block_permitted_only_via_allowlist(monkeypatch):
+    monkeypatch.setenv("NATIVE_MD_IMAGE_ALLOWED_NON_PUBLIC_CIDRS", "::ffff:0:0:0/96")
+    assert _host_is_public("::ffff:0:808:808") is True
+    # The IPv4-mapped form (a different prefix) is unaffected by the allowlist.
+    assert _host_is_public("::ffff:7f00:1") is False
 
 
 def test_rfc8215_slash48_permitted_only_via_allowlist(monkeypatch):

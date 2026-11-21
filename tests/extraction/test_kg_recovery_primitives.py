@@ -403,8 +403,54 @@ async def test_rollback_rebuild_reports_partially_missing_cache():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_default_rebuild_keeps_best_effort_return():
-    """Default (non-strict) behavior is unchanged: missing cache logs a
-    warning and returns without raising."""
-    text_chunks = _KV({"c1": {"content": "x", "llm_cache_list": []}})
-    await rebuild_knowledge_from_chunks(**_rebuild_kwargs(text_chunks, _KV()))
+async def test_default_rebuild_reextracts_chunk_without_initial_extraction(
+    monkeypatch,
+):
+    """The default best_effort policy re-extracts a surviving chunk that has
+    no initial extraction row instead of rebuilding without its facts."""
+    calls = []
+
+    async def fake_extract(chunks, global_config, **kwargs):
+        calls.append((sorted(chunks), kwargs["text_chunks_storage"]))
+        return [({}, {}) for _ in chunks]
+
+    monkeypatch.setattr(operate_module, "extract_entities", fake_extract)
+    text_chunks = _KV(
+        {"c1": {"content": "x", "full_doc_id": "d1", "llm_cache_list": []}}
+    )
+    report = await rebuild_knowledge_from_chunks(
+        **_rebuild_kwargs(
+            text_chunks,
+            _KV(),
+            doc_status_storage=_KV({"d1": {"status": "processed"}}),
+        )
+    )
+    assert calls == [(["c1"], text_chunks)]
+    assert report.reextracted_chunk_ids == {"c1"}
+    assert report.missing_cache_chunk_ids == set()
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_default_rebuild_never_reextracts_a_chunk_without_a_document(
+    monkeypatch,
+):
+    """A chunk with no extract key whose ``full_doc_id`` has no status record
+    is custom KG content, even when its row lost the ``source_id`` alias
+    (PGKVStorage does not store it): it is never sent to the LLM."""
+    calls = []
+
+    async def unexpected_extract(chunks, *args, **kwargs):
+        calls.append(sorted(chunks))
+        raise AssertionError("custom KG content must not be re-extracted")
+
+    monkeypatch.setattr(operate_module, "extract_entities", unexpected_extract)
+    text_chunks = _KV(
+        {"c1": {"content": "x", "full_doc_id": "curated", "llm_cache_list": []}}
+    )
+    report = await rebuild_knowledge_from_chunks(
+        **_rebuild_kwargs(text_chunks, _KV(), doc_status_storage=_KV())
+    )
+    assert calls == []
+    assert report.reextracted_chunk_ids == set()
+    assert report.missing_cache_chunk_ids == {"c1"}

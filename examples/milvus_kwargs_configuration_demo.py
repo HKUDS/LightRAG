@@ -39,8 +39,6 @@ async def main():
             # All of these can be configured via vector_db_storage_cls_kwargs
             # Index type (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.)
             "index_type": "HNSW",
-            # Distance metric (COSINE, L2, IP)
-            "metric_type": "COSINE",
             # HNSW parameters
             "hnsw_m": 32,  # Number of connections per layer (2-2048)
             "hnsw_ef_construction": 256,  # Size of dynamic candidate list during construction
@@ -64,9 +62,6 @@ async def main():
     )
     print(
         f"   Index Type: {rag.vector_db_storages['entities'].index_config.index_type}"
-    )
-    print(
-        f"   Metric Type: {rag.vector_db_storages['entities'].index_config.metric_type}"
     )
     print(f"   HNSW M: {rag.vector_db_storages['entities'].index_config.hnsw_m}")
     print(

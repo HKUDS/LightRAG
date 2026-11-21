@@ -414,12 +414,21 @@ LLM timeouts during entity-relation extraction usually trace back to one of thre
 - **The model gets stuck in an output loop.** Some models (locally deployed Qwen models in particular) occasionally fall into an endless-output loop on certain text. When this is intermittent, simply re-processing the document once usually resolves it.
 - **References specifically (P chunking strategy).** When using the paragraph-semantic (`P`) chunking strategy (e.g., `LIGHTRAG_PARSER=...-iteP`), set `CHUNK_P_DROP_REFERENCES=true` to automatically drop matching reference blocks before chunking. This prevents references from generating a flood of low-value entities and relations, a common source of timeouts. It can also be enabled per file via the filename hint `paper.[-P(drop_rf=true)].pdf`; related detection knobs (`CHUNK_P_REFERENCES_TAIL_N`, `CHUNK_P_REFERENCES_HEADINGS`) are documented in `env.example`.
 
+### Resolving Embedding Timeouts
+
+An error such as `Embedding func: Worker execution timeout after 60s` comes from the embedding queue, which has its own timeout and does not follow `LLM_TIMEOUT`:
+
+- **The timeout is `EMBEDDING_TIMEOUT` (default `30`).** As with the LLM timeouts, the effective execution timeout is **twice** the configured value, so the default reports `60s`. Raising `LLM_TIMEOUT` has no effect on embedding calls.
+- **A slow embedding service is the usual cause.** A healthy embedding batch completes in a few seconds, so raising `EMBEDDING_TIMEOUT` usually only hides the problem. Check the embedding service first.
+- **Match the concurrency to what the service can handle.** LightRAG sends up to `EMBEDDING_FUNC_MAX_ASYNC` (default `8`) batches at once. With Ollama, set `OLLAMA_NUM_PARALLEL` to at least that value or lower `EMBEDDING_FUNC_MAX_ASYNC`, and keep the embedding model loaded (`OLLAMA_KEEP_ALIVE=-1`, or a separate Ollama instance), because swapping it with the LLM in VRAM stalls embedding requests.
+
 ### Other Important Configurations for Document Querying
 
 During the document query stage, you may also want to adjust the following environment variables based on your needs:
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**: Controls the token length of the retrieved content sent to the LLM context. The retrieved content consists of three parts: `entities`, `relations`, and `text chunks`. The lengths of entities and relations can be controlled independently, while the text chunk length is determined by subtracting the entity and relation lengths from the total length.
 - **ENABLE_CONTENT_HEADINGS**: Controls whether the section heading where a text chunk resides is sent to the LLM; enabled by default, providing richer context for the LLM and improving answer quality.
 - **ENABLE_LLM_CACHE**: Whether to cache query results. Enabled by default; identical query questions, query modes, and LLM model parameters will return the same result.
+- **KEYWORD_EXTRACTION_JSON_MODE**: Controls how query keyword extraction asks the LLM for structured output. `auto` (the default) requests `response_format={"type": "json_object"}`, and retries once without it only when the provider rejects that field itself; `json_object` always sends it, and `none` never sends it. Only set `json_object` or `none` when you know your provider's position — servers such as LM Studio accept only `json_schema`/`text` and answer HTTP 400, which previously made every `hybrid`/`local`/`global` query return "No relevant context found".
 - **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**: Global instructions prepended to every request's `user_prompt` (the "Additional Instructions" section of the answer prompt), giving operators one place to customize LLM output. It is concatenated verbatim, so end the value with `\n\n` yourself. If a request's `user_prompt` is empty, the prefix alone becomes the instructions sent to the LLM; only the API field `disable_user_prompt_prefix` suppresses it, and a request can never read or replace it. Use `USER_PROMPT_PREFIX_FILE` (a `.md`/`.txt` file name under `PROMPT_DIR/user_prompt`) for long or multi-paragraph text, since a `.env` value must stay on one line.
 
 ### WebUI Entries and the Default Entry
@@ -431,6 +440,8 @@ The server mounts two WebUI entries from a single frontend build. **`/webui`** i
 - **ENABLE_AI_CONTENT_NOTICE**: Labels every **LLM-generated** answer as AI-generated in both query UIs (`/workspace` and the `/webui` retrieval panel); text the model did not write — the canned no-context reply, the admin panel's debug output — stays unlabelled. Off by default; it is a UI element only and never enters the API response or the stored chat history.
 
 Two things to know before pointing end users at `/workspace`. First, query parameters there are **inherited, not editable**: each query uses the settings `/webui` saved in the **same browser** (frontend defaults when none were saved), which is per-browser local state, not a server-wide policy. Second, hiding the admin UI is a UX split, **not** a security boundary — the API still authorizes every endpoint server-side. For the complete behavior of the query entry, see [LightRAG-API-Server.md](./docs/LightRAG-API-Server.md#the-workspace-query-entry).
+
+**WebUI authentication migration:** Protected `/webui` and `/workspace` access requires `AUTH_ACCOUNTS` and a strong, non-default `TOKEN_SECRET`. API keys are for programmatic access, no longer entered or sent by the WebUI. Existing API-key-only WebUI users must keep their key, configure accounts and the secret, restart, reload all tabs, and sign in. Fully open deployments (neither accounts nor an effective API key) keep the guest-token flow. See [migration details](docs/LightRAG-API-Server.md#webui-compatibility-change-account-only-protected-access).
 
 ## Using LightRAG As SDK
 
@@ -580,6 +591,10 @@ Drops every data storage of one workspace offline, exactly as the WebUI *Clear* 
 **`clean_llm_query_cache.py`** — `lightrag-clean-llmqc` — [README_CLEAN_LLM_QUERY_CACHE.md](./lightrag/tools/README_CLEAN_LLM_QUERY_CACHE.md)
 
 Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`, `naive:*`) while preserving the expensive extraction cache.
+
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+Deletes chunk-scoped LLM cache rows whose owning chunk no longer exists and that no live chunk still references — rows a document deletion could not reach, still holding the extraction prompt and its result. Reports by default; `--apply` deletes, and only after a strict read confirms the chunk is gone.
 
 **`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
