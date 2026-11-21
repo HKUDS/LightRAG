@@ -63,6 +63,7 @@ from ..constants import CUSTOM_CHUNK_PATCH_METADATA_KEY, DEFAULT_QUERY_PRIORITY
 from ..exceptions import (
     DataMigrationError,
     SourceConflictRepairCASError,
+    StorageCapabilityError,
     StorageControlPlaneError,
     StorageRecordNotFoundError,
     VectorSpaceMismatchError,
@@ -5738,6 +5739,26 @@ class PGVectorStorage(BaseVectorStorage):
             )
         return not result["has_data"]
 
+    async def get_exact_count(self) -> int:
+        """Exact row count of this workspace. See ``BaseVectorStorage``.
+
+        Same scope as ``is_empty`` and ``get_by_ids``: this table, filtered by
+        ``workspace``. No ``except``: a failed read propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+
+        query = (
+            f"SELECT COUNT(*) AS row_count FROM {self.table_name} WHERE workspace=$1"
+        )
+        result = await self.db.query(query, [self.workspace])
+        if not result or result.get("row_count") is None:
+            raise RuntimeError(
+                f"[{self.workspace}] row count on {self.table_name} returned no row"
+            )
+        return int(result["row_count"])
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID with read-your-writes against the buffer.
 
@@ -5798,6 +5819,16 @@ class PGVectorStorage(BaseVectorStorage):
         Response shape: same buffered-vs-SQL inconsistency as
         ``get_by_id`` — see that docstring for details.
         """
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
 
@@ -5842,6 +5873,8 @@ class PGVectorStorage(BaseVectorStorage):
                     if row_id is not None:
                         id_map[str(row_id)] = record_dict
             except Exception as e:
+                if strict:
+                    raise
                 logger.error(
                     f"[{self.workspace}] Error retrieving vector data for IDs {ids}: {e}"
                 )

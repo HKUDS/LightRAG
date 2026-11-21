@@ -15,7 +15,11 @@ import pipmaster as pm
 
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_QUERY_PRIORITY, QDRANT_SUBMIT_LIMIT
-from ..exceptions import DataMigrationError, VectorSpaceMismatchError
+from ..exceptions import (
+    DataMigrationError,
+    StorageCapabilityError,
+    VectorSpaceMismatchError,
+)
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 from ..utils import (
     _bounded_submit_impl,
@@ -1309,6 +1313,27 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
         return not points
 
+    async def get_exact_count(self) -> int:
+        """Exact point count of this workspace. See ``BaseVectorStorage``.
+
+        Scoped by the workspace payload filter like ``is_empty``, and asked
+        with ``exact=True``: Qdrant's default count is approximate. No
+        ``except``: a failed read propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+
+        result = await run_in_qdrant_executor(
+            self._client.count,
+            collection_name=self.final_namespace,
+            count_filter=models.Filter(
+                must=[workspace_filter_condition(self.effective_workspace)]
+            ),
+            exact=True,
+        )
+        return int(result.count)
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer."""
         async with self._flush_lock:
@@ -1350,6 +1375,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order."""
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
 
@@ -1401,6 +1436,8 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                     if original_id is not None:
                         payload_by_original_id[str(original_id)] = payload
             except Exception as e:
+                if strict:
+                    raise
                 logger.error(
                     f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
                 )

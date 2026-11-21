@@ -5093,6 +5093,23 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         return await collection.count_documents({}, limit=1) == 0
 
+    async def get_exact_count(self) -> int:
+        """Exact document count of this collection. See ``BaseVectorStorage``.
+
+        No ``except``: a failed read propagates.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+            if self._data is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] MongoDB collection is not connected, "
+                    f"so {self.namespace} cannot be counted"
+                )
+            collection = self._data
+
+        return int(await collection.count_documents({}))
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID, with read-your-writes against the buffer.
 
@@ -5126,6 +5143,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs (read-your-writes), preserving order."""
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
 
@@ -5157,6 +5184,8 @@ class MongoVectorDBStorage(BaseVectorStorage):
                     key = str(result_dict.get("id", result_dict.get("_id")))
                     formatted_map[key] = result_dict
             except Exception as e:
+                if strict:
+                    raise
                 logger.error(
                     f"[{self.workspace}] Error retrieving vector data for IDs {remaining}: {e}"
                 )

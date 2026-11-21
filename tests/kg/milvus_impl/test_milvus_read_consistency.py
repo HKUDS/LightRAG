@@ -112,6 +112,25 @@ async def test_is_empty_reads_strong() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_exact_count_reads_strong() -> None:
+    storage = _make_storage()
+    storage._client.query.return_value = [{"count(*)": 3}]
+    assert await storage.get_exact_count() == 3
+    _assert_every_query_strong(storage)
+    assert storage._client.query.call_args.kwargs["output_fields"] == ["count(*)"]
+
+
+@pytest.mark.asyncio
+async def test_strict_read_raises_where_get_by_ids_reports_nothing() -> None:
+    storage = _make_storage()
+    storage._client.query.side_effect = ConnectionError("milvus down")
+
+    assert await storage.get_by_ids(["rel-1"]) == []
+    with pytest.raises(ConnectionError):
+        await storage.get_by_ids_strict(["rel-1"])
+
+
+@pytest.mark.asyncio
 async def test_delete_entity_relation_victim_lookup_reads_strong() -> None:
     storage = _make_storage()
     storage._client.query.return_value = [{"id": "rel-A-B"}]

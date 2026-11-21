@@ -554,6 +554,52 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Point read with complete-or-raise semantics, one entry per id.
+
+        Returns a list aligned with ``ids``: the record, in the shape
+        ``get_by_ids`` returns (``id`` included), or ``None`` only when the
+        backend positively determined that the id is absent. A transport or
+        server error, a response that failed for some items, or a container
+        that cannot be read MUST raise -- never a ``None`` slot and never a
+        short list. Writes this instance still buffers are served the way
+        ``get_by_ids`` serves them.
+
+        It exists because ``get_by_ids`` may answer a failed read with a miss
+        (logged, then ``[]`` or ``None`` slots), which is harmless where a miss
+        only defers or displays something. Use this one wherever a miss drives
+        a decision, as the offline ``lightrag-rebuild-vdb`` check does.
+
+        The default raises :class:`~lightrag.exceptions.StorageCapabilityError`:
+        a backend without it cannot prove a miss, and callers must treat that
+        as "unknown", never as "absent".
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support strict point reads"
+        )
+
+    async def get_exact_count(self) -> int:
+        """Return the exact number of persisted records ``get_by_ids`` can address.
+
+        An optional maintenance capability, consumed by the offline
+        consistency check in ``lightrag/tools/rebuild_vdb.py``. Rules for
+        implementers:
+
+        * count this namespace and workspace only, in the id space
+          ``get_by_ids`` answers;
+        * exact or raise: a transport error, an unreadable container, writes
+          still buffered in this process, or an index whose parts disagree
+          raise ``StorageCapabilityError`` -- never return an estimate, and
+          never return zero for "could not tell";
+        * read-only: never repair what the count finds.
+
+        The default raises ``StorageCapabilityError``, so the check reports
+        the target ``inconclusive`` rather than guessing.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support exact persisted counts"
+        )
+
     @abstractmethod
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs

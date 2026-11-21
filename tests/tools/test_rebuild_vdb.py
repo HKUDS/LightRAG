@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import lightrag.tools.rebuild_vdb as rebuild_vdb
-from lightrag.exceptions import VectorSpaceMismatchError
+from lightrag.exceptions import StorageCapabilityError, VectorSpaceMismatchError
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
 from lightrag.namespace import CONFIG_CONTAINER_TAG, NameSpace
 from lightrag.tools.rebuild_vdb import (
@@ -66,10 +66,8 @@ async def test_library_rebuild_rejects_noop_vector_storage_before_source_reads()
         global_config={},
         embedding_func=None,
     )
-    graph = SimpleNamespace(
-        get_all_nodes=AsyncMock(),
-        get_all_edges=AsyncMock(),
-    )
+    # Any source read would raise AttributeError, not the asserted refusal.
+    graph = SimpleNamespace()
     text_chunks = SimpleNamespace()
     error_match = "NoopVectorDBStorage.*persistent vector storage"
 
@@ -79,9 +77,6 @@ async def test_library_rebuild_rejects_noop_vector_storage_before_source_reads()
         await rebuild_relationships_vdb(graph, noop_vdb, {})
     with pytest.raises(RuntimeError, match=error_match):
         await rebuild_chunks_vdb(text_chunks, noop_vdb)
-
-    graph.get_all_nodes.assert_not_awaited()
-    graph.get_all_edges.assert_not_awaited()
 
 
 class MockVDB:
@@ -102,39 +97,62 @@ class MockVDB:
             self.records.update(payload)
 
         async def _get_by_ids(ids):
-            return [self.records.get(i) for i in ids]
+            return [
+                ({"id": i, **self.records[i]} if i in self.records else None)
+                for i in ids
+            ]
+
+        async def _get_exact_count():
+            return len(self.records)
 
         self.drop = AsyncMock(side_effect=_drop)
         self.upsert = AsyncMock(side_effect=_upsert)
         self.get_by_ids = AsyncMock(side_effect=_get_by_ids)
+        self.get_by_ids_strict = AsyncMock(side_effect=_get_by_ids)
+        self.get_exact_count = AsyncMock(side_effect=_get_exact_count)
         self.delete = AsyncMock()
         self.index_done_callback = AsyncMock()
 
 
 def make_graph(nodes=None, edges=None):
+    nodes = nodes or []
+    edges = edges or []
     graph = MagicMock()
-    graph.get_all_nodes = AsyncMock(return_value=nodes or [])
-    graph.get_all_edges = AsyncMock(return_value=edges or [])
+    graph.get_all_nodes = AsyncMock(return_value=nodes)
+    graph.get_all_edges = AsyncMock(return_value=edges)
+    graph.get_nodes_batch = AsyncMock(
+        side_effect=lambda labels: {
+            str(item.get("entity_id") or item.get("id")): item
+            for item in nodes
+            if item.get("entity_id") is not None or item.get("id") is not None
+        }
+    )
+
+    async def iter_labels(batch_size):
+        labels = [item.get("entity_id") or item.get("id") for item in nodes]
+        for start in range(0, len(labels), batch_size):
+            yield labels[start : start + batch_size]
+
+    async def iter_edges(batch_size):
+        for start in range(0, len(edges), batch_size):
+            yield edges[start : start + batch_size]
+
+    graph.iter_labels = iter_labels
+    graph.iter_edges = iter_edges
     return graph
 
 
-class _FakeLock:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
-
-
-class JsonKVStorage:
-    """Minimal stand-in; the class NAME drives enumerate_kv_keys dispatch."""
+class RowKV:
+    """KV stand-in exposing only ``iter_rows`` -- the one surface the tool reads."""
 
     def __init__(self, data):
         self._data = data
-        self._storage_lock = _FakeLock()
+        self.page_sizes = []
 
-    async def get_by_ids(self, ids):
-        return [self._data.get(i) for i in ids]
+    async def iter_rows(self, *, page_size=200):
+        self.page_sizes.append(page_size)
+        for key, value in self._data.items():
+            yield {"_id": key, **value}
 
 
 def node(name, **overrides):
@@ -233,18 +251,6 @@ async def test_rebuild_entities_skips_dirty_nodes():
     assert stats["rebuilt"] == 1
     assert stats["skipped"] == 2
     assert list(vdb.records) == [compute_mdhash_id("Alice", prefix="ent-")]
-
-
-@pytest.mark.asyncio
-async def test_rebuild_drops_once_before_any_upsert():
-    graph = make_graph(nodes=[node("Alice"), node("Bob")])
-    vdb = MockVDB()
-
-    await rebuild_entities_vdb(graph, vdb, {}, batch_size=1)
-
-    assert vdb.drop.await_count == 1
-    assert vdb.call_order[0] == "drop"
-    assert vdb.call_order.count("upsert") == 2
 
 
 @pytest.mark.asyncio
@@ -377,7 +383,7 @@ async def test_rebuild_relationships_skips_edges_without_endpoints():
 
 @pytest.mark.asyncio
 async def test_rebuild_chunks_payload_from_kv_records():
-    kv = JsonKVStorage(
+    kv = RowKV(
         {
             "chunk-1": {
                 "content": "chunk text",
@@ -405,30 +411,13 @@ async def test_rebuild_chunks_payload_from_kv_records():
 
 
 @pytest.mark.asyncio
-async def test_rebuild_chunks_skips_records_without_content():
-    kv = JsonKVStorage(
-        {
-            "chunk-1": {"content": "ok", "full_doc_id": "doc-1"},
-            "chunk-2": {"full_doc_id": "doc-1"},  # no content
-        }
-    )
-    vdb = MockVDB()
-
-    stats = await rebuild_chunks_vdb(kv, vdb)
-
-    assert stats["rebuilt"] == 1
-    assert stats["skipped"] == 1
-    assert "chunk-2" not in vdb.records
-
-
-@pytest.mark.asyncio
 async def test_rebuild_chunks_covers_all_id_schemes():
     # Chunks live under several id schemes that no single prefix matches:
     # custom KG ("chunk-<hash>"), the text pipeline ("{doc_id}-chunk-{order}",
     # which does NOT start with "chunk-"), and multimodal
     # ("{doc_id}-mm-<modality>-{order}"). A prefix-only filter dropped the
     # pipeline/multimodal chunks and rebuilt to zero. All schemes must rebuild.
-    kv = JsonKVStorage(
+    kv = RowKV(
         {
             "chunk-deadbeef": {"content": "custom kg", "full_doc_id": "doc-xyz"},
             "doc-abc123-chunk-000": {"content": "first", "full_doc_id": "doc-abc123"},
@@ -567,9 +556,10 @@ async def test_check_batches_requests():
     )
 
     assert report["consistent"] is True
-    assert entities_vdb.get_by_ids.await_count == 3  # ceil(5 / 2)
+    assert entities_vdb.get_by_ids_strict.await_count == 3  # ceil(5 / 2)
     assert all(
-        len(call.args[0]) <= 2 for call in entities_vdb.get_by_ids.await_args_list
+        len(call.args[0]) <= 2
+        for call in entities_vdb.get_by_ids_strict.await_args_list
     )
 
 
@@ -1272,11 +1262,11 @@ async def test_check_reports_the_refusal_instead_of_all_records_missing():
     assert report["incompatible"]["entities"]
     assert report["consistent"] is False
     # The refused store is not probed at all, so it reports no false drift.
-    entities_vdb.get_by_ids.assert_not_awaited()
+    entities_vdb.get_by_ids_strict.assert_not_awaited()
     assert report["missing_entities"] == 0
     assert report["graph_entities"] == 2
     # Its healthy sibling is still probed and still reports honestly.
-    relationships_vdb.get_by_ids.assert_awaited()
+    relationships_vdb.get_by_ids_strict.assert_awaited()
     assert report["missing_relations"] == 1
 
 
@@ -1290,23 +1280,41 @@ async def test_check_without_refusals_is_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_run_recovers_refused_targets_before_rebuilding(monkeypatch):
+@pytest.mark.parametrize("source", ["readable", "unreadable"])
+async def test_run_recovers_a_refused_target_only_after_its_source_is_read(
+    monkeypatch, source
+):
+    # Recovery drops the refused container -- the operator's fallback for
+    # reverting the embedding configuration -- so it runs from before_drop,
+    # after the whole source was spooled, never ahead of a source read.
     tool = _runnable_tool(monkeypatch, iter(["2", "0"]))
     tool.setup_storages = AsyncMock(return_value=True)
     tool.embedding_available = True
     tool.print_source_counts = AsyncMock()
+    tool.commit_baseline = AsyncMock()
     monkeypatch.setattr(tool, "confirm_rebuild", lambda targets: True)
+    tool.graph = make_graph(nodes=[node("Alice")])
+    if source == "unreadable":
+        tool.graph.get_nodes_batch = AsyncMock(return_value={"Alice": "{broken"})
+    tool.entities_vdb, tool.relationships_vdb = MockVDB(), MockVDB()
+    tool.global_config = {}
     tool.incompatible_vdbs = {"entities": "refused", "chunks": "refused"}
-    tool.recover_incompatible = AsyncMock()
+    tool.recover_incompatible = AsyncMock(
+        side_effect=lambda labels: tool.entities_vdb.call_order.append(
+            f"recover:{','.join(labels)}"
+        )
+    )
 
-    ok = rebuild_vdb._new_stats("entities", 1)
-    ok["rebuilt"] = 1
-    tool.run_rebuild_entities_relations = AsyncMock(return_value=[ok])
-
-    assert await tool.run() is True
-    # Option 2 rebuilds entities + relationships only, so only those are
-    # recovered; chunks stays refused until its own rebuild.
-    tool.recover_incompatible.assert_awaited_once_with(["entities", "relationships"])
+    if source == "readable":
+        assert await tool.run() is True
+        # Option 2 never recovers chunks; entities recovers right before its drop.
+        assert tool.entities_vdb.call_order[:2] == ["recover:entities", "drop"]
+    else:
+        assert await tool.run() is False  # the source error is reported
+        assert tool.entities_vdb.call_order == []
+    assert all(
+        call.args[0] != ["chunks"] for call in tool.recover_incompatible.await_args_list
+    )
 
 
 # Corruption is recoverable only after confirmation and a successful backup.
@@ -1557,3 +1565,262 @@ def test_build_global_config_rejects_nonpositive_embedding_batch_num(monkeypatch
     tool.storage_names = {"kv": "k", "vector": "v", "graph": "g"}
     with pytest.raises(ValueError, match="EMBEDDING_BATCH_NUM must be >= 1"):
         tool.build_global_config()
+
+
+# ---------------------------------------------------------------------------
+# Bounded sources and per-target verdicts
+# ---------------------------------------------------------------------------
+
+
+def _source_failing_on_second_page(first_page):
+    """A source whose second page fails, as an expired cursor would."""
+
+    async def iterate(*_args, **_kwargs):
+        for item in first_page:
+            yield [item]
+        raise StorageCapabilityError("source unreadable")
+
+    return iterate
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "fault", "error"),
+    [
+        ("entities", "second-page", "source unreadable"),
+        ("relationships", "second-page", "source unreadable"),
+        ("chunks", "second-page", "source unreadable"),
+        ("entities", "node-absent", "'Alice' was listed but could not be read"),
+        ("entities", "node-undecodable", "'Alice' was listed but could not be read"),
+    ],
+)
+async def test_rebuild_reads_the_whole_source_before_dropping_the_target(
+    target, fault, error, tmp_path, monkeypatch
+):
+    # The whole source is read (and spooled) before drop(), so any source
+    # fault -- a page failing late as an OpenSearch PIT or Mongo cursor that
+    # expired during a slow flush would, or a listed node whose payload cannot
+    # be read -- leaves the target untouched instead of half rebuilt.
+    monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
+    graph = make_graph(nodes=[node("Alice")], edges=[edge("Alice", "Bob")])
+    kv = RowKV({})
+    if fault == "second-page":
+        graph.iter_labels = _source_failing_on_second_page(["Alice"])
+        graph.iter_edges = _source_failing_on_second_page([edge("Alice", "Bob")])
+
+        async def rows(*, page_size=200):
+            yield {"_id": "chunk-1", "content": "text"}
+            raise StorageCapabilityError("source unreadable")
+
+        kv.iter_rows = rows
+    else:
+        batch_read = {} if fault == "node-absent" else {"Alice": '{"broken json'}
+        graph.get_nodes_batch = AsyncMock(return_value=batch_read)
+    vdb = MockVDB()
+    rebuild = {
+        "entities": lambda: rebuild_entities_vdb(graph, vdb, {}),
+        "relationships": lambda: rebuild_relationships_vdb(graph, vdb, {}),
+        "chunks": lambda: rebuild_chunks_vdb(kv, vdb),
+    }[target]
+
+    with pytest.raises((StorageCapabilityError, RuntimeError), match=error):
+        await rebuild()
+    vdb.drop.assert_not_awaited()
+    assert list(tmp_path.iterdir()) == []  # the spool went with the failure
+
+
+@pytest.mark.asyncio
+async def test_rebuild_entities_spools_then_drops_once_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    # One two-node run, batch size 1, observed from every side:
+    # - node reads happen only after the label scan closed (get_nodes_batch
+    #   opens a second session; with a connection pool of one, reading while
+    #   iter_labels holds its cursor deadlocks);
+    # - the target is dropped once, before any upsert;
+    # - the spool is private while it exists and gone afterwards.
+    monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
+    graph = make_graph(nodes=[node("Alice"), node("Bob")])
+    scan_open = False
+    reads_during_scan = []
+    real_get_nodes_batch = graph.get_nodes_batch.side_effect
+
+    async def iter_labels(batch_size):
+        nonlocal scan_open
+        scan_open = True
+        try:
+            for label in ("Alice", "Bob"):
+                yield [label]
+        finally:
+            scan_open = False
+
+    async def get_nodes_batch(labels):
+        reads_during_scan.append(scan_open)
+        return real_get_nodes_batch(labels)
+
+    graph.iter_labels = iter_labels
+    graph.get_nodes_batch = AsyncMock(side_effect=get_nodes_batch)
+    vdb = MockVDB()
+    seen_modes = []
+    real_upsert = vdb.upsert.side_effect
+
+    async def upsert(payload):
+        seen_modes.extend(
+            path.stat().st_mode & 0o777
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        )
+        await real_upsert(payload)
+
+    vdb.upsert.side_effect = upsert
+
+    stats = await rebuild_entities_vdb(graph, vdb, {}, batch_size=1)
+
+    assert stats["rebuilt"] == 2
+    assert sorted(vdb.records) == sorted(
+        compute_mdhash_id(name, prefix="ent-") for name in ("Alice", "Bob")
+    )
+    assert reads_during_scan == [False, False]
+    assert vdb.call_order == ["drop", "upsert", "upsert"]
+    if os.name != "nt":
+        assert seen_modes and set(seen_modes) == {0o600}
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("edges", "vdb_pairs", "status", "counts"),
+    [
+        pytest.param([], [], "consistent", (0, 0), id="empty"),
+        pytest.param(
+            [edge("Alice", "Bob")],
+            [("Alice", "Bob"), ("Carol", "Dave")],
+            "inconsistent",
+            (1, 2),
+            id="reverse-only-extra-found-by-count",
+        ),
+        # Accepted limitation (README_REBUILD_VDB.md, *Consistency check*):
+        # relation ids hash the sorted names without a delimiter, so these two
+        # pairs share one id. Both probes hit it, but the counts differ.
+        pytest.param(
+            [edge("ab", "c"), edge("a", "bc")],
+            [("ab", "c")],
+            "inconsistent",
+            (2, 1),
+            id="ambiguous-relation-id",
+        ),
+    ],
+)
+async def test_check_relationship_verdict(edges, vdb_pairs, status, counts):
+    relationships_vdb = MockVDB()
+    for src, tgt in vdb_pairs:
+        relationships_vdb.records[make_relation_vdb_ids(src, tgt)[0]] = {}
+
+    report = await check_vdb_consistency(
+        make_graph(edges=edges), MockVDB(), relationships_vdb
+    )
+
+    target = report["targets"]["relationships"]
+    assert (target["status"], target["missing"]) == (status, 0)
+    assert (target["source_count"], target["target_count"]) == counts
+    assert report["consistent"] is (status == "consistent")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fault", "reason", "seeded", "status"),
+    [
+        ("get_by_ids", "unidentifiable_probe_record", True, "inconclusive"),
+        ("short_probe", "incomplete_probe_response", True, "inconclusive"),
+        # A failed strict read raises; without one a miss is unprovable.
+        ("strict_read", "does not support strict point reads", True, "inconclusive"),
+        ("count", "does not support exact persisted counts", True, "inconclusive"),
+        # A miss found before the fault is a positive finding and stands.
+        ("count", "does not support exact persisted counts", False, "inconsistent"),
+    ],
+    ids=["unidentifiable", "short-probe", "no-strict-read", "count", "miss-then-count"],
+)
+async def test_check_read_fault_is_never_consistent(fault, reason, seeded, status):
+    entities = MockVDB()
+    if seeded:
+        entities.records[compute_mdhash_id("Alice", prefix="ent-")] = {}
+    if fault == "get_by_ids":
+        entities.get_by_ids_strict = AsyncMock(return_value=[{"content": "no id"}])
+    elif fault == "short_probe":
+        entities.get_by_ids_strict = AsyncMock(return_value=[])
+    elif fault == "strict_read":
+        entities.get_by_ids_strict = AsyncMock(
+            side_effect=StorageCapabilityError(
+                "MockVDB does not support strict point reads"
+            )
+        )
+    else:
+        entities.get_exact_count = AsyncMock(
+            side_effect=StorageCapabilityError(
+                "MockVDB does not support exact persisted counts"
+            )
+        )
+
+    report = await check_vdb_consistency(
+        make_graph(nodes=[node("Alice")]), entities, MockVDB()
+    )
+
+    target = report["targets"]["entities"]
+    assert target["status"] == status
+    assert reason in target["reason"]
+    assert report["consistent"] is False
+
+
+def test_inconclusive_report_does_not_recommend_a_rebuild(capsys):
+    target = {
+        "status": "inconclusive",
+        "source_count": 3,
+        "target_count": None,
+        "missing": 0,
+        "missing_examples": [],
+        "skipped": 0,
+        "reason": "no exact count",
+    }
+    report = {
+        "targets": {"entities": target},
+        "incompatible": {},
+        "consistent": False,
+        "graph_entities": 3,
+        "graph_relations": 0,
+        "missing_entities": 0,
+        "missing_relations": 0,
+        "missing_entity_names": [],
+        "missing_relation_pairs": [],
+    }
+
+    rebuild_vdb.RebuildTool().print_check_report(report)
+
+    out = capsys.readouterr().out
+    assert "could not be verified" in out and "no exact count" in out
+    assert "Inconsistencies detected" not in out
+
+
+@pytest.mark.asyncio
+async def test_check_reports_a_fresh_chunk_rebuild_consistent():
+    # The check must skip exactly what the rebuild skips: a chunk without
+    # content has no vector, and counting it would report every fresh rebuild
+    # inconsistent forever.
+    kv = RowKV({"c1": {"content": "hello"}, "c2": {"content": ""}, "c3": {}})
+    chunks_vdb = MockVDB()
+    stats = await rebuild_chunks_vdb(kv, chunks_vdb, batch_size=2)
+    assert (stats["rebuilt"], stats["skipped"]) == (1, 2)
+    assert list(chunks_vdb.records) == ["c1"]
+
+    report = await check_vdb_consistency(
+        make_graph(),
+        MockVDB(),
+        MockVDB(),
+        text_chunks_kv=kv,
+        chunks_vdb=chunks_vdb,
+        batch_size=2,
+    )
+
+    target = report["targets"]["chunks"]
+    assert (target["status"], target["skipped"]) == ("consistent", 2)
+    assert (target["source_count"], target["target_count"]) == (1, 1)
+    assert kv.page_sizes == [2, 2]
