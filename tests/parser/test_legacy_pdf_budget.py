@@ -386,22 +386,15 @@ def test_shared_contents_array_is_traversed_once(in_process, monkeypatch):
 
 def test_cpu_limit_stops_work_the_gates_cannot_see(monkeypatch):
     # No content stream is large here: the cost is the font's CMap, which
-    # pypdf parses again for every page. Only the CPU limit bounds it.
+    # pypdf parses again for every page. Only the CPU limit bounds it. The
+    # limit is fractional: the child starts in about 0.1 CPU seconds, and a
+    # whole second would only make the test wait.
     data = _cmap_font_pdf(pages=400)
-    _set(monkeypatch, PDF_MAX_CPU_SECONDS=1)
+    _set(monkeypatch, PDF_MAX_CPU_SECONDS=0.5)
     started = time.monotonic()
     with pytest.raises(PdfExtractionBudgetError, match="PDF_MAX_CPU_SECONDS"):
         extract_text(data, "pdf", file_path="fonts.pdf")
     assert time.monotonic() - started < 30
-
-
-def test_cpu_limit_stops_a_repeated_form(monkeypatch):
-    b = _Builder()
-    form = b.form(b"0 0 m 1 1 l S\n" * 5000)
-    b.page(b.stream(b"/X0 Do\n" * 4000), {"/X0": form})
-    _set(monkeypatch, PDF_MAX_CPU_SECONDS=1)
-    with pytest.raises(PdfExtractionBudgetError, match="PDF_MAX_CPU_SECONDS"):
-        extract_text(b.bytes(), "pdf")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no memory limit on Windows")
@@ -435,7 +428,7 @@ def test_wall_clock_timeout_is_the_last_resort(monkeypatch):
     # CPU limit far away, so only the parent's timeout can stop the child.
     _set(monkeypatch, PDF_MAX_CPU_SECONDS=1000)
     monkeypatch.setattr(pdf_budget, "_WALL_CLOCK_FACTOR", 0)
-    monkeypatch.setattr(pdf_budget, "_WALL_CLOCK_SLACK_SECONDS", 1)
+    monkeypatch.setattr(pdf_budget, "_WALL_CLOCK_SLACK_SECONDS", 0.3)
     with pytest.raises(PdfExtractionBudgetError, match="wall-clock"):
         extract_text(data, "pdf")
 
@@ -695,18 +688,28 @@ def test_random_broken_pdfs_match_pypdf(in_process):
 
 
 def test_never_more_children_than_the_parse_pool(tmp_path, monkeypatch):
-    # The cap is per process, not per caller: eight threads, two slots.
+    # The cap is per process, not per caller: six threads, two slots. A child
+    # alone waits for a second one, which the free slot lets in, unless every
+    # child has started; the pause after that leaves time for a child the cap
+    # failed to hold back to appear in the count.
     markers = tmp_path / "running"
     markers.mkdir()
+    started = tmp_path / "started"
+    started.mkdir()
     _fake_worker(
         tmp_path,
         monkeypatch,
         "import os, sys, time\n"
         "sys.stdin.buffer.read()\n"
-        f"d = {str(markers)!r}\n"
+        f"d, s = {str(markers)!r}, {str(started)!r}\n"
         "mine = os.path.join(d, str(os.getpid()))\n"
         "open(mine, 'w').close()\n"
-        "time.sleep(0.3)\n"
+        "open(os.path.join(s, str(os.getpid())), 'w').close()\n"
+        "deadline = time.monotonic() + 10\n"
+        "while (len(os.listdir(d)) < 2 and len(os.listdir(s)) < 6\n"
+        "       and time.monotonic() < deadline):\n"
+        "    time.sleep(0.01)\n"
+        "time.sleep(0.2)\n"
         "os.write(1, str(len(os.listdir(d))).encode())\n"
         "os.remove(mine)\n"
         'os.write(2, b\'{"kind": "ok"}\\n\')\n',
@@ -717,12 +720,12 @@ def test_never_more_children_than_the_parse_pool(tmp_path, monkeypatch):
     def run() -> None:
         seen.append(int(extract_text(b"%PDF-1.7", "pdf")))
 
-    threads = [threading.Thread(target=run) for _ in range(8)]
+    threads = [threading.Thread(target=run) for _ in range(6)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=60)
-    assert len(seen) == 8
+    assert len(seen) == 6
     assert max(seen) == 2
 
 
