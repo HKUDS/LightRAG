@@ -51,6 +51,10 @@ class VoyageAIError(Exception):
             TryAgain,
         )
     ),
+    # Surface the last attempt's own error, not a tenacity.RetryError, so
+    # callers can catch the real VoyageAI exception type and see its
+    # message (same convention as openai.py / ollama.py / gemini.py, etc.).
+    reraise=True,
 )
 async def voyageai_embed(
     texts: list[str],

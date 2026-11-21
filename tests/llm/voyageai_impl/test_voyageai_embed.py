@@ -5,7 +5,7 @@ These tests mock voyageai.AsyncClient so they run fully offline.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -165,3 +165,23 @@ def test_anthropic_embed_deprecation_shim():
     assert any(issubclass(w.category, DeprecationWarning) for w in caught), (
         "anthropic_embed should warn DeprecationWarning"
     )
+
+
+@pytest.mark.asyncio
+async def test_voyageai_embed_reraises_original_error_after_retries(monkeypatch):
+    """Exhausted retries surface the provider's own error, not RetryError."""
+    from voyageai.error import RateLimitError
+
+    from lightrag.llm.voyageai import voyageai_embed
+
+    error = RateLimitError("rate limited, try again later")
+    fake_client = MagicMock()
+    fake_client.embed = AsyncMock(side_effect=error)
+    monkeypatch.setattr(voyageai_embed.func.retry, "sleep", AsyncMock())
+
+    with patch("lightrag.llm.voyageai.voyageai.AsyncClient", return_value=fake_client):
+        with pytest.raises(RateLimitError) as exc_info:
+            await voyageai_embed.func(["hello"], api_key="fake")
+
+    assert exc_info.value is error
+    assert fake_client.embed.await_count == 3
