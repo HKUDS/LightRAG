@@ -11,6 +11,13 @@ on:
     paths:
       - .github/workflows/copilot-setup-steps.yml
 
+# A new push to a pull request cancels that PR's runs still in progress, so
+# superseded commits stop holding runner slots. Push, dispatch and other events
+# group by run id and are never cancelled: every commit on main is still tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
   copilot-setup-steps:
