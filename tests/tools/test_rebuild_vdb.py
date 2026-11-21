@@ -254,18 +254,6 @@ async def test_rebuild_entities_skips_dirty_nodes():
 
 
 @pytest.mark.asyncio
-async def test_rebuild_drops_once_before_any_upsert():
-    graph = make_graph(nodes=[node("Alice"), node("Bob")])
-    vdb = MockVDB()
-
-    await rebuild_entities_vdb(graph, vdb, {}, batch_size=1)
-
-    assert vdb.drop.await_count == 1
-    assert vdb.call_order[0] == "drop"
-    assert vdb.call_order.count("upsert") == 2
-
-
-@pytest.mark.asyncio
 async def test_rebuild_batches_and_periodic_flush():
     graph = make_graph(nodes=[node(f"E{i:03d}") for i in range(25)])
     vdb = MockVDB()
@@ -1659,10 +1647,16 @@ async def test_rebuild_entities_refuses_a_listed_node_it_cannot_read(batch_read)
 
 
 @pytest.mark.asyncio
-async def test_rebuild_entities_closes_the_label_scan_before_reading_nodes():
-    # get_nodes_batch opens a second session on the graph being enumerated;
-    # with a connection pool of one, reading it while iter_labels still holds
-    # its cursor deadlocks. Every node read must come after the scan ended.
+async def test_rebuild_entities_spools_then_drops_once_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    # One two-node run, batch size 1, observed from every side:
+    # - node reads happen only after the label scan closed (get_nodes_batch
+    #   opens a second session; with a connection pool of one, reading while
+    #   iter_labels holds its cursor deadlocks);
+    # - the target is dropped once, before any upsert;
+    # - the spool is private while it exists and gone afterwards.
+    monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
     graph = make_graph(nodes=[node("Alice"), node("Bob")])
     scan_open = False
     reads_during_scan = []
@@ -1683,16 +1677,6 @@ async def test_rebuild_entities_closes_the_label_scan_before_reading_nodes():
 
     graph.iter_labels = iter_labels
     graph.get_nodes_batch = AsyncMock(side_effect=get_nodes_batch)
-
-    stats = await rebuild_entities_vdb(graph, MockVDB(), {}, batch_size=1)
-
-    assert stats["rebuilt"] == 2
-    assert reads_during_scan == [False, False]
-
-
-@pytest.mark.asyncio
-async def test_rebuild_spool_is_private_and_removed(tmp_path, monkeypatch):
-    monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
     vdb = MockVDB()
     seen_modes = []
     real_upsert = vdb.upsert.side_effect
@@ -1707,14 +1691,14 @@ async def test_rebuild_spool_is_private_and_removed(tmp_path, monkeypatch):
 
     vdb.upsert.side_effect = upsert
 
-    stats = await rebuild_entities_vdb(
-        make_graph(nodes=[node("Alice"), node("Bob")]), vdb, {}, batch_size=1
-    )
+    stats = await rebuild_entities_vdb(graph, vdb, {}, batch_size=1)
 
     assert stats["rebuilt"] == 2
     assert sorted(vdb.records) == sorted(
         compute_mdhash_id(name, prefix="ent-") for name in ("Alice", "Bob")
     )
+    assert reads_during_scan == [False, False]
+    assert vdb.call_order == ["drop", "upsert", "upsert"]
     if os.name != "nt":
         assert seen_modes and set(seen_modes) == {0o600}
     assert list(tmp_path.iterdir()) == []
