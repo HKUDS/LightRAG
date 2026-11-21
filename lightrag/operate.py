@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, overload, Literal, Callable, Awaitable
 from collections import Counter, defaultdict
 
 from lightrag.exceptions import (
+    EmptySummaryResponseError,
     IndexFlushError,
     PipelineCancelledException,
 )
@@ -594,7 +595,8 @@ async def _summarize_descriptions(
             path.
 
     Returns:
-        Summarized description string
+        Summarized description string, never empty: an empty answer raises
+        :class:`~lightrag.exceptions.EmptySummaryResponseError`.
     """
     use_llm_func: callable = global_config["role_llm_funcs"]["extract"]
     # Apply higher priority (8) to entity/relation summary tasks
@@ -666,6 +668,24 @@ async def _summarize_descriptions(
     # would later break GraphML (XML) serialization on write. Strip them
     # at the source, symmetric with how extracted descriptions are cleaned.
     summary = sanitize_text_for_encoding(summary)
+
+    # The summary replaces every fragment it merges, so storing an empty one
+    # would erase them. Fail instead: the stored description survives and the
+    # document can be retried. An answer that is empty after think-tag
+    # removal is never cached (save_to_cache skips falsy content), so the
+    # retry asks the LLM again.
+    # Accepted residue: an answer of control characters only is cached (it is
+    # non-empty until sanitize_text_for_encoding above runs), so a retry
+    # replays it and fails again, loudly, until the LLM cache is cleared.
+    if not summary.strip():
+        message = (
+            f"Received empty summary for {description_type}:{description_name} "
+            f"({len(description_list)} descriptions): the model returned no "
+            "answer text (empty, or reasoning only); if it is a thinking model, "
+            "consider disabling thinking mode for the extract role"
+        )
+        logger.error(message)
+        raise EmptySummaryResponseError(message)
 
     # Check summary token length against embedding limit
     embedding_token_limit = global_config.get("embedding_token_limit")
