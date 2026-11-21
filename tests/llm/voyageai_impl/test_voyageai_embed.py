@@ -5,10 +5,19 @@ These tests mock voyageai.AsyncClient so they run fully offline.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import tenacity
+from voyageai.error import (
+    APIConnectionError,
+    RateLimitError,
+    ServerError,
+    ServiceUnavailableError,
+    Timeout,
+    TryAgain,
+)
 
 
 pytestmark = pytest.mark.offline
@@ -165,3 +174,36 @@ def test_anthropic_embed_deprecation_shim():
     assert any(issubclass(w.category, DeprecationWarning) for w in caught), (
         "anthropic_embed should warn DeprecationWarning"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc_cls",
+    [
+        APIConnectionError,
+        RateLimitError,
+        ServerError,
+        ServiceUnavailableError,
+        Timeout,
+        TryAgain,
+    ],
+)
+async def test_voyageai_embed_reraises_original_error_after_retries(
+    monkeypatch, exc_cls
+):
+    """Exhausted @retry must propagate the original VoyageAI error instead of RetryError."""
+    from lightrag.llm.voyageai import voyageai_embed
+
+    expected_exc = exc_cls("transient voyageai failure")
+    embed_mock = AsyncMock(side_effect=expected_exc)
+    fake_client = MagicMock()
+    fake_client.embed = embed_mock
+    monkeypatch.setattr(voyageai_embed.func.retry, "sleep", AsyncMock())
+
+    with patch("lightrag.llm.voyageai.voyageai.AsyncClient", return_value=fake_client):
+        with pytest.raises(exc_cls) as exc_info:
+            await voyageai_embed(texts=["hello"], api_key="fake")
+
+    assert exc_info.value is expected_exc
+    assert not isinstance(exc_info.value, tenacity.RetryError)
+    assert embed_mock.await_count == 3

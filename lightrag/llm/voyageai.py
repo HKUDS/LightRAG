@@ -51,6 +51,7 @@ class VoyageAIError(Exception):
             TryAgain,
         )
     ),
+    reraise=True,
 )
 async def voyageai_embed(
     texts: list[str],
