@@ -98,6 +98,10 @@ def format_chat_messages(messages):
     retry=retry_if_exception_type(
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so callers can catch the real exception type and see its message (same
+    # convention as openai.py / ollama.py / voyageai.py, etc.).
+    reraise=True,
 )
 async def llama_index_complete_if_cache(
     model: str,
@@ -239,6 +243,10 @@ async def llama_index_complete(
     retry=retry_if_exception_type(
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so callers can catch the real exception type and see its message (same
+    # convention as openai.py / ollama.py / voyageai.py, etc.).
+    reraise=True,
 )
 async def llama_index_embed(
     texts: list[str],
