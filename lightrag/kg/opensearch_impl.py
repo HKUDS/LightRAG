@@ -55,7 +55,7 @@ from ..utils import (
     compute_mdhash_id,
     _cooperative_yield,
     merge_source_ids,
-    parse_cache_key,
+    cache_key_has_type,
     validate_workspace,
     validate_workspace_override,
 )
@@ -1828,10 +1828,7 @@ class OpenSearchKVStorage(BaseKVStorage):
                 pending.clear()
                 return dropped
             doomed = [
-                doc_id
-                for doc_id in pending
-                if (parsed := parse_cache_key(doc_id)) is not None
-                and parsed[1] in cache_types
+                doc_id for doc_id in pending if cache_key_has_type(doc_id, cache_types)
             ]
             for doc_id in doomed:
                 pending.pop(doc_id, None)
@@ -1841,6 +1838,41 @@ class OpenSearchKVStorage(BaseKVStorage):
             return _discard(self._pending_upserts)
         async with self._flush_lock:
             return _discard(self._pending_upserts)
+
+    async def delete_by_cache_types(self, cache_types: set[str]) -> int:
+        """Buffer deletes for the matching cache rows (base contract).
+
+        Matches rows still in this process's upsert buffer and rows on the
+        server (a ``_iter_raw_docs`` scan, which refreshes first), then hands
+        both to ``delete``: it drops the buffered upserts and records
+        tombstones, and a tombstone for an id that never reached the server is
+        a 404 the flush treats as success. Nothing is flushed here, so the
+        deletes land with the caller's ordered commit, as the base docstring
+        requires.
+
+        The buffer is read BEFORE the scan, and that order is load-bearing: a
+        row flushed between the two would otherwise be in neither. Read first,
+        a row missing from the buffer was either flushed already, so the
+        refreshed scan sees it, or written after this call began.
+        """
+        if self._flush_lock is None:
+            raise StorageNotInitializedError("OpenSearchKVStorage")
+        if not cache_types:
+            return 0
+        async with self._flush_lock:
+            doomed = {
+                doc_id
+                for doc_id in self._pending_upserts
+                if cache_key_has_type(doc_id, cache_types)
+            }
+        async for hits in self._iter_raw_docs():
+            doomed.update(
+                hit["_id"]
+                for hit in hits
+                if cache_key_has_type(hit["_id"], cache_types)
+            )
+        await self.delete(list(doomed))
+        return len(doomed)
 
     async def has_pending_index_ops(self, *, include_deletes: bool = False) -> bool:
         """Whether buffered UPSERTS remain (retryable failures are retained).

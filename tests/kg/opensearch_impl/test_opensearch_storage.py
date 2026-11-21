@@ -1028,6 +1028,59 @@ class TestKVStorageBatching:
             assert s._pending_kv_deletes == {"gone-1"}
 
     @pytest.mark.asyncio
+    async def test_delete_by_cache_types_buffers_and_never_flushes(
+        self, global_config, embed_func, mock_client
+    ):
+        """The delete must land with the caller's ORDERED commit, not its own.
+
+        A flush here would publish this process's whole buffer -- extract rows
+        whose chunk references are not committed yet included -- outside the
+        ``text_chunks`` -> ``llm_response_cache`` pair. So matching rows on the
+        server and in the upsert buffer become tombstones, the buffered
+        extract row stays exactly as it was, and nothing reaches the client.
+
+        The fake scan also lands a concurrent flush of the buffered query row:
+        that row is then on neither side of a scan-then-buffer read, so it is
+        still deleted only because the buffer is read first.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.upsert(
+                {
+                    "default:extract:buffered": {"return": "e"},
+                    "mix:query:buffered": {"return": "stale answer"},
+                }
+            )
+            await s.delete(["earlier-tombstone"])
+
+            async def _scan_that_races_a_flush(batch_size=1000):
+                # The concurrent flush lands now: the row leaves the buffer,
+                # and the scan's frozen view predates it on the server.
+                s._pending_upserts.pop("mix:query:buffered", None)
+                yield [
+                    {"_id": "local:query:a"},
+                    {"_id": "hybrid:keywords:b"},
+                    {"_id": "default:extract:c"},
+                    {"_id": "not-a-cache-key"},
+                ]
+
+            s._iter_raw_docs = _scan_that_races_a_flush
+            mock_client.bulk.reset_mock()
+
+            deleted = await s.delete_by_cache_types({"query", "keywords"})
+
+            assert deleted == 3
+            assert set(s._pending_upserts) == {"default:extract:buffered"}
+            assert s._pending_kv_deletes == {
+                "earlier-tombstone",
+                "local:query:a",
+                "hybrid:keywords:b",
+                "mix:query:buffered",
+            }
+            mock_client.bulk.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_has_pending_index_ops_reports_retained_upserts_only(
         self, global_config, embed_func, mock_client
     ):

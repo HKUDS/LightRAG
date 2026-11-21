@@ -26,6 +26,7 @@ from redis.exceptions import (  # type: ignore
 from lightrag.utils import (
     logger,
     get_env_value,
+    cache_key_has_type,
     get_pinyin_sort_key,
     _cooperative_yield,
     validate_workspace,
@@ -825,6 +826,44 @@ class RedisKVStorage(BaseKVStorage):
             logger.info(
                 f"[{self.workspace}] Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
             )
+
+    async def delete_by_cache_types(self, cache_types: set[str]) -> int:
+        """Delete the matching cache rows (base contract), durable on return.
+
+        SCANs the namespace a page at a time, like ``iter_rows``, and selects
+        by ``parse_cache_key`` on the stripped key rather than by a glob, so
+        the match is exactly the base contract's. Counts what ``DEL`` removed,
+        so a key another client deleted mid-scan is not counted.
+        """
+        if not cache_types:
+            return 0
+        pattern = f"{self.final_namespace}:*"
+        prefix_len = len(self.final_namespace) + 1
+        deleted = 0
+        async with self._get_redis_connection() as redis:
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=pattern, count=1000)
+                doomed = [
+                    key
+                    for key in keys
+                    if cache_key_has_type(
+                        (key.decode() if isinstance(key, bytes) else key)[prefix_len:],
+                        cache_types,
+                    )
+                ]
+                if doomed:
+                    pipe = redis.pipeline()
+                    for key in doomed:
+                        pipe.delete(key)
+                    deleted += sum(await pipe.execute())
+                if cursor == 0:
+                    break
+        logger.info(
+            f"[{self.workspace}] Deleted {deleted} {sorted(cache_types)} cache "
+            f"rows from {self.namespace}"
+        )
+        return deleted
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all keys under the current namespace.

@@ -26,6 +26,7 @@ from typing import (
     Awaitable,
     Callable,
     Coroutine,
+    Iterable,
     NoReturn,
     TypeVar,
     cast,
@@ -761,6 +762,10 @@ def _run_sync(
 # of a chunk-commit failure on the rows it can actually strand. See *LLM
 # extraction cache reachability* in ``docs/design/PurgeRecoveryContract.md``.
 _REFERENCE_CARRYING_CACHE_TYPES: frozenset[str] = frozenset({"extract"})
+
+# The query-answer cache: the only types ``aclear_query_cache`` may delete
+# outside the destructive reservation. Must stay disjoint from the set above.
+QUERY_CACHE_TYPES: frozenset[str] = frozenset({"query", "keywords"})
 
 
 def _custom_kg_chunk_ids(source_id: Any) -> list[str]:
@@ -6649,7 +6654,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             owning_loop=self._owning_loop,
         )
 
-    async def _query_done(self):
+    async def _query_done(self) -> bool:
         """Commit the query cache — ordered and fenced like every other one.
 
         A cache commit publishes the WHOLE namespace, so this one carries
@@ -6668,10 +6673,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         site returns before its own clear, so reading the record would let one
         transient failure suppress every later query cache commit for the life
         of a query-only worker. Retire the record when both halves land.
+
+        Returns whether the cache half committed. A query ignores it; a caller
+        that changed the cache itself (``aclear_query_cache``) must not report
+        success on ``False``. A cache-half raise propagates either way.
         """
         if self.text_chunks is None:
-            await self.llm_response_cache.index_done_callback()
-            return
+            return await self.llm_response_cache.index_done_callback() is not False
         async with get_extract_cache_fence(self.text_chunks):
             try:
                 committed = await self.text_chunks.index_done_callback()
@@ -6687,7 +6695,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # quarantine and no other site to warn: this commit simply did
                 # not happen. Return either way -- the cache half must not run
                 # without a chunk commit that returned.
-                return
+                return False
             if committed is False:
                 # A DECLINED commit discarded the mutation, so the references
                 # are not on disk either -- recorded like every other failed
@@ -6700,7 +6708,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     "Skipping the query cache commit: chunk references are not on "
                     "disk, so it would publish extract rows nothing can reach"
                 )
-                return
+                return False
             # Gated on THIS call's chunk commit, not on the sticky flag. The
             # flag is the deferral mechanism for OTHER sites, which commit the
             # cache without committing the references first; here the
@@ -6710,11 +6718,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # returns before the clear below, so a query-only worker would
             # suppress every later query cache commit for the rest of its life
             # over one transient failure.
-            await self.llm_response_cache.index_done_callback()
+            cache_committed = await self.llm_response_cache.index_done_callback()
             # The pair landed in order, so the namespaces are consistent again
             # and a flag set by an earlier failure is retired here too. Only a
             # full pair may clear it -- see the docstring.
             self._chunk_reference_commit_failed = False
+            return cache_committed is not False
 
     async def _update_delete_retry_state(
         self,
@@ -6838,7 +6847,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             The REST surface reaches this through
             ``DELETE /documents?clear_llm_cache=true``, which runs inside the
             destructive reservation. There is deliberately no endpoint that
-            calls it without one.
+            calls it without one. To clear only the query-answer cache, which
+            needs no reservation, use ``aclear_query_cache``.
 
         Gotcha: clearing the cache beside documents that stay makes every
         later deletion re-extract, with the LLM, the surviving chunks it
@@ -6900,6 +6910,65 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             lambda: self.aclear_cache(),
             sync_name="clear_cache",
             async_name="aclear_cache",
+            owning_loop=self._owning_loop,
+        )
+
+    async def aclear_query_cache(
+        self, cache_types: Iterable[str] = QUERY_CACHE_TYPES
+    ) -> int:
+        """Delete the query-answer cache rows of the given types, in every mode.
+
+        Unlike ``aclear_cache`` this needs no pipeline reservation and is safe
+        while documents are being ingested: ``query`` / ``keywords`` rows name
+        no chunk, so nothing references them, and the pipeline never writes or
+        reads them. Extraction rows are never touched.
+
+        Caller contract:
+            ``cache_types`` must be a non-empty subset of
+            ``QUERY_CACHE_TYPES``; anything else raises ``ValueError`` before
+            any row is deleted.
+
+        Returns:
+            The number of rows deleted. The deletion is committed when this
+            returns.
+
+        Raises:
+            RuntimeError: the rows were deleted but the commit did not land
+                (on a deferred backend they are gone from memory only, and
+                return after a restart). Re-run to finish it.
+            Exception: propagated from the storage; the cache may be partly
+                cleared. Re-run to finish it.
+        """
+        types = set(cache_types)
+        if not types or not types <= QUERY_CACHE_TYPES:
+            raise ValueError(
+                f"cache_types must be a non-empty subset of "
+                f"{sorted(QUERY_CACHE_TYPES)}, got {sorted(types)}"
+            )
+        if not self.llm_response_cache:
+            logger.warning("No cache storage configured")
+            return 0
+
+        deleted = await self.llm_response_cache.delete_by_cache_types(types)
+        # A cache commit publishes the whole namespace, extract rows the
+        # pipeline has buffered included, so it must be the ordered, fenced
+        # pair a query commits -- never a bare index_done_callback. Unlike a
+        # query, this caller needs the outcome.
+        if not await self._query_done():
+            raise RuntimeError(
+                f"Deleted {deleted} {sorted(types)} cache rows, but the commit "
+                "did not land: chunk references could not be committed first. "
+                "The rows may return after a restart; re-run to finish."
+            )
+        logger.info(f"Cleared {deleted} {sorted(types)} query cache rows")
+        return deleted
+
+    def clear_query_cache(self, cache_types: Iterable[str] = QUERY_CACHE_TYPES) -> int:
+        """Synchronous version of aclear_query_cache."""
+        return _run_sync(
+            lambda: self.aclear_query_cache(cache_types),
+            sync_name="clear_query_cache",
+            async_name="aclear_query_cache",
             owning_loop=self._owning_loop,
         )
 

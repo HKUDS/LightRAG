@@ -659,6 +659,34 @@ class MongoKVStorage(BaseKVStorage):
             )
             raise
 
+    async def delete_by_cache_types(self, cache_types: set[str]) -> int:
+        """Delete the matching cache rows (base contract), durable on return.
+
+        One ``delete_many`` whose anchored regex reproduces
+        ``parse_cache_key``: the mode runs up to the first colon, and the type
+        must be followed by a second one. Types are ``re.escape``d.
+        """
+        if self._data is None:
+            raise StorageNotInitializedError("MongoKVStorage")
+        if not cache_types:
+            # An empty alternation would match keys whose type is empty.
+            return 0
+        types = sorted(cache_types)
+        pattern = "^[^:]*:(?:" + "|".join(re.escape(t) for t in types) + "):"
+        try:
+            result = await self._data.delete_many({"_id": {"$regex": pattern}})
+        except PyMongoError as e:
+            logger.error(
+                f"[{self.workspace}] Error deleting {types} cache rows from "
+                f"{self.namespace}: {e}"
+            )
+            raise
+        logger.info(
+            f"[{self.workspace}] Deleted {result.deleted_count} {types} cache rows "
+            f"from {self.namespace}"
+        )
+        return result.deleted_count
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
 

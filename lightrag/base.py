@@ -864,6 +864,36 @@ class BaseKVStorage(StorageNameSpace, ABC):
             None
         """
 
+    async def delete_by_cache_types(self, cache_types: set[str]) -> int:
+        """Delete every LLM-cache row of the named types; return how many.
+
+        Only meaningful on the ``llm_response_cache`` namespace. A row matches
+        exactly when ``cache_key_has_type(key, cache_types)`` holds: its key
+        parses as ``{mode}:{cache_type}:{hash}`` with a named type, whatever
+        its mode; a key that does not parse is kept, and an empty set deletes
+        nothing. Rows still buffered in this process count as rows.
+
+        Rules for callers:
+
+        * Never pass a reference-carrying type (``extract``). Those rows are
+          reachable only through a chunk's ``llm_cache_list``, and only the
+          destructive clear may drop them. ``LightRAG.aclear_query_cache`` is
+          the supported entry point and enforces this.
+        * On a deferred backend (``JsonKVStorage``, ``OpenSearchKVStorage``)
+          the delete reaches memory or the buffer only. Commit it through the
+          ordered ``text_chunks`` -> ``llm_response_cache`` pair, never a bare
+          ``index_done_callback``: a cache commit publishes the whole
+          namespace, extract rows whose references are not on disk included.
+          Immediate-write backends (PG, Redis, Mongo) are durable on return.
+
+        The default raises ``StorageCapabilityError``. Why the commit must be
+        ordered: *LLM extraction cache reachability* in
+        ``docs/design/PurgeRecoveryContract.md``.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support deleting cache rows by type"
+        )
+
     @abstractmethod
     async def is_empty(self) -> bool:
         """Check if the storage is empty

@@ -4291,6 +4291,43 @@ class PGKVStorage(BaseKVStorage):
             )
             raise
 
+    async def delete_by_cache_types(self, cache_types: set[str]) -> int:
+        """Delete the matching cache rows (base contract), durable on return.
+
+        One parameterized statement. ``LIKE '%:%:%'`` plus ``split_part``
+        reproduce ``parse_cache_key`` (at least two colons, the type between
+        the first two), so no caller value is ever interpolated into the SQL.
+        """
+        if not cache_types:
+            return 0
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            raise ValueError(f"Unknown namespace: {self.namespace}")
+        delete_sql = (
+            f"DELETE FROM {table_name} WHERE workspace=$1 "
+            "AND id LIKE '%:%:%' AND split_part(id, ':', 2) = ANY($2::text[])"
+        )
+        types = sorted(cache_types)
+
+        async def _delete(connection: asyncpg.Connection) -> str:
+            return await connection.execute(delete_sql, self.workspace, types)
+
+        try:
+            # asyncpg returns the command tag, e.g. "DELETE 12".
+            status = await self.db._run_with_retry(_delete)
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error deleting {types} cache rows from "
+                f"{self.namespace}: {e}"
+            )
+            raise
+        deleted = int(str(status).rsplit(" ", 1)[-1])
+        logger.info(
+            f"[{self.workspace}] Deleted {deleted} {types} cache rows from "
+            f"{self.namespace}"
+        )
+        return deleted
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:

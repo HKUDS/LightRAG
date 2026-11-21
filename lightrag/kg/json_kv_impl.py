@@ -19,6 +19,7 @@ from lightrag.utils import (
     load_json,
     log_without_raising,
     logger,
+    cache_key_has_type,
     validate_workspace,
     commit_in_storage_io,
     write_json,
@@ -521,6 +522,30 @@ class JsonKVStorage(BaseKVStorage):
                 await set_all_update_flags(
                     self.namespace, workspace=self._shared_workspace
                 )
+
+    async def delete_by_cache_types(self, cache_types: set[str]) -> int:
+        """Remove the matching cache rows from shared memory (base contract).
+
+        Selection and removal happen in one hold of ``_storage_lock``, so a
+        row written concurrently either is removed or survives whole. Like
+        ``delete``, this marks every process dirty and does NOT commit: the
+        caller commits through the ordered pair the base docstring names.
+        """
+        if self._storage_lock is None:
+            raise StorageNotInitializedError("JsonKVStorage")
+        if not cache_types:
+            return 0
+        async with self._storage_lock:
+            doomed = [
+                key for key in self._data.keys() if cache_key_has_type(key, cache_types)
+            ]
+            for key in doomed:
+                self._data.pop(key, None)
+            if doomed:
+                await set_all_update_flags(
+                    self.namespace, workspace=self._shared_workspace
+                )
+        return len(doomed)
 
     async def is_empty(self) -> bool:
         """Check if the storage is empty
