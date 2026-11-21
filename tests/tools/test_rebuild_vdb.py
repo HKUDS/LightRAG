@@ -1659,6 +1659,38 @@ async def test_rebuild_entities_refuses_a_listed_node_it_cannot_read(batch_read)
 
 
 @pytest.mark.asyncio
+async def test_rebuild_entities_closes_the_label_scan_before_reading_nodes():
+    # get_nodes_batch opens a second session on the graph being enumerated;
+    # with a connection pool of one, reading it while iter_labels still holds
+    # its cursor deadlocks. Every node read must come after the scan ended.
+    graph = make_graph(nodes=[node("Alice"), node("Bob")])
+    scan_open = False
+    reads_during_scan = []
+    real_get_nodes_batch = graph.get_nodes_batch.side_effect
+
+    async def iter_labels(batch_size):
+        nonlocal scan_open
+        scan_open = True
+        try:
+            for label in ("Alice", "Bob"):
+                yield [label]
+        finally:
+            scan_open = False
+
+    async def get_nodes_batch(labels):
+        reads_during_scan.append(scan_open)
+        return real_get_nodes_batch(labels)
+
+    graph.iter_labels = iter_labels
+    graph.get_nodes_batch = AsyncMock(side_effect=get_nodes_batch)
+
+    stats = await rebuild_entities_vdb(graph, MockVDB(), {}, batch_size=1)
+
+    assert stats["rebuilt"] == 2
+    assert reads_during_scan == [False, False]
+
+
+@pytest.mark.asyncio
 async def test_rebuild_spool_is_private_and_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(rebuild_vdb.tempfile, "tempdir", str(tmp_path))
     vdb = MockVDB()
@@ -1684,7 +1716,7 @@ async def test_rebuild_spool_is_private_and_removed(tmp_path, monkeypatch):
         compute_mdhash_id(name, prefix="ent-") for name in ("Alice", "Bob")
     )
     if os.name != "nt":
-        assert seen_modes == [0o600, 0o600]
+        assert seen_modes and set(seen_modes) == {0o600}
     assert list(tmp_path.iterdir()) == []
 
 

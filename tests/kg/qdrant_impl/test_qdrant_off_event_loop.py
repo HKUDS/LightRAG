@@ -173,16 +173,14 @@ async def test_drop_runs_server_side_steps_in_the_qdrant_pool():
         lambda s: s.get_by_id("a"),
         lambda s: s.get_by_ids(["a", "b"]),
         lambda s: s.get_vectors_by_ids(["a"]),
-        lambda s: s.get_exact_count(),
     ],
-    ids=["is_empty", "get_by_id", "get_by_ids", "get_vectors_by_ids", "count"],
+    ids=["is_empty", "get_by_id", "get_by_ids", "get_vectors_by_ids"],
 )
 async def test_reads_run_in_the_qdrant_pool(call):
     s = _make_storage()
     rec = _ThreadRecorder()
     s._client.scroll = rec(([], None))
     s._client.retrieve = rec([])
-    s._client.count = rec(SimpleNamespace(count=0))
 
     await call(s)
 
@@ -190,11 +188,13 @@ async def test_reads_run_in_the_qdrant_pool(call):
 
 
 @pytest.mark.asyncio
-async def test_exact_count_is_exact_and_scoped_to_the_workspace():
+async def test_exact_count_is_exact_scoped_and_runs_in_the_qdrant_pool():
     s = _make_storage()
-    s._client.count = MagicMock(return_value=SimpleNamespace(count=4))
+    rec = _ThreadRecorder()
+    s._client.count = rec(SimpleNamespace(count=4))
 
     assert await s.get_exact_count() == 4
+    rec.assert_all_in_pool(1)
     kwargs = s._client.count.call_args.kwargs
     assert kwargs["exact"] is True
     assert "test_ws" in repr(kwargs["count_filter"])

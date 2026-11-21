@@ -425,6 +425,18 @@ async def _spool_prepared(
     return written
 
 
+async def _drain_to_spool(source_batches: AsyncIterator[list[Any]], path: str) -> None:
+    """Write every raw source batch to a private spool, closing the source."""
+    with open_private_file(path) as spool:
+        async for batch in source_batches:
+            pickle.dump(batch, spool, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+async def _replay_spool(path: str) -> AsyncIterator[list[Any]]:
+    for batch in _read_spool(path):
+        yield batch
+
+
 def _read_spool(spool_path: str):
     # Safe to unpickle: this run created the file, exclusively, private to
     # this user, inside a directory only this user can enter (mkdtemp).
@@ -444,8 +456,15 @@ async def _stream_upsert(
     *,
     progress_callback: ProgressCallback | None = None,
     before_drop: BeforeDrop | None = None,
+    enumerate_first: bool = False,
 ) -> Dict[str, Any]:
     """Spool the prepared source to disk, then drop the target and upsert.
+
+    ``enumerate_first`` drains the source iterator to its own spool before
+    ``prepare_batch`` runs, for a ``prepare_batch`` that reads the same store
+    again: the enumeration's cursor (a Neo4j session, a Mongo cursor) is then
+    closed before the second read asks for a connection, so a pool of one
+    cannot deadlock.
 
     ``before_drop`` runs once the whole source is spooled and before the drop:
     the place for any other destructive step on the target (the CLI recovers a
@@ -464,6 +483,10 @@ async def _stream_upsert(
     spool_dir = tempfile.mkdtemp(prefix=f"lightrag-rebuild-{stats['label']}-")
     try:
         spool_path = os.path.join(spool_dir, "payloads.pickle")
+        if enumerate_first:
+            source_path = os.path.join(spool_dir, "source.pickle")
+            await _drain_to_spool(source_batches, source_path)
+            source_batches = _replay_spool(source_path)
         total = await _spool_prepared(source_batches, stats, prepare_batch, spool_path)
         if before_drop is not None:
             await before_drop()
@@ -552,6 +575,8 @@ async def rebuild_entities_vdb(
         prepare,
         progress_callback=progress_callback,
         before_drop=before_drop,
+        # prepare() calls get_nodes_batch on the graph being enumerated.
+        enumerate_first=True,
     )
 
 
