@@ -5140,11 +5140,11 @@ async def aexport_data(
         entities_data.append(entity_row)
 
     # --- Relations ---
-    for src_entity in all_entities:
-        for tgt_entity in all_entities:
-            if src_entity == tgt_entity:
-                continue
-
+    # Relations are undirected: has_edge(a, b) and has_edge(b, a) answer for
+    # the same edge, so probe each unordered pair once. Probing ordered pairs
+    # exported every relation twice, once per orientation.
+    for src_index, src_entity in enumerate(all_entities):
+        for tgt_entity in all_entities[src_index + 1 :]:
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 src_entity, tgt_entity
             )
