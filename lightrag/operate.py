@@ -2924,11 +2924,18 @@ async def _merge_nodes_then_upsert(
         # 6.1 Finalize source_id
         source_id = GRAPH_FIELD_SEP.join(source_ids)
 
-        # 6.2 Finalize entity type by highest count
+        # 6.2 Finalize entity type by highest count. The stored type carries
+        # a single vote however many merges established it, so it goes first
+        # and wins a tie (sorted() is stable): one conflicting extraction must
+        # not flip it. An UNKNOWN placeholder -- written for a relation
+        # endpoint never extracted as an entity, or for a missing stored type
+        # -- is not evidence, casts no vote and yields to any real extraction;
+        # with no other vote it is kept as is.
+        type_votes = [t for t in already_entity_types if t.upper() != "UNKNOWN"] + [
+            dp["entity_type"] for dp in nodes_data
+        ]
         entity_type = sorted(
-            Counter(
-                [dp["entity_type"] for dp in nodes_data] + already_entity_types
-            ).items(),
+            Counter(type_votes or already_entity_types).items(),
             key=lambda x: x[1],
             reverse=True,
         )[0][0]
