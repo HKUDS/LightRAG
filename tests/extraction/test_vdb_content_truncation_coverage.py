@@ -177,9 +177,36 @@ class _MemGraph:
     async def has_nodes_batch(self, names: list[str]) -> set[str]:
         return {name for name in names if name in self.nodes}
 
+    async def get_nodes_batch(self, names: list[str]) -> dict[str, dict]:
+        return {name: self.nodes[name] for name in names if name in self.nodes}
+
+    async def get_edges_batch(self, pairs: list[dict]) -> dict:
+        result = {}
+        for pair in pairs:
+            edge = await self.get_edge(pair["src"], pair["tgt"])
+            if edge is not None:
+                result[(pair["src"], pair["tgt"])] = edge
+        return result
+
     async def upsert_edges_batch(self, edges: list[tuple[str, str, dict]]):
         for s, t, edge_data in edges:
             await self.upsert_edge(s, t, edge_data)
+
+
+class _MemKV:
+    """Minimal in-memory KV storage for the chunk-tracking namespaces."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    async def get_by_ids(self, ids):
+        return [self.rows.get(_id) for _id in ids]
+
+    async def upsert(self, payload: dict):
+        self.rows.update(payload)
+
+    async def index_done_callback(self):
+        return None
 
 
 class _MemVDB:
@@ -896,6 +923,8 @@ def _make_custom_kg_rag(global_config: dict):
     rag.chunk_entity_relation_graph = _MemGraph()
     rag.entities_vdb = _MemVDB(global_config)
     rag.relationships_vdb = _MemVDB(global_config)
+    rag.entity_chunks = _MemKV()
+    rag.relation_chunks = _MemKV()
     rag._insert_done = AsyncMock(return_value=None)
     return rag
 

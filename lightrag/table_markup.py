@@ -25,10 +25,18 @@ from typing import Any
 # writer (``lightrag.sidecar.writer``):
 #   <table id="tb-…" format="json"[ caption="…"]>{rows_json}</table>
 # blocks.jsonl invariants guarantee the tag has no embedded newlines.
+#
+# The body is matched non-greedily, as it is by every other reader of the tag,
+# so a body must never hold the text ``</table>``. A JSON body keeps that
+# promise through ``dumps_json_table_body`` below; write one no other way.
 TABLE_TAG_RE = re.compile(
     r"<table\s+(?P<attrs>[^>]*)>(?P<body>.*?)</table>",
     re.DOTALL,
 )
+
+# The closing tag as it may appear inside a JSON body. Case-insensitive
+# because some readers match the tag that way.
+_CLOSING_TABLE_TAG_RE = re.compile(r"<(/table>)", re.IGNORECASE)
 
 # Format detection regex inside the attrs string, e.g. format="json".
 _TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
@@ -56,6 +64,33 @@ HTML_ROW_PARTS_RE = re.compile(
 HTML_WRAPPER_TAG_RE = re.compile(
     r"<(?P<slash>/?)(?P<name>thead|tbody|tfoot)\b", re.IGNORECASE
 )
+
+
+def escape_json_table_body(body: str) -> str:
+    """Make serialized JSON safe to use as the body of a ``<table>`` tag.
+
+    Writes each ``</table>`` (any case) as ``<\\/table>``. In valid JSON that
+    text can only occur inside a string, where ``\\/`` decodes back to ``/``,
+    so ``json.loads`` returns the same value. Idempotent.
+
+    Escape nothing else. Cells routinely hold balanced inner markup
+    (``<sup>…</sup>``, ``<equation>…</equation>``) that other scanners pair up
+    across the whole chunk; rewriting those closers would leave the openers
+    to pair with a later, real tag.
+    """
+    return _CLOSING_TABLE_TAG_RE.sub(r"<\\\1", body)
+
+
+def dumps_json_table_body(rows: Any) -> str:
+    """Serialize ``rows`` as the body of a ``<table format="json">`` tag.
+
+    Use this for every JSON body that is placed inside a ``<table>`` tag, and
+    for measuring one: a bare ``json.dumps`` leaves a cell holding the text
+    ``</table>`` as is, and that ends the tag early for every reader (see
+    ``TABLE_TAG_RE``). Read the body back with ``json.loads`` as usual. Rows
+    without that text are encoded exactly as ``json.dumps`` encodes them.
+    """
+    return escape_json_table_body(json.dumps(rows, ensure_ascii=False))
 
 
 def detect_table_format(attrs: str, body: str) -> str | None:

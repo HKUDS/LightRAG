@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lightrag.constants import (
+    MIN_CHUNK_TOKEN_SIZE,
     PARSER_ENGINE_DOCLING,
     PARSER_ENGINE_MINERU,
     PARSER_ENGINE_NATIVE,
@@ -147,6 +148,11 @@ _CHUNK_PARAM_SPECS: tuple[ParamSpec, ...] = (
         aliases=frozenset({"chunk_ts"}),
         kind="int",
         targets=_ALL_CHUNK_SELECTORS,
+        # Parse-level floor stays 1: the best-effort hint classifier
+        # (_filename_hint_match) shares this schema, and a hint that was valid
+        # when its file was ingested must keep canonicalizing to the stored
+        # key. MIN_CHUNK_TOKEN_SIZE is checked at ingress only, by
+        # chunk_param_minimum_error.
         min_value=1,
     ),
     ParamSpec(
@@ -320,6 +326,23 @@ def chunk_param_overlap_error(params: Mapping[str, Any]) -> str | None:
     return None
 
 
+def chunk_param_minimum_error(params: Mapping[str, Any]) -> str | None:
+    """Return an error string when a block's explicit size is below the minimum.
+
+    Ingress-only: call it where a NEW hint or rule enters (upload, scan
+    enqueue, ``LIGHTRAG_PARSER`` startup validation), never from
+    classification, canonicalization or the resume path, which must keep
+    accepting hints that were valid under the old floor of 1.
+    """
+    size = params.get("chunk_token_size")
+    if size is not None and size < MIN_CHUNK_TOKEN_SIZE:
+        return (
+            f"value for 'chunk_token_size' must be >= {MIN_CHUNK_TOKEN_SIZE}, "
+            f"got {size}"
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Engine parameters (Phase 2) — per-file params attached to the engine token,
 # e.g. ``mineru(page_range=1-3,language=en)`` / ``docling(force_ocr=true)``.
@@ -460,6 +483,17 @@ def _coerce_engine_value(
     (:func:`normalize_engine_params`) so both apply identical rules.  For the
     list-type ``page_range`` the ``value`` is the already-joined comma string.
     """
+    # A single parameter value may never carry a separator / bracket char (see
+    # the module docstring).  Enforced here rather than in the text path alone,
+    # so a resolved dict cannot smuggle in a value that re-encodes into a
+    # ``parse_engine`` directive the parser would reject or silently truncate.
+    # ``,`` is the canonical joiner of a list param, so segments are checked.
+    for segment in value.split(",") if spec.is_list else [value]:
+        if any(ch in _VALUE_FORBIDDEN for ch in segment):
+            return None, (
+                f"{label}: value for {spec.canonical!r} may not contain any of "
+                "',' '(' ')' ']'"
+            )
     # ``local_parse_method`` only feeds the local MinerU request + signature;
     # the official API neither sends it nor folds it into the cache key, so
     # accepting it under official mode would persist a directive that silently
@@ -569,12 +603,6 @@ def parse_engine_params(
                 )
                 continue
             value = "true"  # bare boolean flag means True
-        if any(ch in _VALUE_FORBIDDEN for ch in value):
-            errors.append(
-                f"{label}: value for {spec.canonical!r} may not contain any of "
-                "',' '(' ')' ']'"
-            )
-            continue
         if spec.is_list:
             list_values.setdefault(spec.canonical, []).append(value)
             continue

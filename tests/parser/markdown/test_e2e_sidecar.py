@@ -14,12 +14,17 @@ from pathlib import Path
 import pytest
 
 import lightrag.parser.markdown.parser as md_parser
+from lightrag.chunk_schema import strip_internal_multimodal_markup_for_extraction
 from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
+from lightrag.parser.base import ParseContext
 from lightrag.parser.markdown.parser import NativeMarkdownParser
 from lightrag.sidecar import write_sidecar
 from lightrag.table_markup import TABLE_TAG_RE
 from lightrag.utils import Tokenizer, TokenizerInterface
-from lightrag.utils_pipeline import compute_text_content_hash
+from lightrag.utils_pipeline import compute_text_content_hash, make_lightrag_doc_content
+
+
+pytestmark = pytest.mark.offline
 
 _MD = """# Doc Title
 
@@ -158,10 +163,141 @@ def test_pipe_table_headers_survive_paragraph_chunking(tmp_path: Path, row_count
     assert table_entry["dimension"] == [row_count + 1, 2]
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize("row_count", [2, 40], ids=["unsplit", "split"])
+def test_pipe_table_cell_holding_closing_table_tag_survives_chunking(
+    tmp_path: Path, row_count: int
+):
+    """A cell whose text is ``</table>`` must not end the table tag early —
+    in the block the writer emits, in the slices the chunker re-serializes, or
+    in the header it re-injects into them."""
+    header = ["Tag", "</table>"]
+    rows = [[f"Widget_{i:02d}", str(1000 + i)] for i in range(row_count)]
+    rows.insert(row_count // 2, ["</table>", "closes an HTML table"])
+    markdown = "| Tag | </table> |\n| --- | --- |\n" + "".join(
+        f"| {name} | {meaning} |\n" for name, meaning in rows
+    )
+    parsed_dir = _build_sidecar(tmp_path, markdown + "\nAfter the table.\n")
+    blocks = [json.loads(line)["content"] for line in _content_lines(parsed_dir)]
+    block_tables = [m for b in blocks for m in TABLE_TAG_RE.finditer(b)]
+    assert len(block_tables) == 1
+    assert json.loads(block_tables[0].group("body")) == [header, *rows]
+
+    tokenizer = Tokenizer(model_name="char", tokenizer=_CharTokenizer())
+    chunk_size = 512
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        "\n\n".join(blocks),
+        chunk_size,
+        chunk_overlap_token_size=0,
+        blocks_path=str(parsed_dir / "doc.blocks.jsonl"),
+        doc_id="doc-test",
+    )
+
+    assert len(chunks) > 1 if row_count == 40 else len(chunks) == 1
+    recovered_rows = []
+    for chunk in chunks:
+        assert len(tokenizer.encode(chunk["content"])) <= chunk_size
+        # What the extraction prompt receives still holds whole tables only.
+        for text in (
+            chunk["content"],
+            strip_internal_multimodal_markup_for_extraction(chunk["content"]),
+        ):
+            tables = list(TABLE_TAG_RE.finditer(text))
+            assert len(tables) == text.count("</table>") == 1, text
+            assert json.loads(tables[0].group("body"))[0] == header
+        recovered_rows.extend(json.loads(tables[0].group("body"))[1:])
+    assert recovered_rows == rows
+
+    (table_entry,) = json.loads((parsed_dir / "doc.tables.json").read_text())[
+        "tables"
+    ].values()
+    assert table_entry["format"] == "json"
+    assert json.loads(table_entry["content"]) == [header, *rows]
+
+
 def test_reparse_content_is_byte_stable(tmp_path: Path):
     first = _content_lines(_build_sidecar(tmp_path / "a"))
     second = _content_lines(_build_sidecar(tmp_path / "b"))
     assert first == second
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "wrapper", ["{}", "`{}`", "```xml\n{}\n```", "~~~text\n{}\n~~~"]
+)
+@pytest.mark.parametrize("literals_first", [True, False])
+def test_source_marker_literals_survive_real_multimodal_items(
+    tmp_path: Path, wrapper: str, literals_first: bool
+):
+    literals = (
+        '<mdtable ref="t1"/> <mdequation ref="e1"/> <mddrawing ref="d1"/>\n'
+        "{{TBL:tb1}} {{EQ:eq2}} {{IMG:im3}} {{EQI:eq2}}\n"
+        "{{TBL:unknown}} {{IMG:unknown}} {{EQ:unknown}} {{EQI:unknown}}"
+    )
+    literal_block = wrapper.format(literals)
+    actual = (
+        "| Column |\n| --- |\n| Actual table |\n\n$$ x^2 $$\n\n"
+        "![image](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==)"
+    )
+    sections = ["# Literals\n\n" + literal_block, "# Actual\n\n" + actual]
+    if not literals_first:
+        sections.reverse()
+    markdown = "\n\n".join(sections)
+    parsed = _build_sidecar(tmp_path / "first", markdown)
+    content = "\n\n".join(
+        json.loads(line)["content"] for line in _content_lines(parsed)
+    )
+    assert literal_block in content
+    assert content.count("Actual table") == 1
+    for plural, tag in [
+        ("tables", "table"),
+        ("equations", "equation"),
+        ("drawings", "drawing"),
+    ]:
+        entries = json.loads((parsed / f"doc.{plural}.json").read_text())[plural]
+        assert len(entries) == 1
+        assert content.count(f'<{tag} id="') == 1
+    assert _content_lines(parsed) == _content_lines(
+        _build_sidecar(tmp_path / "second", markdown)
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_parser_persists_literal_examples_verbatim(tmp_path: Path):
+    source = tmp_path / "literal.md"
+    literal = (
+        '```text\n<mdtable ref="t1"/> <mdequation ref="e1"/>\n'
+        "{{TBL:tb1}} {{IMG:unknown}} {{EQ:eq2}} {{EQI:unknown}}\n```"
+    )
+    source.write_text(
+        "# Literal\n\n"
+        + literal
+        + "\n\n| Column |\n| --- |\n| Actual |\n\n$$ x^2 $$\n",
+        encoding="utf-8",
+    )
+
+    class Rag:
+        saved = None
+
+        def _resolve_source_file_for_parser(self, file_path, **kwargs):
+            return str(source)
+
+        async def _persist_parsed_full_docs(self, doc_id, data):
+            self.saved = data
+
+    rag = Rag()
+    result = await NativeMarkdownParser().parse(
+        ParseContext(rag, "doc-literal", source.name, {"parse_engine": "native"})
+    )
+    assert literal in result.content
+    assert result.content.count("Actual") == 1
+    assert rag.saved["content"] == make_lightrag_doc_content(result.content)
+    rows = [
+        json.loads(line) for line in Path(result.blocks_path).read_text().splitlines()
+    ]
+    assert any(literal in row.get("content", "") for row in rows)
 
 
 _MD_EXTERNAL = """# T

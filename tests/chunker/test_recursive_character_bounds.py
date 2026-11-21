@@ -345,6 +345,48 @@ def test_the_no_op_skip_does_not_change_the_output():
     assert with_bomb[0]["content"].startswith("QX")
 
 
+@pytest.mark.parametrize("chunk_size", [16, 17])
+def test_no_op_skip_sends_a_piece_below_chunk_size_to_the_merge_step(chunk_size):
+    """The skip must not push a short piece down to weaker separators.
+
+    The text is 16 tokens: at 16 it is oversized and LangChain recurses, at 17 it
+    fits and LangChain merges it whole. Falling through to ``""`` instead would
+    fragment it, since the merge sums per-character token counts.
+    """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    text = "Q" + "a" * 64
+    separators = ["Q"] * (MAX_R_SEPARATORS - 1) + [""]
+    tokenizer, underlying = _tok()
+    expected = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=0,
+        separators=separators,
+        length_function=lambda value: len(tokenizer.encode(value)),
+    ).split_text(text)
+    underlying.encodes = 0
+
+    chunks = chunking_by_recursive_character(
+        tokenizer,
+        text,
+        chunk_size,
+        chunk_overlap_token_size=0,
+        separators=separators,
+    )
+
+    assert [chunk["content"] for chunk in chunks] == expected
+    for chunk in chunks:
+        span = chunk["_source_span"]
+        assert text[span["start"] : span["end"]] == chunk["content"]
+    if chunk_size == 17:
+        assert expected == [text]
+        # One length check for the whole no-op cascade plus the merge and
+        # result encodes; one check per level would cost over 60.
+        assert underlying.encodes <= 5
+    else:
+        assert len(expected) > 1
+
+
 def test_a_separator_that_really_splits_is_unaffected():
     """The skip must only trigger on a genuine no-op."""
     tokenizer, _ = _tok()

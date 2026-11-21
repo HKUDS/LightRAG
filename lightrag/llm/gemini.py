@@ -20,11 +20,15 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -44,6 +48,7 @@ if not pm.is_installed("google-api-core"):
 
 from google import genai  # type: ignore
 from google.genai import types  # type: ignore
+from google.genai import errors as google_genai_errors  # type: ignore
 from google.api_core import exceptions as google_api_exceptions  # type: ignore
 
 
@@ -51,6 +56,26 @@ class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism when Gemini returns empty responses"""
 
     pass
+
+
+def _is_retryable_gemini_client_error(exc: BaseException) -> bool:
+    """True for a rate-limit response, the one 4xx worth a fresh attempt.
+
+    ``google-genai`` (the client this module actually calls through
+    ``client.aio.models.*``) raises its own ``google.genai.errors``
+    hierarchy, not ``google.api_core.exceptions`` -- that module belongs to
+    the older Vertex AI client libraries and is never raised on this
+    request path. Its 5xx failures surface as ``ServerError``, matched
+    directly in the retry predicate below. A 429 rate-limit response,
+    however, surfaces as the generic 4xx ``ClientError`` rather than a
+    distinct "resource exhausted" type, so it must be matched by status
+    code; every other ``ClientError`` (bad request, bad auth, not found)
+    stays non-retryable.
+    """
+    return (
+        isinstance(exc, google_genai_errors.ClientError)
+        and getattr(exc, "code", None) == 429
+    )
 
 
 _DEFAULT_GEMINI_BASE_URLS = {
@@ -80,6 +105,16 @@ def _normalize_gemini_base_url(base_url: str | None) -> str | None:
     return normalized
 
 
+def _use_vertexai() -> bool:
+    """Whether GOOGLE_GENAI_USE_VERTEXAI enables Vertex AI mode.
+
+    Accepts the values the google-genai SDK accepts ("true" or "1", any case).
+    The client is always built with an explicit ``vertexai`` flag, so this
+    decision, not the SDK's own environment lookup, selects the mode.
+    """
+    return os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+
+
 @lru_cache(maxsize=8)
 def _get_gemini_client(
     api_key: str, base_url: str | None, timeout: int | None = None
@@ -99,7 +134,7 @@ def _get_gemini_client(
     normalized_base_url = _normalize_gemini_base_url(base_url)
 
     # Add Vertex AI support
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = _use_vertexai()
     if use_vertexai:
         # Vertex AI mode: use project/location, NOT api_key
         client_kwargs["vertexai"] = True
@@ -114,7 +149,10 @@ def _get_gemini_client(
                 "GOOGLE_CLOUD_PROJECT must be set when using Vertex AI mode"
             )
     else:
-        # Standard Gemini API mode: use api_key
+        # Standard Gemini API mode: use api_key. Pass vertexai=False explicitly,
+        # otherwise the SDK re-reads its own environment variables (including
+        # GOOGLE_GENAI_USE_ENTERPRISE) and may still switch to Vertex AI.
+        client_kwargs["vertexai"] = False
         client_kwargs["api_key"] = api_key
 
     if normalized_base_url is not None or timeout is not None:
@@ -135,7 +173,7 @@ def _get_gemini_client(
 
 def _ensure_api_key(api_key: str | None) -> str:
     # In Vertex AI mode, API key is not required
-    use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() == "true"
+    use_vertexai = _use_vertexai()
     if use_vertexai:
         # Return empty string for Vertex AI mode (not used)
         return ""
@@ -171,6 +209,11 @@ def _build_generation_config(
         if schema is not None and "response_json_schema" not in config_data:
             config_data["response_json_schema"] = schema
 
+    if "safety_settings" in config_data:
+        config_data["safety_settings"] = _normalize_gemini_safety_settings(
+            config_data["safety_settings"]
+        )
+
     # Remove entries that are explicitly set to None to avoid type errors
     sanitized = {
         key: value
@@ -204,6 +247,30 @@ def _normalize_gemini_response_schema(response_format: Any) -> Any | None:
         return response_format
 
     return response_format
+
+
+def _normalize_gemini_safety_settings(safety_settings: Any) -> Any:
+    """Convert a category-to-threshold mapping to the SDK's native list shape.
+
+    ``GeminiLLMOptions.safety_settings`` is documented and typed as a plain
+    JSON object (e.g. ``{"HARM_CATEGORY_HARASSMENT": "BLOCK_NONE"}``), but
+    ``types.GenerateContentConfig.safety_settings`` only accepts a list of
+    ``{"category": ..., "threshold": ...}`` entries and rejects a bare dict.
+    A value that is already a list (the SDK's own shape) passes through
+    unchanged, and a single SDK entry (a dict with a ``category`` key) is
+    wrapped in a list rather than read as a mapping. No harm category is
+    named ``category``, so the two dict shapes cannot collide.
+    """
+    if not isinstance(safety_settings, dict):
+        return safety_settings
+
+    if "category" in safety_settings:
+        return [safety_settings]
+
+    return [
+        {"category": category, "threshold": threshold}
+        for category, threshold in safety_settings.items()
+    ]
 
 
 def _validate_gemini_response_format(response_format: Any | None) -> None:
@@ -282,8 +349,14 @@ def _extract_response_text(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
         | retry_if_exception_type(InvalidResponseError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Gemini's message and callers can
+    # still catch google.genai.errors.APIError.
+    reraise=True,
 )
 async def gemini_complete_if_cache(
     model: str,
@@ -325,6 +398,8 @@ async def gemini_complete_if_cache(
 
     COT Integration:
     - When enable_cot=True: Thought content is wrapped in <think>...</think> tags
+      on the streaming path. A non-streaming result never carries thoughts,
+      and one with no regular text raises like any empty response.
     - When enable_cot=False: Thought content is filtered out, only regular content returned
     - Thought content is identified by the 'thought' attribute on response parts
     - Requires thinking_config to be enabled in generation_config for API to return thoughts
@@ -359,9 +434,15 @@ async def gemini_complete_if_cache(
     Raises:
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
     """
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset leaves the SDK default in place.
+    timeout = provider_timeout(timeout)
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 
@@ -619,21 +700,13 @@ async def gemini_complete_if_cache(
 
     final_text = remove_think_tags(final_text)
 
-    # A thinking model that spent its whole budget on the reasoning trace
-    # reaches here with final_text == "<think>...</think>", which the line
-    # above strips to nothing: empty AFTER sanitization is the same broken
-    # response as empty before it, and used to be returned as a successful
-    # (if truncated) empty string. Only escalated for the token-limit case,
-    # which is deterministic and actionable; a reasoning-only response that
-    # ended normally keeps its previous behavior with a warning.
+    # A reasoning-only response reaches here with final_text ==
+    # "<think>...</think>" when enable_cot=True, which the line above strips
+    # to nothing. Empty AFTER sanitization is the same broken response as
+    # empty before it, so it raises the same way the enable_cot=False path
+    # does: fail fast on the token limit, retry otherwise.
     if not final_text.strip():
-        if length_limited:
-            raise _empty_response_error(len((thought_text or "").strip()))
-        logger.warning(
-            "Gemini response contained only reasoning content "
-            f"(finish_reason={getattr(finish_reason, 'name', finish_reason)}), "
-            "returning empty content"
-        )
+        raise _empty_response_error(len((thought_text or "").strip()))
 
     # Flag token-limit truncation so the cache layer skips persisting partial
     # output. Must stay the last transformation of final_text: any later
@@ -658,6 +731,7 @@ async def gemini_model_complete(
     entity_extraction: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
+    apply_llm_timeout(kwargs)
     # Accept legacy keyword if passed via kwargs to preserve backwards compat.
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)
     hashing_kv = kwargs.get("hashing_kv")
@@ -699,7 +773,11 @@ async def gemini_model_complete(
         | retry_if_exception_type(google_api_exceptions.DeadlineExceeded)
         | retry_if_exception_type(google_api_exceptions.Aborted)
         | retry_if_exception_type(google_api_exceptions.Unknown)
+        | retry_if_exception_type(google_genai_errors.ServerError)
+        | retry_if_exception(_is_retryable_gemini_client_error)
     ),
+    # Same as gemini_complete_if_cache: raise the last attempt's exception.
+    reraise=True,
 )
 async def gemini_embed(
     texts: list[str],
@@ -740,6 +818,9 @@ async def gemini_embed(
             RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, CODE_RETRIEVAL_QUERY,
             QUESTION_ANSWERING, FACT_VERIFICATION.
         timeout: Request timeout in seconds (will be converted to milliseconds for Gemini API).
+            None (the default) uses LightRAG's ``default_embedding_timeout``
+            inside a LightRAG embedding call; 0 or a negative value, or None
+            outside one, keeps the SDK default.
         token_tracker: Optional token usage tracker for monitoring API usage.
         context: The embedding context - "query" for search queries, "document" for indexed content.
             **IMPORTANT**: This parameter is automatically injected by the EmbeddingFunc wrapper
@@ -752,6 +833,10 @@ async def gemini_embed(
     Raises:
         ValueError: If API key is not provided or configured.
         RuntimeError: If the response from Gemini is invalid or empty.
+        google.genai.errors.APIError: When the SDK call fails. 5xx and 429
+            responses are retried up to three attempts first; the last
+            attempt's exception is raised as-is, never wrapped in
+            ``tenacity.RetryError``.
 
     Note:
         - For dimension 3072: Embeddings are already normalized by the API
@@ -764,7 +849,9 @@ async def gemini_embed(
     _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
 
     key = _ensure_api_key(api_key)
-    # Convert timeout from seconds to milliseconds for Gemini API
+    # Convert timeout from seconds to milliseconds for Gemini API; <= 0 or
+    # unset keeps the SDK default (no http_options timeout).
+    timeout = embedding_timeout(timeout)
     timeout_ms = timeout * 1000 if timeout else None
     client = _get_gemini_client(key, base_url, timeout_ms)
 

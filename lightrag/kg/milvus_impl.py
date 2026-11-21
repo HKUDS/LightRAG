@@ -1,10 +1,12 @@
 import asyncio
 import json
+import math
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Awaitable, Callable, final, Optional, Dict
+from typing import Any, Awaitable, Callable, Collection, final, Optional, Dict
 from dataclasses import dataclass, fields
 import numpy as np
 from lightrag.utils import (
@@ -17,6 +19,7 @@ from lightrag.utils import (
     _consume_future_exception,
     _wait_deferring_cancellation,
     validate_workspace,
+    validate_workspace_override,
 )
 from ..base import BaseVectorStorage
 from ..constants import (
@@ -24,6 +27,11 @@ from ..constants import (
     DEFAULT_QUERY_PRIORITY,
     GRAPH_FIELD_SEP,
     MILVUS_SUBMIT_LIMIT,
+)
+from ..exceptions import (
+    StorageCapabilityError,
+    StorageControlPlaneError,
+    VectorSpaceMismatchError,
 )
 from ..kg.shared_storage import get_data_init_lock, get_namespace_lock
 import pipmaster as pm
@@ -258,6 +266,12 @@ class _CollectionGate:
 
 
 _COLLECTION_GATES: dict[int, tuple[Any, dict[str, _CollectionGate]]] = {}
+# Ownership marker written into a collection's schema description, and the
+# shape of a model collection's name with its in-place-migration backups. See
+# ``MilvusVectorDBStorage.drop_sibling_models``.
+_OWNERSHIP_MARKER_PREFIX = "[lightrag:"
+_SIBLING_COLLECTION_RE = re.compile(r"_\d+d(_temp|_old)?$")
+
 _COLLECTION_GATES_GUARD = threading.Lock()
 
 
@@ -313,6 +327,22 @@ DEFAULT_MILVUS_UPSERT_MAX_PAYLOAD_BYTES = (
 DEFAULT_MILVUS_UPSERT_MAX_RECORDS_PER_BATCH = 128
 DEFAULT_MILVUS_DELETE_MAX_RECORDS_PER_BATCH = 1000
 
+
+# Default MILVUS_LOAD_TIMEOUT. pymilvus' load_collection() without a timeout
+# returns only when the load reaches 100%, and the server does not always end
+# a load that cannot complete, so an unbounded wait can block queries, flushes
+# and startup for good. 600s matches Milvus' own queryCoord.loadTimeoutSeconds
+# default; a deployment whose largest collection needs longer to cold-load
+# raises it, and 0 restores the unbounded wait.
+DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS = 600.0
+
+
+class MilvusCollectionLoadError(StorageControlPlaneError):
+    """An existing collection could not be loaded (refused, or still loading
+    when MILVUS_LOAD_TIMEOUT expired).
+    """
+
+
 # Read-path response-size ceiling. Unlike the write path above,
 # a query() response that crosses the gRPC message ceiling isn't rejected by
 # self-hosted Milvus's much larger ~64MB limit — it's rejected by the ~4MB
@@ -339,6 +369,29 @@ MILVUS_QUERY_ROW_OVERHEAD_BYTES = 256
 # either — grpc-core always attaches this text to a genuine oversize response
 # — so quota errors fail fast instead.
 MILVUS_QUERY_RESPONSE_TOO_LARGE_MARKERS = ("received message larger than max",)
+
+# Consistency level for every point read (`query()` by id or by filter).
+# Collections are created without a level, so the server default -- Bounded --
+# applies to any request that does not name one. Bounded serves a snapshot up to
+# `common.gracefulTime` (5 s by default) old, so a row upserted or deleted by
+# the flush that just emptied `_pending_vector_docs` / `_pending_vector_deletes`
+# can be missing from, or still present in, the next read. The write buffer
+# gives read-your-writes only until that flush. Reads whose answer drives a
+# decision or is shown back to the caller -- `delete_entity_relation`'s
+# victim lookup, `is_empty`, `get_by_id(s)`, `get_vectors_by_ids` -- therefore
+# ask for Strong, which waits for the server's time tick (`timeTickInterval`,
+# 200 ms by default) instead of reading a stale snapshot. Passed per request
+# rather than set at creation, so collections created before this change get it
+# too.
+#
+# Accepted residue: vector search (`MilvusVectorDBStorage.query()`, which calls
+# `client.search`) stays on the collection default. A search that misses
+# vectors written moments ago is ordinary retrieval lag, healed by the next
+# search, and Strong would add a time-tick wait to every query. The schema
+# migration's `query_iterator` is also left on its default: it runs inside
+# `initialize()`, before this instance has written anything, so it copies rows
+# an earlier run flushed.
+MILVUS_POINT_READ_CONSISTENCY_LEVEL = "Strong"
 
 # Schema-migration resilience. A transient Milvus outage during the long
 # iterator-based migration must not kill worker startup: when pymilvus'
@@ -419,8 +472,15 @@ SUPPORTED_INDEX_TYPES = {
     "SCANN",
 }
 
-# Supported metric types
-SUPPORTED_METRIC_TYPES = {"COSINE", "L2", "IP"}
+# The only vector metric LightRAG builds or searches with. Every query passes
+# cosine_better_than_threshold as Milvus's range-search radius, which is a
+# similarity lower bound only under COSINE (under L2 it is a distance upper
+# bound). See docs/MilvusConfigurationGuide.md#distance-metric.
+VECTOR_METRIC_TYPE = "COSINE"
+
+# Ignored MILVUS_METRIC_TYPE / metric_type values already warned about, so the
+# deprecation warning appears once per value per process, not per namespace.
+_IGNORED_METRIC_TYPES_WARNED: set[str] = set()
 
 # HNSW_SQ quantization types
 SUPPORTED_SQ_TYPES = {"SQ4U", "SQ6", "SQ8", "BF16", "FP16"}
@@ -467,6 +527,25 @@ def _escape_milvus_str(val: str) -> str:
     )
 
 
+def _warn_ignored_metric_type(requested: Optional[str]) -> None:
+    """Warn, once per value, that a non-COSINE metric request is ignored."""
+    if not requested:
+        return
+    normalized = str(requested).strip().upper()
+    if not normalized or normalized == VECTOR_METRIC_TYPE:
+        return
+    if normalized in _IGNORED_METRIC_TYPES_WARNED:
+        return
+    _IGNORED_METRIC_TYPES_WARNED.add(normalized)
+    logger.warning(
+        f"Milvus metric type '{requested}' is no longer supported and is ignored: "
+        f"LightRAG always uses {VECTOR_METRIC_TYPE}. Remove MILVUS_METRIC_TYPE / "
+        "metric_type from your configuration. An existing collection indexed "
+        f"with another metric is re-indexed with {VECTOR_METRIC_TYPE} at startup "
+        "(see docs/MilvusConfigurationGuide.md#distance-metric)."
+    )
+
+
 @dataclass
 class MilvusIndexConfig:
     """
@@ -474,11 +553,15 @@ class MilvusIndexConfig:
 
     Supports configuration via environment variables or initialization parameters.
     Initialization parameters take precedence over environment variables.
+
+    ``metric_type`` / ``MILVUS_METRIC_TYPE`` are deprecated and ignored: the
+    metric is always ``VECTOR_METRIC_TYPE`` (COSINE), and a non-COSINE value
+    only logs a warning. The field stays so callers passing it keep working.
     """
 
     # Base configuration
     index_type: Optional[str] = None
-    metric_type: Optional[str] = None
+    metric_type: Optional[str] = None  # Deprecated: always resolved to COSINE
 
     # HNSW series parameters
     hnsw_m: Optional[int] = None
@@ -502,10 +585,10 @@ class MilvusIndexConfig:
             self.index_type or os.environ.get("MILVUS_INDEX_TYPE", "AUTOINDEX")
         ).upper()
 
-        # Metric type
-        self.metric_type = (
-            self.metric_type or os.environ.get("MILVUS_METRIC_TYPE", "COSINE")
-        ).upper()
+        # Metric type: fixed to COSINE; a requested other metric is ignored
+        requested_metric = self.metric_type or os.environ.get("MILVUS_METRIC_TYPE")
+        _warn_ignored_metric_type(requested_metric)
+        self.metric_type = VECTOR_METRIC_TYPE
 
         # HNSW parameters
         # Defaults aligned with Milvus 2.4+ official documentation
@@ -543,12 +626,6 @@ class MilvusIndexConfig:
             raise ValueError(
                 f"Unsupported index type: {self.index_type}. "
                 f"Supported: {SUPPORTED_INDEX_TYPES}"
-            )
-
-        if self.metric_type not in SUPPORTED_METRIC_TYPES:
-            raise ValueError(
-                f"Unsupported metric type: {self.metric_type}. "
-                f"Supported: {SUPPORTED_METRIC_TYPES}"
             )
 
         if self.index_type == "HNSW_SQ":
@@ -995,8 +1072,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         return CollectionSchema(
             fields=all_fields,
-            description=description,
+            description=f"{description} {self._ownership_marker()}",
             enable_dynamic_field=True,  # Support dynamic fields
+        )
+
+    def _ownership_marker(self) -> str:
+        """Schema-description tag naming the workspace and namespace that own a
+        collection; ``drop_sibling_models`` trusts it, never the name alone."""
+        return (
+            f"{_OWNERSHIP_MARKER_PREFIX}workspace={self.workspace};"
+            f"namespace={self.namespace}]"
         )
 
     def _get_varchar_field_limits_for_namespace(self) -> dict[str, int]:
@@ -1190,7 +1275,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
     def _create_indexes_after_collection(self):
         """Create indexes after collection is created"""
-        # Build vector index using index configuration
+        self._create_vector_index()
+
+        # Create scalar indexes based on namespace
+        self._create_scalar_indexes()
+
+    def _create_vector_index(self):
+        """Create the vector index from the index configuration (raises on failure)."""
         # Use compatibility helper to get IndexParams
         index_params_for_vector = self._get_index_params()
 
@@ -1219,7 +1310,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             f"[{self.workspace}] Created vector index with config: {self.index_config.to_dict()}"
         )
 
-        # Create scalar indexes based on namespace
+    def _create_scalar_indexes(self):
+        """Create the namespace's scalar indexes; failures only degrade performance."""
         # Wrap scalar index creation in try-except to allow graceful degradation
         try:
             # Try to get IndexParams in a version-compatible way
@@ -1451,8 +1543,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         logger.debug(f"[{self.workspace}] Field '{field_name}' is compatible")
         return True
 
-    def _check_vector_dimension(self, collection_info: dict):
-        """Check vector dimension compatibility"""
+    def _check_vector_dimension(
+        self, collection_info: dict, container: str | None = None
+    ):
+        """Check vector dimension compatibility.
+
+        Args:
+            collection_info: ``describe_collection`` output for ``container``.
+            container: the collection the info describes. Defaults to
+                ``final_namespace``; the legacy-migration caller passes its own
+                source collection so the refusal names what it actually read.
+
+        Raises:
+            VectorSpaceMismatchError: the collection holds vectors of another
+                dimension. Callers that are merely *sourcing* a migration
+                (the legacy collection) must catch it -- a legacy collection in
+                another embedding space is not a refusal, because the suffixed
+                collection is a different container and is created fresh.
+            ValueError: the dimensions could not be parsed at all, which is a
+                broken schema rather than an embedding-space change and must
+                never reach ``lightrag-rebuild-vdb`` as a droppable condition.
+        """
+        container = container or self.final_namespace
         current_dimension = self.embedding_func.embedding_dim
 
         # Find vector field dimension
@@ -1492,14 +1604,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                             f"current={current_dimension} (type={type(current_dimension)}), error={e}"
                         )
                         raise ValueError(
-                            f"Invalid dimension values for collection '{self.final_namespace}': "
+                            f"Invalid dimension values for collection '{container}': "
                             f"existing={existing_dimension}, current={current_dimension}"
                         ) from e
 
-                    if existing_dim_int != current_dim_int:
+                    # A dimension that is MISSING is not an embedding-space
+                    # change. `None != 768` would otherwise raise the typed
+                    # refusal, and `lightrag-rebuild-vdb` answers that by
+                    # DROPPING the collection -- so a malformed describe_collection
+                    # response, or an embedding_func that never declared a
+                    # dimension, would authorise destroying live vectors. A fact
+                    # nobody reported can never be evidence of a mismatch; see
+                    # "Absent evidence never refuses" in
+                    # docs/design/VectorSpaceProvenance.md.
+                    if existing_dim_int is None or current_dim_int is None:
+                        logger.error(
+                            f"[{self.workspace}] Missing dimension: existing={existing_dimension}, "
+                            f"current={current_dimension}"
+                        )
                         raise ValueError(
-                            f"Vector dimension mismatch for collection '{self.final_namespace}': "
-                            f"existing={existing_dim_int}, current={current_dim_int}"
+                            f"Missing dimension values for collection '{container}': "
+                            f"existing={existing_dimension}, current={current_dimension}"
+                        )
+
+                    if existing_dim_int != current_dim_int:
+                        raise VectorSpaceMismatchError(
+                            backend=type(self).__name__,
+                            container=container,
+                            expected_dim=current_dim_int,
+                            stored_dim=existing_dim_int,
                         )
 
                     logger.debug(
@@ -2127,6 +2260,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         try:
             self._client.describe_collection(self.final_namespace)
             self._validate_collection_compatibility()
+        except VectorSpaceMismatchError:
+            # Never reframed as a migration failure. The typed refusal is what
+            # `lightrag-rebuild-vdb` matches on to drop and re-provision this
+            # collection; wrapping it in a generic RuntimeError would leave the
+            # operator with no automated way out, which is the defect this
+            # replaces. See docs/design/VectorSpaceProvenance.md.
+            raise
         except Exception as validation_error:
             logger.error(
                 f"[{self.workspace}] CRITICAL ERROR: Collection '{self.namespace}' exists but validation failed!"
@@ -2189,6 +2329,52 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         self._create_indexes_after_collection()
 
+    def _ensure_cosine_vector_index(self) -> None:
+        """Re-index the collection's vector field with COSINE if built otherwise.
+
+        Collections created while ``MILVUS_METRIC_TYPE`` was configurable may
+        carry an L2 or IP index, which every COSINE search now refuses. The
+        rebuild keeps the rows (a metric belongs to the index, not the data):
+        release, drop the vector index, create it with COSINE, load. Must run
+        under the data-init lock with the collection existing. A failure is
+        raised; a crash after the drop leaves no vector index, which the
+        missing-index repair in ``_validate_collection_and_load`` rebuilds on
+        the next start. See docs/MilvusConfigurationGuide.md#distance-metric.
+        """
+        index_names = self._client.list_indexes(
+            self.final_namespace, field_name="vector"
+        )
+        stale: dict[str, str] = {}
+        for index_name in index_names or []:
+            info = self._client.describe_index(self.final_namespace, index_name)
+            metric = str((info or {}).get("metric_type") or "").upper()
+            if metric and metric != VECTOR_METRIC_TYPE:
+                stale[index_name] = metric
+        if not stale:
+            return
+
+        logger.warning(
+            f"[{self.workspace}] Collection '{self.final_namespace}' vector index uses "
+            f"{sorted(set(stale.values()))}, not {VECTOR_METRIC_TYPE}; rebuilding it in "
+            "place (rows are kept, the collection is unavailable until it finishes)"
+        )
+        try:
+            self._client.release_collection(self.final_namespace)
+            for index_name in stale:
+                self._client.drop_index(self.final_namespace, index_name)
+            self._create_vector_index()
+            self._ensure_collection_loaded()
+        except Exception as rebuild_error:
+            raise RuntimeError(
+                f"Rebuilding the vector index of '{self.final_namespace}' with "
+                f"{VECTOR_METRIC_TYPE} failed; restart to retry. Original error: "
+                f"{rebuild_error}"
+            ) from rebuild_error
+        logger.info(
+            f"[{self.workspace}] Rebuilt vector index of '{self.final_namespace}' "
+            f"with {VECTOR_METRIC_TYPE}"
+        )
+
     def _ensure_collection_loaded(self):
         """Ensure the collection is loaded into memory for search operations"""
         try:
@@ -2200,9 +2386,35 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise ValueError(f"Collection {self.final_namespace} does not exist")
 
             # Load the collection if it's not already loaded
-            # In Milvus, collections need to be loaded before they can be searched
-            self._client.load_collection(self.final_namespace)
-            # logger.debug(f"[{self.workspace}] Collection {self.namespace} loaded successfully")
+            # In Milvus, collections need to be loaded before they can be searched.
+            # Without a timeout pymilvus waits until the load reaches 100%, so a
+            # load stuck server-side blocks forever; MILVUS_LOAD_TIMEOUT bounds it.
+            load_kwargs = (
+                {} if self._load_timeout is None else {"timeout": self._load_timeout}
+            )
+            load_started = time.monotonic()
+            try:
+                self._client.load_collection(self.final_namespace, **load_kwargs)
+            except Exception as load_error:
+                # Typed (a RuntimeError) so _create_collection_if_not_exist
+                # re-raises it as-is instead of routing it to the force-create
+                # fallback, whose generic refusal would hide the cause.
+                # Name the knob only when the limit is what ended the wait,
+                # judged by the clock rather than by pymilvus' error text.
+                timeout_hint = ""
+                if (
+                    self._load_timeout is not None
+                    and time.monotonic() - load_started >= self._load_timeout
+                ):
+                    timeout_hint = (
+                        f" (gave up after MILVUS_LOAD_TIMEOUT={self._load_timeout:g}s;"
+                        " raise it if this collection needs longer to load,"
+                        " 0 disables the limit)"
+                    )
+                raise MilvusCollectionLoadError(
+                    f"Failed to load Milvus collection '{self.final_namespace}': "
+                    f"{load_error}{timeout_hint}"
+                ) from load_error
 
         except Exception as e:
             logger.error(
@@ -2272,8 +2484,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     )
                 else:
                     try:
-                        self._check_vector_dimension(legacy_collection_info)
-                    except ValueError as legacy_error:
+                        self._check_vector_dimension(
+                            legacy_collection_info, container=self.legacy_namespace
+                        )
+                    # VectorSpaceMismatchError is caught here, not propagated:
+                    # the suffixed collection does not exist yet, so nothing is
+                    # being served out of the wrong embedding space. The legacy
+                    # collection is only a migration SOURCE, and an incompatible
+                    # source simply is not migrated.
+                    except (ValueError, VectorSpaceMismatchError) as legacy_error:
                         logger.warning(
                             f"[{self.workspace}] Legacy collection '{self.legacy_namespace}' "
                             f"is not compatible with '{self.final_namespace}': {legacy_error}. "
@@ -2319,23 +2538,42 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error in _create_collection_if_not_exist for {self.namespace}: {e}"
             )
 
-            # If there's any error (other than validation failure), try to force create the collection
+            # If there's any error (other than validation failure), create the
+            # collection only if it is missing and would hide nothing.
+            # Never drop an existing collection here: an unclassified error
+            # (a load the cluster refuses, a transient "server is busy") says
+            # nothing about corruption, and dropping would destroy its
+            # vectors. Nor create one that would hide data: an empty target
+            # permanently shadows an unmigrated legacy collection or an
+            # interrupted migration's _old/_temp. Only create when none of
+            # them exists; if existence cannot be established, fail closed.
+            if self._client.has_collection(self.final_namespace):
+                raise RuntimeError(
+                    f"Collection '{self.final_namespace}' exists but could not be "
+                    f"initialized; refusing to drop and recreate it. Original error: {e}"
+                ) from e
+            shadowed = [
+                name
+                for name in (
+                    self.legacy_namespace
+                    if self.legacy_namespace != self.final_namespace
+                    else None,
+                    f"{self.final_namespace}_old",
+                    f"{self.final_namespace}_temp",
+                )
+                if name and self._client.has_collection(name)
+            ]
+            if shadowed:
+                raise RuntimeError(
+                    f"Collection '{self.final_namespace}' could not be initialized; "
+                    f"refusing to create it over existing data in {shadowed}. "
+                    f"Original error: {e}"
+                ) from e
+
             logger.info(
                 f"[{self.workspace}] Attempting to force create collection {self.namespace}..."
             )
             try:
-                # Try to drop the collection first if it exists in a bad state
-                try:
-                    if self._client.has_collection(self.final_namespace):
-                        logger.info(
-                            f"[{self.workspace}] Dropping potentially corrupted collection {self.namespace}"
-                        )
-                        self._client.drop_collection(self.final_namespace)
-                except Exception as drop_error:
-                    logger.warning(
-                        f"[{self.workspace}] Could not drop collection {self.namespace}: {drop_error}"
-                    )
-
                 # Create fresh collection
                 self._create_collection_with_schema(self.final_namespace)
 
@@ -2362,7 +2600,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         # which is the RECOMMENDED method for framework integration (e.g., RAGAnything).
         #
         # All 11 index configuration parameters can be passed through vector_db_storage_cls_kwargs:
-        #   - index_type, metric_type
+        #   - index_type, metric_type (deprecated and ignored: always COSINE)
         #   - hnsw_m, hnsw_ef_construction, hnsw_ef
         #   - sq_type, sq_refine, sq_refine_type, sq_refine_k
         #   - ivf_nlist, ivf_nprobe
@@ -2373,7 +2611,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         #       vector_db_storage_cls_kwargs={
         #           "cosine_better_than_threshold": 0.2,
         #           "index_type": "HNSW",
-        #           "metric_type": "COSINE",
         #           "hnsw_m": 32,
         #           "hnsw_ef_construction": 256,
         #       }
@@ -2397,7 +2634,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
         if milvus_workspace and milvus_workspace.strip():
             # Use environment variable value, overriding the passed workspace parameter
-            effective_workspace = milvus_workspace.strip()
+            effective_workspace = validate_workspace_override(
+                "MILVUS_WORKSPACE", milvus_workspace
+            )
             logger.info(
                 f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
@@ -2475,6 +2714,22 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             logger.warning(
                 f"MILVUS_DELETE_MAX_RECORDS_PER_BATCH={self._max_delete_records_per_batch} is non-positive, disable delete record-count splitting"
             )
+
+        # Collection-load wait limit in seconds. Unset or blank takes the
+        # default; <= 0 (or inf) means no limit, i.e. load_collection() without
+        # a timeout. A malformed value fails fast rather than silently running
+        # with a limit the operator did not choose.
+        raw_load_timeout = os.getenv("MILVUS_LOAD_TIMEOUT", "").strip()
+        load_timeout = (
+            float(raw_load_timeout)
+            if raw_load_timeout
+            else DEFAULT_MILVUS_LOAD_TIMEOUT_SECONDS
+        )
+        if math.isnan(load_timeout):
+            raise ValueError("MILVUS_LOAD_TIMEOUT must be a number of seconds, got nan")
+        self._load_timeout: float | None = (
+            load_timeout if 0 < load_timeout < math.inf else None
+        )
 
         # Schema-migration retry knobs (see DEFAULT_MILVUS_MIGRATION_*
         # constants). MILVUS_MIGRATION_MAX_RETRIES=0 restores fail-fast.
@@ -2560,6 +2815,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
                 # Create collection and check compatibility
                 self._create_collection_if_not_exist()
+                # After every path above (existing, migrated, recovered, new):
+                # an index left over from a configurable metric is re-indexed.
+                self._ensure_cosine_vector_index()
                 self._initialized = True
                 logger.info(
                     f"[{self.workspace}] Milvus collection '{self.namespace}' initialized successfully"
@@ -2682,7 +2940,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         Note: buffered-but-unflushed upserts are NOT visible to this method —
         they exist only in `_pending_vector_docs` until `index_done_callback()`
         embeds and writes them. Callers that need read-after-write visibility
-        for similarity search must run an explicit flush first.
+        for similarity search must run an explicit flush first, and even then
+        a search issued right after the flush can still miss those rows: it
+        reads at the collection's default Bounded consistency (see
+        ``MILVUS_POINT_READ_CONSISTENCY_LEVEL`` for why it stays there).
         """
         # Ensure collection is loaded before querying. MilvusClient is a
         # synchronous SDK (blocking gRPC calls) -- run it off the event loop
@@ -3033,7 +3294,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         the pending overwrite is dropped — i.e. the final state can diverge
         from the eager-flush ordering (upsert → flush → delete). Callers
         that require eager-equivalent semantics should call
-        ``index_done_callback()`` before ``delete_entity_relation``.
+        ``index_done_callback()`` before ``delete_entity_relation``. That
+        flush is enough only because the victim lookup reads with
+        ``MILVUS_POINT_READ_CONSISTENCY_LEVEL`` (Strong): under the
+        collection's default Bounded level it could miss the rows the flush
+        just wrote.
         """
 
         def _prune_pending() -> None:
@@ -3061,6 +3326,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 filter=expr,
                 output_fields=["id"],
+                consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
             )
 
             if not results:
@@ -3166,6 +3432,44 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         page_size = MILVUS_QUERY_MAX_RESPONSE_BYTES // row_bytes
         return max(1, min(page_size, MILVUS_QUERY_MAX_RECORDS_PER_BATCH))
 
+    async def is_empty(self) -> bool:
+        """Whether this container holds no vectors. See ``BaseVectorStorage``.
+
+        **No ``except`` here, on purpose.** Every other read on this class
+        catches its transport errors and answers with a miss, which is why the
+        startup gate could not use them: an outage and an empty container
+        arrive as the same value. This method is the one that must tell them
+        apart, so a failed read propagates and the gate treats it as "no
+        evidence" rather than as emptiness.
+
+        A pending upsert counts as non-empty; ``_pending_vector_deletes`` is
+        not subtracted, because ``True`` is the only answer here that can
+        refuse a deployment.
+        """
+        async with self._flush_lock:
+            if self._pending_vector_docs:
+                return False
+            if self._client is None:
+                raise StorageCapabilityError(
+                    f"[{self.workspace}] Milvus client is not connected, so "
+                    f"{self.final_namespace} cannot be read for emptiness"
+                )
+
+        await self._run_gated(self._ensure_collection_loaded)
+        # `id != ""` rather than an empty filter: every row carries a non-empty
+        # varchar primary key, so this matches all of them on every pymilvus
+        # version, while an empty `filter` needs a `limit` the older clients
+        # reject.
+        rows = await self._run_gated(
+            self._client.query,
+            collection_name=self.final_namespace,
+            filter='id != ""',
+            output_fields=["id"],
+            limit=1,
+            consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
+        )
+        return not rows
+
     async def _query_rows_by_ids(
         self,
         ids: list[str],
@@ -3205,6 +3509,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                     collection_name=self.final_namespace,
                     filter=filter_expr,
                     output_fields=output_fields,
+                    consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
                 )
             except Exception as e:
                 if len(page) == 1 or not self._is_response_too_large_error(e):
@@ -3253,6 +3558,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 collection_name=self.final_namespace,
                 filter=f'id == "{_escape_milvus_str(id)}"',
                 output_fields=output_fields,
+                consistency_level=MILVUS_POINT_READ_CONSISTENCY_LEVEL,
             )
 
             if not result or len(result) == 0:
@@ -3485,10 +3791,18 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         caller rewriting it knows the drop did land. The state this rules out
         does not self-heal like the ones
         ``AGENTS.md`` *Consistency without transactions* accepts: nothing
-        recreates the collection at run time, every later call fails on a
-        missing collection, and the next ``initialize()`` would see the
-        intentionally-kept legacy collection and re-run the
-        legacy->suffixed migration this method exists to avoid.
+        recreates the collection at run time, and every later call fails on a
+        missing collection.
+
+        Every other copy of this workspace's vectors goes too, BEFORE the
+        active collection is rebuilt: the un-suffixed legacy collection the
+        model-suffix migration kept as a backup, and the ``_old`` / ``_temp``
+        collections an in-place schema migration leaves behind. Each is a
+        source ``initialize()`` refills a free collection name from, so one
+        left in place puts the dropped rows back -- see *Workspace clear and
+        sibling model containers* in ``docs/design/VectorSpaceProvenance.md``.
+        A legacy collection with no ``vector`` field is left alone: nothing
+        migrates it, and it may not be LightRAG's.
 
         Returns:
             dict[str, str]: ``{"status": "success"|"error", "message": str}``
@@ -3508,18 +3822,30 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             it to the end no matter what the loop does, which is the only form
             the guarantee can actually take.
 
+            The backups go FIRST. A crash after them leaves the active
+            collection still populated and nothing to refill it from, which a
+            re-run clears; a crash the other way round leaves a free name
+            beside a backup, which the next ``initialize()`` migrates or
+            restores into it.
+
             Recreating must NOT route through _create_collection_if_not_exist:
-            with the suffixed collection gone it would see the
-            intentionally-kept legacy collection and re-run the
-            legacy->suffixed migration, pulling the just-dropped rows back in.
-            That makes drop() non-empty (clear_documents would leave stale
-            legacy data behind) and forces a needless full migration on every
-            rebuild/clear.
+            it would run the recovery and migration paths this method has just
+            removed the sources of, for nothing.
             """
+            self._drop_backup_collections()
             if self._client.has_collection(self.final_namespace):
                 self._client.drop_collection(self.final_namespace)
             self._create_collection_with_schema(self.final_namespace)
-            self._ensure_collection_loaded()
+            # The drop is durable from here on, and every later call loads the
+            # collection on demand: a failed load must not report the drop
+            # itself as failed.
+            try:
+                self._ensure_collection_loaded()
+            except MilvusCollectionLoadError as e:
+                logger.warning(
+                    f"[{self.workspace}] Collection {self.namespace} recreated empty; "
+                    f"initial load deferred to the next call: {e}"
+                )
 
         try:
             async with self._flush_lock:
@@ -3568,3 +3894,200 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
             )
             return {"status": "error", "message": str(e)}
+
+    def _drop_backup_collections(self) -> None:
+        """Drop every backup copy of the ACTIVE model's collection. Blocking.
+
+        Runs on the Milvus pool, inside ``drop()``'s single submission. Two
+        kinds are left in place, each with a warning:
+
+          - a legacy collection (or its backup) with no ``vector`` field --
+            the test ``initialize()`` applies before migrating one, so what
+            is dropped is exactly what could come back;
+          - any backup whose description carries ANOTHER owner's marker: two
+            workspaces fold onto this name, and it is not ours to drop.
+        """
+        marker = self._ownership_marker()
+        backups = [
+            (f"{self.final_namespace}{tail}", False) for tail in ("_temp", "_old")
+        ]
+        if self.legacy_namespace != self.final_namespace:
+            backups += [
+                (f"{self.legacy_namespace}{tail}", True)
+                for tail in ("_temp", "_old", "")
+            ]
+        for name, needs_vector_field in backups:
+            if not self._client.has_collection(name):
+                continue
+            info = self._client.describe_collection(name)
+            description = info.get("description") or ""
+            if _OWNERSHIP_MARKER_PREFIX in description and marker not in description:
+                logger.warning(
+                    f"[{self.workspace}] Left collection '{name}' in place: it "
+                    f"is marked as another owner's"
+                )
+                continue
+            if needs_vector_field and not self._has_vector_field(info):
+                logger.warning(
+                    f"[{self.workspace}] Left collection '{name}' in place: it "
+                    f"has no vector field, so nothing migrates it"
+                )
+                continue
+            self._client.drop_collection(name)
+            logger.info(
+                f"[{self.workspace}] Dropped backup collection '{name}' with "
+                f"the workspace drop"
+            )
+
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        suffix = self._collection_suffix_for(model_name, embedding_dim)
+        return f"{self.legacy_namespace}_{suffix}" if suffix else None
+
+    def _sibling_candidates(self) -> dict[str, list[tuple[str, str]]]:
+        """Group sibling-shaped collections by the model collection they belong to.
+
+        Blocking. Maps ``{ws}_{ns}_{model}_{dim}d`` to its existing members as
+        ``(name, description)``, ordered ``_temp``, ``_old``, then the
+        collection itself -- the order they must be dropped in, so a crash
+        never leaves the name free beside a backup ``initialize()`` would
+        restore into it. The active model's collections are excluded.
+        """
+        prefix = f"{self.legacy_namespace}_"
+        groups: dict[str, dict[str, str]] = {}
+        for name in self._client.list_collections():
+            if not name.startswith(prefix):
+                continue
+            matched = _SIBLING_COLLECTION_RE.search(name)
+            if not matched:
+                continue
+            base = name[: matched.start(1)] if matched.group(1) else name
+            if base == self.final_namespace:
+                continue
+            description = self._client.describe_collection(name).get("description")
+            groups.setdefault(base, {})[matched.group(1) or ""] = description or ""
+        return {
+            base: [
+                (f"{base}{tail}", members[tail])
+                for tail in ("_temp", "_old", "")
+                if tail in members
+            ]
+            for base, members in groups.items()
+        }
+
+    def _sibling_ownership(self, members: list[tuple[str, str]]) -> str:
+        """``"ours"``, ``"foreign"``, ``"conflict"`` or ``"unmarked"`` for one
+        model's collections.
+
+        Judged per family, not per collection: an ``_old`` backup keeps the
+        description of the collection it was renamed from, which may predate
+        the marker its rebuilt successor carries. So an UNMARKED member takes
+        the family's verdict -- but a member marked as another owner's never
+        does. When two workspaces fold onto one collection name, a schema
+        migration by one leaves an ``_old`` carrying the other's marker beside
+        its own live collection; a family holding both markers is a
+        ``"conflict"``, and nothing in it is ours to drop.
+        """
+        marker = self._ownership_marker()
+        descriptions = [description for _, description in members]
+        ours = any(marker in d for d in descriptions)
+        foreign = any(
+            _OWNERSHIP_MARKER_PREFIX in d and marker not in d for d in descriptions
+        )
+        if ours and foreign:
+            return "conflict"
+        if foreign:
+            return "foreign"
+        return "ours" if ours else "unmarked"
+
+    async def unvouched_sibling_containers(self) -> list[str]:
+        def _list() -> list[str]:
+            return sorted(
+                base
+                for base, members in self._sibling_candidates().items()
+                if self._sibling_ownership(members) == "unmarked"
+            )
+
+        return await run_in_milvus_executor(_list)
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
+        """Drop every other model's collections owned by this workspace+namespace.
+
+        Collection names carry the workspace as a plain prefix, so one
+        workspace's prefix also matches another's (``a`` + ``chunks`` vs.
+        ``a_chunks_m`` + ``entities``). A collection is therefore dropped only
+        on evidence:
+
+          - its schema description carries this instance's ownership marker,
+            which ``_create_schema_for_namespace`` writes at creation; or
+          - it carries no marker at all and the caller ``vouched`` for it by
+            the name ``model_container_name`` / ``unvouched_sibling_containers``
+            gives.
+
+        A collection marked as another owner's is skipped. One with no marker
+        and no voucher is left in place and makes the result an ERROR naming
+        it: it may hold this workspace's vectors, and it may be another
+        workspace's. So does a family whose members carry BOTH this instance's
+        marker and another owner's: a voucher never overrides a marker. A
+        sibling's unmarked ``_temp`` / ``_old`` backups share its verdict and
+        are dropped before it, and nothing is recreated -- no running instance
+        serves a sibling. Same preconditions as ``drop()``.
+        """
+        vouched = frozenset(vouched)
+
+        def _drop_siblings() -> tuple[list[str], list[str], list[str]]:
+            dropped: list[str] = []
+            unmarked: list[str] = []
+            conflicting: list[str] = []
+            for base, members in self._sibling_candidates().items():
+                ownership = self._sibling_ownership(members)
+                if ownership == "unmarked" and base in vouched:
+                    ownership = "ours"
+                if ownership == "ours":
+                    for name, _ in members:
+                        self._client.drop_collection(name)
+                        dropped.append(name)
+                elif ownership == "unmarked":
+                    unmarked.append(base)
+                elif ownership == "conflict":
+                    conflicting.append(base)
+                # "foreign": another workspace or namespace owns it.
+            return dropped, unmarked, conflicting
+
+        try:
+            (
+                dropped,
+                unmarked,
+                conflicting,
+            ) = await run_in_milvus_executor_uninterruptible(_drop_siblings)
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping sibling model collections "
+                f"for Milvus namespace {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
+        if dropped:
+            logger.info(
+                f"[{self.workspace}] Dropped sibling Milvus model collections: {dropped}"
+            )
+        problems = []
+        if unmarked:
+            problems.append(
+                f"collections without an ownership marker were left in place "
+                f"and may hold this workspace's vectors: {sorted(unmarked)}. "
+                f"Drop them with lightrag-clear-storage, which lists them and "
+                f"asks first, or by hand."
+            )
+        if conflicting:
+            problems.append(
+                f"collections marked both as this workspace's and as another "
+                f"owner's were left in place: {sorted(conflicting)}. Two "
+                f"workspaces share these names; inspect them and drop what is "
+                f"this workspace's by hand."
+            )
+        if problems:
+            message = " ".join(problems)
+            logger.warning(f"[{self.workspace}] {message}")
+            return {"status": "error", "message": message}
+        return {"status": "success", "message": "sibling models dropped"}

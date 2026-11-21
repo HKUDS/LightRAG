@@ -5,6 +5,7 @@ import pytest
 
 from lightrag import LightRAG, QueryParam
 from lightrag.base import DocStatus
+from lightrag.exceptions import StorageCapabilityError
 from lightrag.kg import STORAGE_IMPLEMENTATIONS, STORAGES
 from lightrag.kg.factory import get_storage_class
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
@@ -15,6 +16,8 @@ from lightrag.tools.rebuild_vdb import (
 )
 from lightrag.utils import EmbeddingFunc, compute_mdhash_id
 
+
+pytestmark = pytest.mark.offline
 
 EXTRACTION_RESULT = "\n".join(
     [
@@ -125,13 +128,17 @@ async def test_graph_only_query_reports_vector_storage_failure(tmp_path) -> None
     )
     await rag.initialize_storages()
 
-    result = await rag.aquery_llm("question", QueryParam(mode="naive"))
+    try:
+        # A failed query raises; it is never returned as a result.
+        with pytest.raises(StorageCapabilityError) as exc_info:
+            await rag.aquery_llm("question", QueryParam(mode="naive"))
+    finally:
+        await rag.finalize_storages()
 
-    assert result["status"] == "failure"
-    assert "NoopVectorDBStorage" in result["message"]
-    assert "persistent vector storage" in result["message"]
-    assert "lightrag-rebuild-vdb" in result["message"]
-    await rag.finalize_storages()
+    message = str(exc_info.value)
+    assert "NoopVectorDBStorage" in message
+    assert "persistent vector storage" in message
+    assert "lightrag-rebuild-vdb" in message
 
 
 @pytest.mark.offline
@@ -200,6 +207,10 @@ async def test_graph_only_normal_ingestion_rebuilds_into_nano_vector_storage(
         working_dir=str(tmp_path),
         workspace=workspace,
         vector_storage="NanoVectorDBStorage",
+        # Graph-only ingestion left the graph populated and the vector storages
+        # empty on purpose, which is exactly the shape the startup gate refuses.
+        # This instance IS the rebuild, so it says so.
+        rebuilding_vector_storage=True,
         llm_model_func=AsyncMock(return_value=""),
         embedding_func=EmbeddingFunc(
             embedding_dim=8,
