@@ -53,6 +53,28 @@ def _make_deterministic_embedding(dim: int = 8) -> EmbeddingFunc:
     return EmbeddingFunc(embedding_dim=dim, max_token_size=4096, func=_embed)
 
 
+def _make_sync_embeddings():
+    """Synchronous twin of ``_make_deterministic_embedding`` (same per-text
+    vectors) so ``SemanticChunker`` can be driven directly by the drift guards."""
+    from langchain_core.embeddings import Embeddings
+
+    class _SyncEmbeddings(Embeddings):
+        def embed_documents(self, texts):
+            rows = []
+            for text in texts:
+                seed = abs(hash(text)) % (2**32)
+                rng = np.random.default_rng(seed=seed)
+                vec = rng.normal(size=8).astype(np.float64)
+                vec /= np.linalg.norm(vec) or 1.0
+                rows.append(vec.tolist())
+            return rows
+
+        def embed_query(self, text):
+            return self.embed_documents([text])[0]
+
+    return _SyncEmbeddings()
+
+
 @pytest.mark.offline
 def test_v_chunker_runs_with_stub_embedding():
     """Async chunker should split a multi-sentence body into ≥1 chunk
@@ -184,48 +206,60 @@ def test_v_oversized_group_resplit_preserves_child_source_spans():
         assert chunk["tokens"] <= 35
 
 
+_SHORT_SENTENCES = (
+    "Alpha sentence one. "
+    "Beta sentence two. "
+    "Gamma sentence three. "
+    "Delta sentence four. "
+    "Epsilon sentence five. "
+    "Zeta sentence six."
+)
+
+
 @pytest.mark.offline
-def test_semantic_groups_mirror_matches_upstream_split_text():
+@pytest.mark.parametrize(
+    ("text", "splitter_kwargs"),
+    [
+        pytest.param(
+            "Quantum mechanics describes nature at small scales. "
+            "It contradicts classical intuition. "
+            "Bread is baked from flour. "
+            "Sourdough requires a long fermentation.",
+            {},
+            id="default",
+        ),
+        # A threshold of 0 puts almost every sentence boundary above it, so
+        # without min_chunk_size this body splits into one group per sentence,
+        # giving min_chunk_size several undersized groups to merge forward.
+        pytest.param(
+            _SHORT_SENTENCES,
+            {"breakpoint_threshold_amount": 0.0, "min_chunk_size": 60},
+            id="min_chunk_size",
+        ),
+    ],
+)
+def test_semantic_groups_mirror_matches_upstream_split_text(text, splitter_kwargs):
     """Drift guard: ``_semantic_groups_with_spans`` re-implements the private body
     of ``SemanticChunker.split_text`` to keep verbatim source spans. If an upstream
     langchain-experimental release changes that grouping (or a private member it
     relies on), this catches it — the mirror must yield the same group count and the
     same content modulo whitespace (it keeps the verbatim slice; upstream reflows
-    sentences with single spaces)."""
-    from langchain_core.embeddings import Embeddings
+    sentences with single spaces).
+
+    The ``min_chunk_size`` case covers the mirror's merge-forward branch: the
+    ``continue`` that skips updating ``start_index`` folds an undersized group
+    into the next one instead of dropping it."""
     from langchain_experimental.text_splitter import SemanticChunker
 
     from lightrag.chunker.semantic_vector import _semantic_groups_with_spans
     from lightrag.constants import DEFAULT_SENTENCE_SPLIT_REGEX
 
-    class _SyncEmbeddings(Embeddings):
-        """Deterministic per-text vectors, mirroring _make_deterministic_embedding
-        but synchronous so SemanticChunker can be driven directly."""
-
-        def embed_documents(self, texts):
-            rows = []
-            for text in texts:
-                seed = abs(hash(text)) % (2**32)
-                rng = np.random.default_rng(seed=seed)
-                vec = rng.normal(size=8).astype(np.float64)
-                vec /= np.linalg.norm(vec) or 1.0
-                rows.append(vec.tolist())
-            return rows
-
-        def embed_query(self, text):
-            return self.embed_documents([text])[0]
-
-    text = (
-        "Quantum mechanics describes nature at small scales. "
-        "It contradicts classical intuition. "
-        "Bread is baked from flour. "
-        "Sourdough requires a long fermentation."
-    )
     splitter = SemanticChunker(
-        _SyncEmbeddings(),
+        _make_sync_embeddings(),
         buffer_size=1,
         breakpoint_threshold_type="percentile",
         sentence_split_regex=DEFAULT_SENTENCE_SPLIT_REGEX,
+        **splitter_kwargs,
     )
 
     # Same process → identical deterministic embeddings on both calls → identical
@@ -237,6 +271,60 @@ def test_semantic_groups_mirror_matches_upstream_split_text():
     for (grp_text, start, end), up in zip(mirror, upstream):
         assert grp_text == text[start:end]  # mirror keeps the verbatim source slice
         assert "".join(grp_text.split()) == "".join(up.split())
+
+
+@pytest.mark.offline
+def test_v_min_chunk_size_merges_small_groups_forward_without_dropping_content():
+    """``min_chunk_size`` must merge undersized semantic groups forward, never
+    drop them.
+
+    The filter in ``_semantic_groups_with_spans`` reads::
+
+        if combined_text too small:
+            continue   # <-- skips `start_index = index + 1` too
+
+    so an undersized group is folded into the NEXT one by leaving
+    ``start_index`` where it was, rather than being dropped — the same
+    behavior as upstream's own ``SemanticChunker.split_text``. Nothing in
+    ``tests/chunker`` drove ``chunking_by_semantic_vector`` with
+    ``min_chunk_size`` before this test, so a change that moved the
+    ``start_index`` update ahead of the ``continue`` (turning the merge into
+    silent data loss) would have passed every existing test in this file.
+    """
+    body = _SHORT_SENTENCES
+
+    async def _run(min_chunk_size):
+        return await chunking_by_semantic_vector(
+            _tok(),
+            body,
+            4000,
+            embedding_func=_make_deterministic_embedding(),
+            breakpoint_threshold_type="percentile",
+            # Forces a split at nearly every sentence boundary, so the run
+            # without min_chunk_size yields one group per sentence or so.
+            breakpoint_threshold_amount=0.0,
+            min_chunk_size=min_chunk_size,
+        )
+
+    unfiltered = asyncio.run(_run(None))
+    merged = asyncio.run(_run(60))
+
+    # The merge actually happened: fewer, larger groups than the unfiltered run.
+    assert len(unfiltered) > 1
+    assert 1 <= len(merged) < len(unfiltered)
+
+    # No content lost or duplicated: the merged chunks' source spans tile the
+    # body in order, with only whitespace in the gaps between them.
+    spans = [c["_source_span"] for c in merged]
+    assert spans == sorted(spans, key=lambda s: s["start"])
+    assert spans[0]["start"] == 0
+    assert spans[-1]["end"] == len(body)
+    for prev, nxt in zip(spans, spans[1:]):
+        assert prev["end"] <= nxt["start"]
+        assert body[prev["end"] : nxt["start"]].strip() == ""
+    for chunk in merged:
+        span = chunk["_source_span"]
+        assert body[span["start"] : span["end"]] == chunk["content"]
 
 
 # ---------------------------------------------------------------------------
