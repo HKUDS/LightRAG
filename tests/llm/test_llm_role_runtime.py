@@ -1071,21 +1071,24 @@ def _timeout_probe_func(calls: list[dict]):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("role_config", "expected_applied", "expected_kwargs_timeout"),
+    ("role_config", "expected_applied", "expected_timeout_kwarg"),
     [
-        pytest.param({"timeout": 180}, 180, None, id="role-own-timeout"),
+        pytest.param({"timeout": 180}, 180, {}, id="role-own-timeout"),
         # A role without its own timeout uses the base one its queue uses.
-        pytest.param({}, 30, None, id="inherited-base-timeout"),
-        pytest.param({"timeout": 0}, 0, None, id="zero-applied-verbatim"),
+        pytest.param({}, 30, {}, id="inherited-base-timeout"),
+        pytest.param({"timeout": 0}, 0, {}, id="zero-applied-verbatim"),
         # A timeout the caller put in the role kwargs reaches the function
         # unchanged; the role timeout does not override it.
         pytest.param(
-            {"timeout": 180, "kwargs": {"timeout": 45}}, 180, 45, id="kwargs-timeout"
+            {"timeout": 180, "kwargs": {"timeout": 45}},
+            180,
+            {"timeout": 45},
+            id="kwargs-timeout",
         ),
     ],
 )
 async def test_role_call_exposes_effective_timeout_without_passing_it(
-    tmp_path, role_config, expected_applied, expected_kwargs_timeout
+    tmp_path, role_config, expected_applied, expected_timeout_kwarg
 ):
     calls: list[dict] = []
     rag = _make_rag(
@@ -1099,8 +1102,10 @@ async def test_role_call_exposes_effective_timeout_without_passing_it(
 
     assert len(calls) == 1
     assert calls[0]["applied"] == expected_applied
-    # A custom function is never handed a timeout it did not ask for.
-    assert calls[0]["kwargs"].get("timeout") == expected_kwargs_timeout
+    # A custom function is never handed a timeout it did not ask for, not
+    # even timeout=None: a function without that parameter would raise.
+    passed = {k: v for k, v in calls[0]["kwargs"].items() if k == "timeout"}
+    assert passed == expected_timeout_kwarg
 
 
 @pytest.mark.asyncio
