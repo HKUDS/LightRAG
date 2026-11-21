@@ -1,6 +1,6 @@
 # Third-party chunkers
 
-An installed package can publish a legacy six-argument chunker without modifying LightRAG. The Server discovers registrations at startup and injects one selected callback. This implements [#3868](https://github.com/HKUDS/LightRAG/issues/3868); it does not add `C(name=...)`, context-aware callbacks, identity enforcement, multiple active chunkers, or a transform hook for F/R/V/P.
+An installed package can publish a legacy six-argument chunker without modifying LightRAG. The Server discovers registrations at startup and injects one selected callback. This implements [#3868](https://github.com/HKUDS/LightRAG/issues/3868); it also supports an explicit context-aware callback contract. It does not add `C(name=...)`, identity enforcement, multiple active chunkers, or a transform hook for F/R/V/P.
 
 ## Publish an import-cheap registration
 
@@ -24,6 +24,7 @@ def register():
         version="1",
         description="Organization-specific document splitting",
         executor_safe=False,
+        accepts_context=False,
     ))
 ```
 
@@ -47,7 +48,68 @@ Both synchronous and async callbacks are supported, and receive exactly these si
 
 For CPU-bound, synchronous, thread-safe code, set `executor_safe=True` to use LightRAG's existing bounded chunking executor. Such code must not need the running event loop or return awaitables. An async function/async callable object with that flag is rejected at startup. Leave it false for loop-dependent implementations, or offload explicitly inside an async callback. The declaration is an author promise, not a sandbox or a proof of thread safety.
 
-That executor is a **single-worker** pool shared with the built-in strategies, so the flag buys the event loop back, not parallelism: a slow plugin queues ahead of every other document's chunking instead of blocking the loop. Prefer it anyway for CPU-bound code — a stalled loop stops serving HTTP — but do not read it as headroom.
+That executor is a **single-worker** pool shared with the built-in strategies, so the flag buys the event loop back, not parallelism: a slow plugin queues ahead of every other document's chunking instead of blocking the loop. Prefer it anyway for CPU-bound code, but do not read it as extra parallel capacity.
+
+## Receive document context
+
+Legacy callbacks receive exactly six positional arguments. A callback that needs
+document metadata must opt in explicitly; LightRAG never retries a callback
+after a `TypeError` to guess its signature.
+
+For a constructor-supplied callback, use the marker decorator:
+
+```python
+from lightrag.chunker import ChunkingContext, accepts_chunking_context
+
+@accepts_chunking_context
+def chunk(tokenizer, content, split_by_character, split_by_character_only,
+          chunk_overlap_token_size, chunk_token_size, *, context: ChunkingContext):
+    # context.doc_id, context.file_path, context.sidecar_location,
+    # context.parse_format, context.parse_engine and context.process_options
+    # describe the document being chunked.
+    ...
+```
+
+`sidecar_location` is the durable URI for the parser sidecar directory, or
+`None` when the document has none: an absent, empty or `unknown_source`
+location arrives as `None`, and any other value, a non-local scheme such as
+`s3://` included, is passed through verbatim. Resolve it with
+`resolve_sidecar_location` rather than casting the URI to `pathlib.Path`:
+
+```python
+from lightrag.chunker import resolve_sidecar_location
+
+sidecar_dir = resolve_sidecar_location(context.sidecar_location)
+```
+
+It returns `None` when there is no known sidecar, and for a local `file://` URI
+the same `Path` the pipeline itself reads, without checking that the directory
+still exists. The returned path is always absolute on the platform running
+LightRAG. On Windows both drive forms resolve to the drive path: the standard
+`file:///C:/...` that LightRAG writes today, and the percent-encoded form older
+Windows rows still carry (`file://C%3A%5C...`). Any other scheme, a bare path,
+or a `file://` URI naming a remote host raises `ValueError` instead of being
+reinterpreted as a local path, and so does a local URI whose path is empty or
+relative, or, on Windows, relative to a drive (`C:tmp`) or a network (UNC)
+path such as `file:////server/share/` — each would otherwise resolve to some
+other directory. A location written on another platform raises too: a drive
+path read on Linux would be relative there, and a POSIX path read on Windows
+would take its drive from the current directory. On POSIX a backslash or a
+colon in a directory name is an ordinary character and resolves unchanged.
+A chunker must cope with `None` — raw inserts have no sidecar — and decides
+for itself whether a location it cannot resolve is fatal.
+
+Two more fields need care. `parse_engine` is the persisted value verbatim, or
+`None`; an engine configured with parameters carries them, for example
+`mineru(language=en)`, so treat it as opaque rather than comparing it with `==`
+against a bare engine name. `file_path` is the logical display/citation name,
+and is the literal `unknown_source` when LightRAG has no usable name.
+
+For an entry-point plugin, set `accepts_context=True` on `ChunkerSpec` and
+accept the same keyword-only `context` argument. The six legacy arguments and
+the context are passed exactly once; the context is immutable for the duration
+of the call. Built-in F/R/V/P chunkers and the `C` fallback to fixed-token
+never receive a context, because no custom code runs there.
 
 ## Select in the Server
 

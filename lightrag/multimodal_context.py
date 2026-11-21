@@ -74,6 +74,7 @@ from lightrag.constants import DEFAULT_R_SEPARATORS
 from lightrag.table_markup import (
     TABLE_TAG_RE,
     detect_table_format,
+    dumps_json_table_body,
     parse_table_tag,
     serialize_html_rows,
     split_html_rows,
@@ -141,11 +142,18 @@ def _drawing_pattern(item_id: str) -> re.Pattern[str]:
     )
 
 
-def _table_pattern(item_id: str) -> re.Pattern[str]:
+def _table_tag_pattern(item_id: str) -> re.Pattern[str]:
     esc = re.escape(item_id)
     return re.compile(
-        rf'<table\b[^>]*?\bid\s*=\s*"{esc}"[^>]*?>.*?</table>'
-        rf'|<cite\b(?=[^>]*\btype\s*=\s*"table")'
+        rf'<table\b[^>]*?\bid\s*=\s*"{esc}"[^>]*?>.*?</table>',
+        re.DOTALL,
+    )
+
+
+def _table_cite_pattern(item_id: str) -> re.Pattern[str]:
+    esc = re.escape(item_id)
+    return re.compile(
+        rf'<cite\b(?=[^>]*\btype\s*=\s*"table")'
         rf'(?=[^>]*\brefid\s*=\s*"{esc}")[^>]*>.*?</cite>',
         re.DOTALL,
     )
@@ -168,19 +176,27 @@ def find_target_span(
     Returns ``(start, end)`` byte offsets, or ``None`` if not found.
     ``kind`` is the sidecar root key — ``"drawings"`` / ``"tables"`` /
     ``"equations"``.
+
+    For tables the ``<table id="…">`` tag wins over a
+    ``<cite type="table" refid="…">`` to the same id wherever each sits in
+    the block; the cite is only a fallback for a block that names the table
+    without holding its tag (the stand-in the removed content_list writer
+    emitted). No in-tree writer puts both in one block, so the precedence
+    matters only for sidecars written elsewhere.
     """
     if kind == "drawings":
-        pattern = _drawing_pattern(item_id)
+        patterns = [_drawing_pattern(item_id)]
     elif kind == "tables":
-        pattern = _table_pattern(item_id)
+        patterns = [_table_tag_pattern(item_id), _table_cite_pattern(item_id)]
     elif kind == "equations":
-        pattern = _equation_pattern(item_id)
+        patterns = [_equation_pattern(item_id)]
     else:
         return None
-    match = pattern.search(block_content)
-    if not match:
-        return None
-    return match.start(), match.end()
+    for pattern in patterns:
+        match = pattern.search(block_content)
+        if match:
+            return match.start(), match.end()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +283,33 @@ def _char_trim_trailing(text: str, max_tokens: int, tokenizer: Tokenizer) -> str
 # ---------------------------------------------------------------------------
 
 
+def _largest_fitting_row_prefix(
+    row_count: int,
+    build,
+    max_tokens: int,
+    tokenizer: Tokenizer,
+) -> str | None:
+    """Return ``build(k)`` for the largest ``k`` in ``[1, row_count - 1]`` that fits.
+
+    ``build(k)`` renders a table holding ``k`` rows; its token count grows
+    with ``k``, so the search bisects instead of probing every ``k``: each
+    probe re-serializes and re-tokenizes the whole candidate, and a linear
+    scan over a large table is quadratic.  Bisection relies on that growth
+    being monotonic, the same tokenizer assumption ``_char_trim_trailing``
+    makes over characters.  Returns ``None`` when not even one row fits.
+    """
+    lo, hi = 0, row_count - 1
+    best: str | None = None
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = build(mid)
+        if _count_tokens(tokenizer, candidate) <= max_tokens:
+            lo, best = mid, candidate
+        else:
+            hi = mid - 1
+    return best
+
+
 def _row_trim_table_leading(
     tag_text: str, max_tokens: int, tokenizer: Tokenizer
 ) -> str | None:
@@ -288,14 +331,14 @@ def _row_trim_table_leading(
         if not parsed:
             return None
         attrs_str, rows = parsed
-        for k in range(len(rows) - 1, 0, -1):
-            candidate = (
-                f"<table {attrs_str}>"
-                f"{json.dumps(rows[-k:], ensure_ascii=False)}"
-                f"</table>"
-            )
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs_str}>{dumps_json_table_body(rows[-k:])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_json_table(
             attrs_str,
             json.dumps(rows[-1], ensure_ascii=False) if rows else body,
@@ -307,11 +350,14 @@ def _row_trim_table_leading(
         rows = split_html_rows(body)
         if not rows:
             return None
-        for k in range(len(rows) - 1, 0, -1):
-            inner = serialize_html_rows(rows[-k:])
-            candidate = f"<table {attrs}>{inner}</table>"
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs}>{serialize_html_rows(rows[-k:])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_html_table(
             attrs,
             rows[-1][1] if rows else body,
@@ -337,12 +383,14 @@ def _row_trim_table_trailing(
         if not parsed:
             return None
         attrs_str, rows = parsed
-        for k in range(len(rows) - 1, 0, -1):
-            candidate = (
-                f"<table {attrs_str}>{json.dumps(rows[:k], ensure_ascii=False)}</table>"
-            )
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs_str}>{dumps_json_table_body(rows[:k])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_json_table(
             attrs_str,
             json.dumps(rows[0], ensure_ascii=False) if rows else body,
@@ -354,11 +402,14 @@ def _row_trim_table_trailing(
         rows = split_html_rows(body)
         if not rows:
             return None
-        for k in range(len(rows) - 1, 0, -1):
-            inner = serialize_html_rows(rows[:k])
-            candidate = f"<table {attrs}>{inner}</table>"
-            if _count_tokens(tokenizer, candidate) <= max_tokens:
-                return candidate
+        candidate = _largest_fitting_row_prefix(
+            len(rows),
+            lambda k: f"<table {attrs}>{serialize_html_rows(rows[:k])}</table>",
+            max_tokens,
+            tokenizer,
+        )
+        if candidate is not None:
+            return candidate
         return _char_fallback_html_table(
             attrs,
             rows[0][1] if rows else body,
@@ -395,7 +446,7 @@ def _char_fallback_json_table(
         snippet = source_text[-chars:] if keep_tail and chars else source_text[:chars]
         if not chars:
             return empty
-        body = json.dumps([[snippet]], ensure_ascii=False)
+        body = dumps_json_table_body([[snippet]])
         return f"<table {attrs}>{body}</table>"
 
     if _count_tokens(tokenizer, candidate(len(source_text))) <= max_tokens:
@@ -1038,6 +1089,10 @@ def enrich_sidecars_with_surrounding(
             sidecar_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
+                # LF on every platform: the sidecar is a byte-level interchange
+                # format, so the rewrite must not introduce the host's line
+                # ending into an indented payload.
+                newline="\n",
             )
         except OSError as exc:
             logger.warning(
