@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shutil
 from pathlib import Path
@@ -178,10 +179,12 @@ def download_deadline_seconds() -> float | None:
     else:
         try:
             seconds = float(raw)
+            if not math.isfinite(seconds):
+                raise ValueError("deadline must be finite")
         except ValueError:
             logger.warning(
                 "[external_parser] PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT=%r "
-                "is not a number; using %s",
+                "is not a finite number; using %s",
                 raw,
                 DEFAULT_PARSER_RESULT_BUNDLE_DOWNLOAD_TIMEOUT,
             )
