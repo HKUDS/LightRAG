@@ -7547,8 +7547,11 @@ async def apply_rerank_if_enabled(
             # Check if results are in the new index-based format
             if first_object is not None and "index" in first_object:
                 # New format: [{"index": 0, "relevance_score": 0.85}, ...]
-                reranked_docs = []
-                seen_indices = set()
+                # One entry per document: a repeated index would otherwise
+                # take several chunk_top_k slots. Keep its highest score,
+                # as chunk score aggregation does, because provider order
+                # is not trusted (see the sort below).
+                best_by_index: dict[int, dict] = {}
                 for result in rerank_results:
                     normalized_result, _ = normalize_rerank_result(
                         result, len(retrieved_docs)
@@ -7557,16 +7560,17 @@ async def apply_rerank_if_enabled(
                         continue
 
                     index = normalized_result["index"]
-                    if index in seen_indices:
-                        continue
-                    seen_indices.add(index)
                     relevance_score = normalized_result["relevance_score"]
+                    kept = best_by_index.get(index)
+                    if kept is not None and kept["rerank_score"] >= relevance_score:
+                        continue
 
                     # Get original document and add rerank score
                     doc = retrieved_docs[index].copy()
                     doc["rerank_score"] = relevance_score
-                    reranked_docs.append(doc)
+                    best_by_index[index] = doc
 
+                reranked_docs = list(best_by_index.values())
                 if not reranked_docs:
                     logger.warning(
                         "Rerank returned no usable results, using original chunks"

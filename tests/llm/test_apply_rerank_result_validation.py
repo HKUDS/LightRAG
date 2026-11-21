@@ -45,13 +45,17 @@ async def test_valid_results_survive_malformed_items():
 
 
 @pytest.mark.asyncio
-async def test_duplicate_rerank_indices_do_not_consume_chunk_budget():
+async def test_duplicate_index_keeps_its_best_score_and_one_chunk_top_k_slot():
+    """A repeated index must take one chunk_top_k slot, with its highest score
+    even when a lower one comes first: keeping the first would sort the
+    document down and let min_rerank_score drop it."""
+
     async def rerank_func(**_kwargs):
         return [
-            {"index": 0, "relevance_score": None},
+            {"index": 0, "relevance_score": 0.3},
+            {"index": 1, "relevance_score": 0.78},
             {"index": 0, "relevance_score": 0.99},
             {"index": 0, "relevance_score": 0.85},
-            {"index": 1, "relevance_score": 0.78},
         ]
 
     result = await process_chunks_unified(
