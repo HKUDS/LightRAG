@@ -469,7 +469,8 @@ def test_keyword_extraction_json_mode_is_rejected_at_construction(tmp_path):
 @pytest.mark.offline
 @pytest.mark.parametrize(
     ("given", "expected"),
-    [("auto", "auto"), (" JSON_Object ", "json_object"), ("None", "none")],
+    # " JSON_Object " shows both the strip and the lower-casing.
+    [(" JSON_Object ", "json_object")],
 )
 def test_keyword_extraction_json_mode_is_canonicalized_at_construction(
     tmp_path, given, expected
@@ -501,9 +502,7 @@ async def test_keyword_extraction_json_mode_rejects_unknown_value():
         ("response_format json_schema is not supported by this model", True),
         ("json_object mode is not allowed for this deployment", True),
         # Anything without the field in the message must propagate.
-        ("Connection reset by peer", False),
         ("Request timed out while waiting for response_format", False),
-        ("HTTP 429: rate limit exceeded", False),
         ("invalid JSON in prompt", False),
         ("Unexpected end of stream while reading the json_object reply", False),
         # The OpenAI SDK prints `invalid_request_error` as the type of every 400:

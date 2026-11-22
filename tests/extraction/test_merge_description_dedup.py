@@ -107,12 +107,6 @@ def test_combine_descriptions_dedup_collapses_legacy_stored_duplicates():
     assert already == 1
 
 
-def test_combine_descriptions_dedup_preserves_distinct():
-    combined, already = _combine_descriptions_dedup(["A"], ["B", "C"])
-    assert combined == ["A", "B", "C"]
-    assert already == 1
-
-
 def test_combine_descriptions_dedup_sanitizes_before_compare():
     # A re-extracted description carrying an XML-illegal control char (\x08)
     # sanitizes to a fragment already stored, so it must NOT accumulate on

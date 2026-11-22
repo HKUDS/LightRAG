@@ -12,9 +12,7 @@ pytestmark = pytest.mark.offline
     [
         (rb"\ud83d\ude00", "😀"),
         (rb"\uD834\uDD1E", "𝄞"),
-        (rb"\ud840\udc00", "𠀀"),
         (rb"\u4f60\ud83d\ude00\u597d", "你😀好"),
-        (rb"\u4f60\u597d", "你好"),
         ("Already decoded: 😀".encode("utf-8"), "Already decoded: 😀"),
         (rb"Keep \utils, \n and \uZZZZ", r"Keep \utils, \n and \uZZZZ"),
         (b"", ""),

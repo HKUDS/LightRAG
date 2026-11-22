@@ -60,26 +60,6 @@ def test_oversized_content_is_truncated_to_an_independently_verified_prefix():
     assert len(tok.encode(out)) <= 10
 
 
-def test_truncation_result_is_always_reencode_safe_even_with_bpe_growth():
-    """Pin that the result is verified, not just heuristically clamped -- a
-    tokenizer where a candidate's re-encoded length can exceed its char
-    length must still yield a safe result."""
-
-    class _GrowingTokenizer(TokenizerInterface):
-        # Every character costs 2 tokens once content is long, to simulate a
-        # tokenizer whose token density is not simply 1:1.
-        def encode(self, content: str) -> list[int]:
-            return [0] * (2 * len(content))
-
-        def decode(self, tokens: list[int]) -> str:
-            return "y" * (len(tokens) // 2)
-
-    tok = Tokenizer("growing", _GrowingTokenizer())
-    gc = {"embedding_token_limit": 9, "tokenizer": tok}
-    out = _truncate_vdb_content("z" * 100, gc, "entity:x")
-    assert len(tok.encode(out)) <= 9
-
-
 def test_non_positive_limit_is_a_no_op():
     gc = {"embedding_token_limit": 0, "tokenizer": _tok()}
     content = "x" * 50

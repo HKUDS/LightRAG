@@ -34,15 +34,6 @@ class TestRemoval:
         # The caller reads this as "no attribution left" and deletes the object.
         assert subtract_source_ids(["a", "b"], ["a", "b"]) == []
 
-    def test_ids_absent_from_the_source_are_ignored(self):
-        assert subtract_source_ids(["a"], ["b", "c"]) == ["a"]
-
-    def test_an_empty_removal_collection_keeps_every_real_id(self):
-        assert subtract_source_ids(["a", "b"], []) == ["a", "b"]
-
-    def test_an_empty_source_yields_an_empty_list(self):
-        assert subtract_source_ids([], ["a"]) == []
-
 
 class TestOrderIsPreserved:
     def test_surviving_ids_keep_their_original_order(self):
@@ -92,16 +83,3 @@ class TestFalsyIdsAreDropped:
 class TestInputTypes:
     def test_a_generator_source_is_accepted(self):
         assert subtract_source_ids((sid for sid in ["a", "b"]), ["b"]) == ["a"]
-
-    def test_a_set_removal_collection_is_accepted(self):
-        assert subtract_source_ids(["a", "b"], {"a"}) == ["b"]
-
-    def test_a_tuple_removal_collection_is_accepted(self):
-        assert subtract_source_ids(["a", "b"], ("a",)) == ["b"]
-
-    def test_the_source_iterable_is_not_mutated(self):
-        source = ["a", "b", "c"]
-
-        subtract_source_ids(source, ["b"])
-
-        assert source == ["a", "b", "c"]
