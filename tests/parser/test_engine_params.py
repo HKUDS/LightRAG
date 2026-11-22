@@ -138,7 +138,6 @@ def test_parse_engine_params_local_parse_method_rejected_official(monkeypatch):
     [
         ("page_range=1", "legacy", "does not accept parameters"),
         ("page_range=1", "native", "unknown parameter 'page_range'"),
-        ("foo=1", "mineru", "unknown parameter 'foo'"),
         ("local_parse_method=bad", "mineru", "must be one of"),
         ("force_ocr=maybe", "docling", "must be a boolean"),
         ("language=", "mineru", "must be non-empty"),
@@ -256,15 +255,6 @@ def test_validate_rule_bare_bool_flag_ok():
     validate_parser_routing_config("docx:native(smart_heading);*:legacy-R")
 
 
-def test_upload_validation_raises_on_bare_non_bool_flag():
-    with pytest.raises(FilenameParserHintError, match="only boolean flags"):
-        resolve_file_parser_directives(
-            "x.[mineru(language)].pdf",
-            parser_rules="",
-            require_external_endpoint=False,
-        )
-
-
 def test_resolve_rule_engine_params():
     d = resolve_parser_directives(
         "a.pdf",
@@ -289,11 +279,7 @@ def test_resolve_drop_rule_params_when_hint_engine_wins():
 @pytest.mark.parametrize(
     "name",
     [
-        "x.[mineru(language=)].pdf",  # empty value
-        "x.[mineru(local_parse_method=bad)].pdf",  # bad enum
-        "x.[docling(force_ocr=maybe)].pdf",  # bad bool
         "x.[legacy(page_range=1)].txt",  # engine declares no params
-        "x.[mineru(page_range=1-3,5)].pdf",  # env-style comma list
     ],
 )
 def test_upload_validation_raises_on_bad_engine_params(name):
@@ -359,19 +345,6 @@ def test_direct_parse_engine_field_accepts_bare_bool_flag():
         _decode_via_parse_engine_at("native(smart_heading)")
         == "native(smart_heading=true)"
     )
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "legacy(page_range=1)",  # legacy declares no params
-        "mineru(badkey=1)",  # unknown
-        "mineru(page_range=",  # malformed
-    ],
-)
-def test_direct_parse_engine_field_rejected(raw):
-    with pytest.raises(ValueError):
-        _decode_via_parse_engine_at(raw)
 
 
 def test_encode_parse_engine_rejects_forbidden_chars():

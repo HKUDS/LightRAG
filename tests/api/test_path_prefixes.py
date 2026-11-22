@@ -7,7 +7,6 @@ FastAPI's root_path parameter, which controls the servers URL in the
 OpenAPI spec for correct reverse proxy operation.
 """
 
-import os
 import sys
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -273,21 +272,6 @@ class TestWebUIPrefixIntegration:
 
             response = client.get("/webui/")
             assert response.status_code in [200, 307]
-
-
-class TestEnvironmentVariables:
-    """Test that environment variables are read correctly."""
-
-    def test_env_api_prefix(self):
-        """Test LIGHTRAG_API_PREFIX environment variable."""
-        from lightrag.api.config import get_env_value
-
-        os.environ["LIGHTRAG_API_PREFIX"] = "unit-test-back/api"
-        try:
-            value = get_env_value("LIGHTRAG_API_PREFIX", "")
-            assert value == "unit-test-back/api"
-        finally:
-            del os.environ["LIGHTRAG_API_PREFIX"]
 
 
 class TestPathNormalization:

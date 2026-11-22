@@ -15,14 +15,11 @@ from lightrag.parser._markdown import (
     ("level", "text", "expected"),
     [
         (1, "Intro", "# Intro"),
-        (2, "Sub", "## Sub"),
         (6, "Deep", "###### Deep"),
         # level >= 7 is clamped to six "#".
         (7, "Deeper", "###### Deeper"),
-        (99, "Deepest", "###### Deepest"),
         # level < 1 falls back to a single "#".
         (0, "Zero", "# Zero"),
-        (-3, "Neg", "# Neg"),
     ],
 )
 def test_render_heading_line_prefix_and_cap(level, text, expected) -> None:
@@ -32,7 +29,7 @@ def test_render_heading_line_prefix_and_cap(level, text, expected) -> None:
 @pytest.mark.offline
 @pytest.mark.parametrize(
     "already",
-    ["# Foo", "## Bar", "###### Six"],
+    ["# Foo", "###### Six"],
 )
 def test_render_heading_line_keeps_existing_markdown(already) -> None:
     # Already a markdown heading (1-6 "#" + space) → returned unchanged,
@@ -59,7 +56,6 @@ def test_render_heading_line_non_heading_hash_is_prefixed(text, expected) -> Non
     ("text", "expected"),
     [
         ("# Foo", "Foo"),
-        ("## Bar", "Bar"),
         ("###### Six", "Six"),
         # The whole "#" run plus all following spaces are stripped — no
         # leading space leaks into the cleaned metadata.

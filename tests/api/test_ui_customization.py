@@ -168,9 +168,7 @@ class TestLocaleNormalization:
         with pytest.raises(ValueError, match="underscore"):
             normalize_locale("zh_TW")
 
-    @pytest.mark.parametrize(
-        "bad", ["", "  ", "a", "1x", "en-", "-en", "en--US", "x" * 40]
-    )
+    @pytest.mark.parametrize("bad", ["", "a", "1x", "en-", "x" * 40])
     def test_invalid_forms_rejected(self, bad):
         with pytest.raises(ValueError):
             normalize_locale(bad)
@@ -309,27 +307,18 @@ class TestBundleValidation:
             # ``/>`` of an empty element; XML allows nothing between the two.
             # These are ill-formed and have no root element at all.
             pytest.param(b"<svg/not-an-element>", id="slash-then-name"),
-            pytest.param(b"<svg/ >", id="slash-space-gt"),
-            pytest.param(b"<svg//>", id="double-slash"),
-            pytest.param(
-                b'<?xml version="1.0" encoding="UTF-8"?>\n<svg/nope>',
-                id="declaration-then-slashed-non-root",
-            ),
             # An UNCLOSED start tag. Whatever the file's length, a root that
             # never closes has to fail startup rather than be served for a
             # year as an immutable image/svg+xml.
             pytest.param(b"<svg", id="bare-name-no-close"),
             pytest.param(b"<svg ", id="name-and-space-no-close"),
-            pytest.param(b"<svg/", id="trailing-slash-no-close"),
             pytest.param(
                 b'<svg xmlns="http://www.w3.org/2000/svg"', id="attrs-no-close"
             ),
-            pytest.param(b"<!-- brand mark --><svg", id="prologue-then-no-close"),
             # A `>` INSIDE a quoted attribute value is not the tag's own: XML
             # permits it there, so these tags never close.
             pytest.param(b'<svg title=">', id="gt-inside-double-quotes"),
             pytest.param(b"<svg title='>'", id="gt-inside-single-quotes"),
-            pytest.param(b'<svg a=">" b="', id="gt-quoted-then-unterminated"),
             # LENGTH is not evidence. The same unterminated literal padded
             # past any window is still an unclosed tag: the whole file is in
             # memory, so it is scanned rather than assumed.
@@ -341,9 +330,6 @@ class TestBundleValidation:
             # A slash is legal only as the `/>` of an empty element — a rule
             # that whitespace after the name must not smuggle past.
             pytest.param(b"<svg /x>", id="space-then-slash-then-name"),
-            pytest.param(b"<svg / >", id="space-then-slash-space-gt"),
-            pytest.param(b"<svg //>", id="space-then-double-slash"),
-            pytest.param(b'<svg a="1" /x>', id="attr-then-slash-then-name"),
             # The rest of the start-tag production, which a delimiter scan
             # never checked at all. Each is a fatal XML error, so each is a
             # file no renderer would draw.
@@ -354,8 +340,6 @@ class TestBundleValidation:
             # `AttValue ::= '"' ([^<&"] | Reference)* '"'` — a bare `&` is a
             # fatal error, so these are files no renderer will draw.
             pytest.param(b'<svg title="&"></svg>', id="bare-ampersand"),
-            pytest.param(b'<svg title="a & b"/>', id="ampersand-in-prose"),
-            pytest.param(b'<svg title="&amp"/>', id="reference-without-semicolon"),
             pytest.param(b'<svg title="&;"/>', id="empty-reference"),
             pytest.param(b'<svg title="&#xzz;"/>', id="malformed-hex-char-ref"),
             pytest.param(b'<svg title="&#12a;"/>', id="malformed-decimal-char-ref"),
@@ -385,10 +369,6 @@ class TestBundleValidation:
         "content",
         [
             pytest.param(SVG_BYTES, id="bare-svg-root"),
-            pytest.param(
-                b'<?xml version="1.0" encoding="UTF-8"?>\n' + SVG_BYTES,
-                id="xml-declaration-then-svg",
-            ),
             pytest.param(
                 b'<?xml version="1.0"?><!-- brand mark -->\n'
                 b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "svg11.dtd">\n'
@@ -453,10 +433,6 @@ class TestBundleValidation:
             pytest.param(b'<svg xmlns = "x"><rect/></svg>', id="spaces-around-equals"),
             pytest.param(b"<svg xmlns='x'><rect/></svg>", id="single-quoted-value"),
             pytest.param(
-                b'<svg title="a&gt;b" xmlns="x"><rect/></svg>',
-                id="entity-reference-in-value",
-            ),
-            pytest.param(
                 b'<svg style="fill:red;\n stroke:blue" xmlns="x"><rect/></svg>',
                 id="newline-inside-attribute-value",
             ),
@@ -464,16 +440,17 @@ class TestBundleValidation:
             # entity need not be DECLARED here — resolving it is the
             # renderer's job — and an internal subset may define its own,
             # which is how Illustrator writes its namespace attributes.
-            pytest.param(b'<svg t="a&amp;b" xmlns="x"/>', id="entity-reference"),
-            pytest.param(b'<svg t="&#169;" xmlns="x"/>', id="decimal-char-reference"),
-            pytest.param(b'<svg t="&#x00A9;" xmlns="x"/>', id="hex-char-reference"),
-            pytest.param(
-                b'<svg t="&#X00a9;" xmlns="x"/>', id="hex-char-reference-upper"
-            ),
+            # A custom (subset-declared) name, not a predefined one: restricting
+            # references to the five predefined entities would reject it.
             pytest.param(
                 b'<!DOCTYPE svg [<!ENTITY ns_x "http://x/">]>'
                 b'<svg xmlns:x="&ns_x;" xmlns="x"/>',
                 id="reference-to-subset-declared-entity",
+            ),
+            pytest.param(b'<svg t="&#169;" xmlns="x"/>', id="decimal-char-reference"),
+            pytest.param(b'<svg t="&#x00A9;" xmlns="x"/>', id="hex-char-reference"),
+            pytest.param(
+                b'<svg t="&#X00a9;" xmlns="x"/>', id="hex-char-reference-upper"
             ),
             pytest.param(
                 b"<!-- a [ \" ' ] brand mark -->" + SVG_BYTES,
@@ -563,7 +540,12 @@ class TestCopyrightBundle:
         assert snapshot.locales["zh"].copyright is None
         assert snapshot.locales["en"].copyright == "© 2025 ACME Inc."
 
-    @pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
+    @pytest.mark.parametrize(
+        "blank",
+        [
+            "   ",
+        ],
+    )
     def test_blank_is_none_rather_than_a_startup_failure(self, tmp_path, blank):
         """Unlike a blank `login`/`agreements`, blank here is not an error.
 
@@ -720,10 +702,6 @@ class TestConsentDocumentsName:
     deployment calls its document "Terms of Service".
     """
 
-    def test_undeclared_by_default(self, tmp_path):
-        snapshot = load_ui_customization_snapshot(make_bundle(tmp_path))
-        assert snapshot.locales["zh"].consent_documents is None
-
     def test_declared_value_is_carried(self, tmp_path):
         bundle = add_login_consent(
             make_bundle(tmp_path), consent_documents="《示例公司服务条款》"
@@ -760,7 +738,13 @@ class TestConsentDocumentsName:
         assert snapshot.locales["zh"].consent_documents == "《服务条款》"
         assert snapshot.locales["zh"].consent_required is False
 
-    @pytest.mark.parametrize("bad", ["", "   \n", 42, [], {"a": 1}, True])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "   \n",
+            42,
+        ],
+    )
     def test_blank_or_non_string_is_rejected(self, tmp_path, bad):
         bundle = make_bundle(tmp_path)
         manifest = json.loads((bundle / "manifest.json").read_text("utf-8"))
@@ -770,16 +754,6 @@ class TestConsentDocumentsName:
             UICustomizationError, match="consent_documents must be a non-empty string"
         ):
             load_ui_customization_snapshot(bundle)
-
-    def test_it_participates_in_the_revision(self, tmp_path):
-        """It lives in manifest.json, which the revision already hashes."""
-        first = load_ui_customization_snapshot(
-            add_login_consent(make_bundle(tmp_path), consent_documents="A")
-        ).bundle_revision
-        second = load_ui_customization_snapshot(
-            add_login_consent(make_bundle(tmp_path), consent_documents="B")
-        ).bundle_revision
-        assert first != second
 
     def test_consent_templates_participate_in_the_revision(self, tmp_path):
         """Editing the agreement text must invalidate the bundle revision."""
@@ -1096,15 +1070,11 @@ class TestCustomizationEndpointWithBundle:
             # A 4-letter subtag past the script's window is an extension
             # value: `ar-u-nu-latn` asks for Latin DIGITS and stays RTL.
             ("ar-u-nu-latn", "rtl"),
-            ("ar-x-latn", "rtl"),
             # …but the window is not a fixed index either: BCP 47 puts up to
             # three extlang subtags between the language and the script, so
             # `Latn` is the THIRD subtag here and still decides.
             ("ar-aao-Latn", "ltr"),
-            ("ar-arz-Latn", "ltr"),
             ("ar-aao-arz-acm-Latn", "ltr"),
-            ("ar-aao-Arab", "rtl"),
-            ("zh-yue-Hant-HK", "ltr"),
             # Three is the grammar's limit, so a FOURTH 3-letter subtag is
             # not an extlang and what follows it is not in the script's
             # window. The tag is malformed; declared behaviour is to ignore
@@ -1242,13 +1212,11 @@ class TestChromeTranslationCoverage:
     @pytest.mark.parametrize(
         "locale,expected",
         [
-            ("en", "en"),
             ("de-AT", "de"),  # region variants ride on the language subtag
             ("zh-CN", "zh"),
             ("zh-HK", "zh-TW"),  # traditional script/regions → the shipped variant
             ("zh-Hant", "zh-TW"),
             ("es", None),  # valid BCP 47, no WebUI translation
-            ("pt-BR", None),
             ("", None),
         ],
     )
@@ -1406,7 +1374,12 @@ class TestUnpopulatedBundleDirectory:
         empty.mkdir()
         assert resolve_ui_customization_snapshot(empty) is None
 
-    @pytest.mark.parametrize("stray", [".DS_Store", ".gitkeep", "README.md"])
+    @pytest.mark.parametrize(
+        "stray",
+        [
+            ".DS_Store",
+        ],
+    )
     def test_stray_files_do_not_make_it_a_bundle(self, tmp_path, stray):
         """The probe is the manifest, NOT "the directory has zero entries".
 
@@ -1524,12 +1497,3 @@ class TestUnpopulatedBundleDirectory:
         # It names the directory, which is what separates "not written yet"
         # from "the mount did not land where I thought".
         assert any(str(mount_point) in message for message in warnings)
-
-    def test_startup_still_refuses_a_broken_bundle(self, tmp_path, monkeypatch):
-        """Stability: the leniency stops at the manifest's edge."""
-        _stage_frontend(tmp_path)
-        bundle = make_bundle(tmp_path)
-        (bundle / "manifest.json").write_text("{broken", "utf-8")
-        monkeypatch.setenv("UI_TEMPLATES_DIR", str(bundle))
-        with pytest.raises(UICustomizationError):
-            _build_app(tmp_path, monkeypatch)

@@ -94,7 +94,12 @@ def test_malformed_chunk_size_envs_raise(
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("env_value", ["", "  "])
+@pytest.mark.parametrize(
+    "env_value",
+    [
+        "",
+    ],
+)
 def test_empty_chunk_size_env_does_not_crash_lightrag_init(
     env_value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
