@@ -12,6 +12,13 @@ on:
       - 'scripts/setup/**'
       - 'tests/setup/**'
       - 'tests/conftest.py'
+      # The wizard's configuration-storage checks are differential tests
+      # against these modules (tests/setup/test_config_anchor.py, test_misc.py).
+      - 'lightrag/config_anchor.py'
+      - 'lightrag/config_shards.py'
+      - 'lightrag/config_store.py'
+      - 'lightrag/exceptions.py'
+      - 'lightrag/kg/__init__.py'
       - 'env.example'
       - 'docker-compose*.yml'
       - 'Makefile'
@@ -25,6 +32,13 @@ on:
       - 'scripts/setup/**'
       - 'tests/setup/**'
       - 'tests/conftest.py'
+      # The wizard's configuration-storage checks are differential tests
+      # against these modules (tests/setup/test_config_anchor.py, test_misc.py).
+      - 'lightrag/config_anchor.py'
+      - 'lightrag/config_shards.py'
+      - 'lightrag/config_store.py'
+      - 'lightrag/exceptions.py'
+      - 'lightrag/kg/__init__.py'
       - 'env.example'
       - 'docker-compose*.yml'
       - 'Makefile'
