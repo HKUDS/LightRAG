@@ -285,8 +285,16 @@ class TestEmbeddingBaseline:
         with pytest.raises(ConfigurationStorageError):
             cs.EmbeddingBaseline.from_row(row, key="k", target="entities")
 
-    @pytest.mark.parametrize("version", [None, 0, 2, True, False, "1", 1.0])
-    @pytest.mark.parametrize("target", cs.EMBEDDING_TARGETS)
+    # Every target's row goes through the same schema check, so the versions
+    # are swept on the first target and each other target keeps one of them.
+    @pytest.mark.parametrize(
+        ("version", "target"),
+        [
+            (version, cs.EMBEDDING_TARGETS[0])
+            for version in (None, 0, 2, True, False, "1", 1.0)
+        ]
+        + [(2, target) for target in cs.EMBEDDING_TARGETS[1:]],
+    )
     async def test_unsupported_schema_is_unreadable_without_writes(
         self, version, target
     ):

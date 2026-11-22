@@ -426,31 +426,44 @@ def test_no_trailing_window_inside_previous_window(split_by_character):
 
 @pytest.mark.offline
 @pytest.mark.parametrize("split_by_character", [None, "|"])
-@pytest.mark.parametrize("chunk_overlap_token_size", [0, 3, 6, 9])
-@pytest.mark.parametrize("length", range(1, 40))
-def test_every_window_adds_new_text(
-    length, chunk_overlap_token_size, split_by_character
-):
+def test_every_window_adds_new_text(split_by_character):
     """Each window must end past the previous one, the last must reach the end
-    of the text, and the count must be the minimum that covers it."""
+    of the text, and the count must be the minimum that covers it.
+
+    A value sweep (see *Failures name the case* in
+    docs/design/BackendTestingGuide.md): ``split_by_character`` selects the
+    code path and stays a node; length and overlap only change the window
+    arithmetic, so every combination is checked against the formula below
+    and every mismatch is reported at once.
+    """
     tokenizer = make_tokenizer()
-    content = "".join(chr(33 + i) for i in range(length))
     chunk_token_size = 10
-    step = chunk_token_size - chunk_overlap_token_size
+    mismatches = []
+    for chunk_overlap_token_size in (0, 3, 6, 9):
+        step = chunk_token_size - chunk_overlap_token_size
+        for length in range(1, 40):
+            content = "".join(chr(33 + i) for i in range(length))
+            chunks = chunking_by_token_size(
+                tokenizer,
+                content,
+                split_by_character=split_by_character,
+                chunk_token_size=chunk_token_size,
+                chunk_overlap_token_size=chunk_overlap_token_size,
+                _emit_source_span=True,
+            )
+            ends = [chunk["_source_span"]["end"] for chunk in chunks]
+            expected_count = 1 + max(0, -(-(length - chunk_token_size) // step))
+            if (
+                not ends
+                or ends != sorted(set(ends))
+                or ends[-1] != length
+                or len(chunks) != expected_count
+            ):
+                mismatches.append(
+                    (length, chunk_overlap_token_size, ends, expected_count)
+                )
 
-    chunks = chunking_by_token_size(
-        tokenizer,
-        content,
-        split_by_character=split_by_character,
-        chunk_token_size=chunk_token_size,
-        chunk_overlap_token_size=chunk_overlap_token_size,
-        _emit_source_span=True,
-    )
-
-    ends = [chunk["_source_span"]["end"] for chunk in chunks]
-    assert ends == sorted(set(ends))
-    assert ends[-1] == length
-    assert len(chunks) == 1 + max(0, -(-(length - chunk_token_size) // step))
+    assert mismatches == []
 
 
 @pytest.mark.offline

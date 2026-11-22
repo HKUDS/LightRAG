@@ -141,18 +141,18 @@ _PLAIN_MODES = [
 ]
 
 
-@pytest.mark.parametrize("mode_prefix,mode", _PLAIN_MODES)
 @pytest.mark.parametrize("separator", ["\n", "\r\n", "\t", "\n\n  "])
-def test_mode_key_accepts_any_whitespace_separator(mode_prefix, mode, separator):
+def test_mode_key_accepts_any_whitespace_separator(separator):
     """A newline after the prefix selects the mode, as it does for "/context".
 
     Only a literal space used to match, so a "/bypass" message continued on the
     next line went through RAG retrieval as a mix query, with the prefix left in
-    the retrieval text.
+    the retrieval text. Every mode key goes through the same boundary check;
+    each key's own mapping is pinned by ``test_bare_mode_key_is_consumed``.
     """
-    assert parse_query_mode(f"/{mode_prefix}{separator}line one\nline two") == (
+    assert parse_query_mode(f"/bypass{separator}line one\nline two") == (
         "line one\nline two",
-        mode,
+        SearchMode.bypass,
         False,
         None,
     )
