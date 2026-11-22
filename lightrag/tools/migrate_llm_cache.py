@@ -7,6 +7,8 @@ multimodal analysis, and smart-heading judgments) between different KV storage
 implementations while preserving workspace isolation.
 
 Usage:
+    lightrag-migrate-llm-cache
+    # or
     python -m lightrag.tools.migrate_llm_cache
     # or
     python lightrag/tools/migrate_llm_cache.py
@@ -1568,11 +1570,16 @@ class MigrationTool:
                 pass
 
 
-async def main():
-    """Main entry point"""
+async def async_main():
+    """Async main entry point"""
     tool = MigrationTool()
     await tool.run()
 
 
+def main():
+    """Synchronous entry point for CLI command"""
+    asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -596,7 +596,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 删除所属文本块已不存在、且没有任何现存文本块仍在引用的 LLM 缓存记录。这些记录无法通过删除文档清除，仍保留抽取提示词及结果。默认仅报告，指定 `--apply` 后才删除，且必须先通过严格读取确认文本块已不存在。
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析、智能标题判定），并保持 workspace 隔离。
 
