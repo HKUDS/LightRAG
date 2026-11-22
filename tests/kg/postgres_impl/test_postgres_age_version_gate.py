@@ -1257,9 +1257,9 @@ async def test_configure_age_extension_decision_table(
 #
 # The decision table pins the CREATE / no-CREATE outcome of every reported-value
 # cell. The sweep below covers the states the table cannot express -- a lookup
-# that never answered, a row reporting NULL -- against the policy stated once as
-# a predicate, which is the shape every fail-open of this gate had. The override
-# sweep then checks each of the override's branches starts.
+# that never answered, a row reporting NULL -- that no named test already runs,
+# and requires each to refuse startup. The override sweep then checks each of
+# the override's branches starts.
 
 _SOURCE_CATEGORIES = (_SAFE, _UNSAFE, _UNPARSEABLE, _ABSENT, _UNREADABLE)
 
@@ -1351,47 +1351,35 @@ def _state_kwargs(installed, available) -> dict:
     return kwargs
 
 
-def _may_start_cleanly(installed, available) -> bool:
-    """The policy, stated once as a predicate rather than as a list of cells.
-
-    Without the override, the gate may create the extension only when *every* source
-    either reported a version it could read and verify as safe, or reported nothing at
-    all because AGE is genuinely not there. Anything else -- an unsafe reading, a value
-    it could not parse, or a lookup that never answered -- is an unverified version,
-    and an unverified version is not a safe one.
-
-    Note what this deliberately does not distinguish: ``_UNPARSEABLE``, ``_UNREADABLE``
-    and ``_NULL_DEFAULT_VERSION`` are all simply "not safe". Treating them differently
-    is what each fail-open did -- the last of them by routing a NULL ``default_version``
-    into ``_ABSENT``, the one non-safe-looking category that is allowed to start.
-    """
-    return installed in (_SAFE, _ABSENT) and available in (_SAFE, _ABSENT)
+# Every remaining non-table state holds a version that is not verified safe, so
+# each must refuse startup outright. A quiet return without CREATE would not be
+# a refusal: with AGE already installed, initialize() would carry on. A new
+# state that reaches this sweep needs its expected refusal added here.
+_NON_TABLE_REFUSALS = {
+    (_UNSAFE, _NULL_DEFAULT_VERSION): "not supported",
+    (_UNPARSEABLE, _UNREADABLE): "Could not determine",
+    (_UNPARSEABLE, _NULL_DEFAULT_VERSION): "Could not determine",
+}
 
 
 @pytest.mark.parametrize(
     "installed, available", _NON_TABLE_STATES, ids=_state_ids(_NON_TABLE_STATES)
 )
 @pytest.mark.asyncio
-async def test_only_a_verified_safe_or_absent_state_starts_the_gate(
-    monkeypatch, installed, available
-):
-    """Exactly which states start, over the whole 5x5 space, with no override.
+async def test_a_non_table_state_refuses_startup(monkeypatch, installed, available):
+    """The states the decision table cannot express refuse, with no override.
 
-    ``started`` is measured as "a CREATE EXTENSION was issued", not as "no exception
-    escaped", because the two differ: the undetermined cell returns quietly *without*
-    creating, and a test that only watched for exceptions would score it as a start.
-    Refusals are absorbed so that every cell reaches the same assertion -- what is
-    under test here is the start/no-start partition, and the refusal *messages* are
-    pinned by the decision table above.
+    NULL ``default_version`` and an unreadable view are simply "not safe": treating
+    them differently from an unparseable value is what each fail-open of this gate
+    did, the last of them by routing a NULL ``default_version`` into ``_ABSENT``.
     """
     monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
     conn = _FakeConnection(**_state_kwargs(installed, available))
 
-    with contextlib.suppress(RuntimeError):
+    with pytest.raises(RuntimeError, match=_NON_TABLE_REFUSALS[(installed, available)]):
         await PostgreSQLDB.configure_age_extension(conn)
 
-    started = bool(conn.create_extension_calls())
-    assert started is _may_start_cleanly(installed, available), conn.sql_calls()
+    assert conn.create_extension_calls() == [], conn.sql_calls()
 
 
 @pytest.mark.parametrize(
