@@ -147,13 +147,22 @@ async def test_export_does_not_crash_without_client_storage(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_export_includes_relationships_dump_for_async_client_storage(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    lightrag_caplog: None,
 ) -> None:
-    content = await _run_export(tmp_path, _VdbWithAsyncClientStorage())
+    with caplog.at_level("WARNING", logger="lightrag"):
+        content = await _run_export(tmp_path, _VdbWithAsyncClientStorage())
 
     assert "# ENTITIES" in content
     assert "# RELATIONS" in content
     assert "# RELATIONSHIPS" in content
     assert "rel-1" in content
+    # The async shape awaits a reload-if-stale path: nothing to warn about.
+    assert not [
+        record
+        for record in caplog.records
+        if "does not check for a newer on-disk commit" in record.message
+    ], caplog.text
 
 
 @pytest.mark.asyncio
@@ -180,27 +189,15 @@ async def test_export_probes_client_storage_on_the_class_not_the_instance(
 @pytest.mark.asyncio
 async def test_export_includes_relationships_dump_for_sync_client_storage(
     tmp_path: Path,
-) -> None:
-    # Faiss's client_storage is a plain sync property (returns a dict, not a
-    # coroutine); awaiting it unconditionally raises TypeError. This pins that
-    # the value itself decides whether to await, rather than the code assuming
-    # every client_storage is awaitable.
-    content = await _run_export(tmp_path, _VdbWithSyncClientStorage())
-
-    assert "# ENTITIES" in content
-    assert "# RELATIONS" in content
-    assert "# RELATIONSHIPS" in content
-    assert "rel-2" in content
-
-
-@pytest.mark.asyncio
-async def test_sync_client_storage_snapshot_warns_that_it_may_be_stale(
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     lightrag_caplog: None,
 ) -> None:
-    """The sync shape is not reload-checking, so its staleness is announced.
+    """Faiss's client_storage is a plain sync property (returns a dict, not a
+    coroutine); awaiting it unconditionally raises TypeError. This pins that
+    the value itself decides whether to await, rather than the code assuming
+    every client_storage is awaitable.
 
+    The sync shape is not reload-checking, so its staleness is announced:
     `FaissVectorDBStorage.client_storage` deliberately does not funnel through
     `_get_index`, so a reader process can snapshot data older than the latest
     committed one. The dump is still worth having -- it is correct in the
@@ -208,29 +205,16 @@ async def test_sync_client_storage_snapshot_warns_that_it_may_be_stale(
     -- but an export used as a backup must not omit recent records silently.
     """
     with caplog.at_level("WARNING", logger="lightrag"):
-        await _run_export(tmp_path, _VdbWithSyncClientStorage())
+        content = await _run_export(tmp_path, _VdbWithSyncClientStorage())
 
+    assert "# ENTITIES" in content
+    assert "# RELATIONS" in content
+    assert "# RELATIONSHIPS" in content
+    assert "rel-2" in content
     assert any(
         "does not check for a newer on-disk commit" in record.message
         for record in caplog.records
     ), caplog.text
-
-
-@pytest.mark.asyncio
-async def test_async_client_storage_snapshot_does_not_warn(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    lightrag_caplog: None,
-) -> None:
-    """The async shape awaits a reload-if-stale path, so it has nothing to warn about."""
-    with caplog.at_level("WARNING", logger="lightrag"):
-        await _run_export(tmp_path, _VdbWithAsyncClientStorage())
-
-    assert not [
-        record
-        for record in caplog.records
-        if "does not check for a newer on-disk commit" in record.message
-    ], caplog.text
 
 
 @pytest.mark.asyncio
