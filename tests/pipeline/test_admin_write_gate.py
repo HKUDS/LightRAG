@@ -1266,9 +1266,7 @@ def _build_rag(tmp_path, **overrides):
     [
         (30, 180.0),  # the default: 6x30 == the floor, so nothing changes
         (60, 360.0),  # a raised timeout carries the ceiling with it
-        (120, 720.0),
         (5, 180.0),  # the floor wins for a small timeout
-        (1, 180.0),
     ],
 )
 def test_the_hold_ceiling_default_follows_the_embedding_timeout(

@@ -99,9 +99,9 @@ def _payload(bad_section: str, bad_path: str) -> dict:
 @pytest.mark.parametrize(
     ("bad_char", "code_point"),
     [
+        # The character classes are swept by tests/utils/
+        # test_graph_attribute_validator.py; each call site keeps one offender.
         pytest.param("\ud800", "U+D800", id="lone-surrogate"),
-        pytest.param("￾", "U+FFFE", id="non-character"),
-        pytest.param("\x01", "U+0001", id="control-char"),
     ],
 )
 async def test_unstorable_file_path_is_rejected_before_any_write(

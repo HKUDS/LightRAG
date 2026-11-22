@@ -86,9 +86,13 @@ class _Heartbeat:
         if self._task is not None:
             await self._task
 
-    def sample_across(self, seconds: float = 0.15) -> None:
+    def sample_across(self, seconds: float = 0.05) -> None:
         """Called FROM the chunker. Records the beat count either side of a
-        synchronous sleep, which is the window the loop must stay alive in."""
+        synchronous sleep, which is the window the loop must stay alive in.
+
+        The wait releases the GIL, so a live loop beats within one switch
+        interval (5 ms), while a blocked loop beats zero times however long the
+        window: 0.05 s leaves ten intervals of margin without weakening that."""
         before = self.beats
         threading.Event().wait(seconds)
         self.observed = (before, self.beats)

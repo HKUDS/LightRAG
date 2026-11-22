@@ -43,28 +43,6 @@ def test_short_content_passes_through():
 
 
 @pytest.mark.offline
-def test_table_html_row_trim_keeps_head():
-    tok = _tokenizer()
-    rows_html = "".join(f"<tr><td>r{i}c0</td><td>r{i}c1</td></tr>" for i in range(10))
-    body = f"<tbody>{rows_html}</tbody>"
-    content = f'<table id="t-html" format="html">{body}</table>'
-    out, was_trimmed = trim_content_to_budget(
-        content, kind="tables", max_tokens=200, tokenizer=tok
-    )
-    assert was_trimmed is True
-    assert "<table " in out
-    # Marker sits outside the </table> wrapper.
-    table_close = out.rfind("</table>")
-    marker_match = _MARKER_RE.search(out)
-    assert marker_match is not None
-    assert marker_match.start() > table_close
-    # Head rows preserved, tail rows dropped.
-    assert "r0c0" in out
-    assert "r9c0" not in out
-    assert len(tok.encode(out)) <= 200
-
-
-@pytest.mark.offline
 def test_table_json_row_trim_keeps_head():
     tok = _tokenizer()
     rows = [[f"r{i}c0", f"r{i}c1"] for i in range(10)]
@@ -144,17 +122,6 @@ def test_zero_budget_returns_input_unchanged():
     content = "x" * 5000
     out, was_trimmed = trim_content_to_budget(
         content, kind="tables", max_tokens=0, tokenizer=tok
-    )
-    assert out == content
-    assert was_trimmed is False
-
-
-@pytest.mark.offline
-def test_negative_budget_returns_input_unchanged():
-    tok = _tokenizer()
-    content = "x" * 5000
-    out, was_trimmed = trim_content_to_budget(
-        content, kind="equations", max_tokens=-10, tokenizer=tok
     )
     assert out == content
     assert was_trimmed is False

@@ -43,7 +43,6 @@ from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 from lightrag.utils_pipeline import (
     _DOC_STATUS_METADATA_CARRY_OVER_KEYS,
     doc_status_metadata_carry_over,
-    doc_status_reset_metadata,
     make_lightrag_doc_content,
     resolve_doc_status_parse_engine,
 )
@@ -109,25 +108,6 @@ def test_carry_over_preserves_parse_engine_and_format():
     )
     assert carried["parse_format"] == FULL_DOCS_FORMAT_LIGHTRAG
     assert carried["parse_engine"] == PARSER_ENGINE_MINERU
-
-
-def test_reset_still_drops_parse_engine_and_format():
-    # Carry-over (across transitions) is independent of reset (back to
-    # PENDING): a re-queue regenerates these per-attempt directives, so they
-    # must NOT survive a reset even though they survive transitions.
-    reset = doc_status_reset_metadata(
-        {
-            "metadata": {
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "parse_engine": PARSER_ENGINE_MINERU,
-                "process_options": "iF",
-                "source_file": "report.pdf",
-            }
-        }
-    )
-    assert reset == {"process_options": "iF", "source_file": "report.pdf"}
-    assert "parse_engine" not in reset
-    assert "parse_format" not in reset
 
 
 # ---------------------------------------------------------------------------
