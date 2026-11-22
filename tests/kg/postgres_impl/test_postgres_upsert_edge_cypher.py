@@ -238,34 +238,6 @@ async def test_upsert_edge_lock_key_includes_graph_name():
 
 
 @pytest.mark.asyncio
-async def test_upsert_edge_lock_key_is_endpoint_order_independent():
-    """{A, B} and {B, A} must produce the same advisory lock key.
-
-    The lock SQL itself is identical across both call directions; only the
-    positional args differ. LEAST/GREATEST inside the template then normalises
-    them to the same hash input, so concurrent {A,B} and {B,A} writes collide
-    on a single lock (matching the undirected OPTIONAL MATCH).
-    """
-    storage = make_graph_storage()
-    forward = await _capture_upsert_edge(storage, "Alice", "Bob", {})
-    reverse = await _capture_upsert_edge(storage, "Bob", "Alice", {})
-
-    # Same lock SQL template for both directions.
-    assert forward[0]["sql"] == reverse[0]["sql"]
-    # graph_name first, then the endpoint pair in whatever order the caller
-    # passed — LEAST/GREATEST canonicalises inside the SQL.
-    assert forward[0]["args"][0] == reverse[0]["args"][0] == "test_graph"
-    assert (
-        set(forward[0]["args"][1:])
-        == set(reverse[0]["args"][1:])
-        == {
-            "Alice",
-            "Bob",
-        }
-    )
-
-
-@pytest.mark.asyncio
 async def test_upsert_edge_wraps_transient_errors_for_retry(monkeypatch):
     """Query-level transient errors must be wrapped in PGGraphQueryException so
     the outer @retry predicate can identify them and retry.

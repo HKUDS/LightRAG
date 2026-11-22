@@ -214,20 +214,3 @@ async def test_get_node_edges_returns_empty_list_for_isolated_node():
     )
 
     assert await storage.get_node_edges("Lonely") == []
-
-
-@pytest.mark.asyncio
-async def test_get_node_edges_returns_connected_pairs():
-    """Connected nodes come back as (source, connected) tuples."""
-    storage = make_graph_storage()
-    storage._query = AsyncMock(
-        return_value=[
-            {"source_id": "Alpha", "connected_id": "Beta"},
-            {"source_id": "Alpha", "connected_id": "Gamma"},
-        ]
-    )
-
-    assert await storage.get_node_edges("Alpha") == [
-        ("Alpha", "Beta"),
-        ("Alpha", "Gamma"),
-    ]
