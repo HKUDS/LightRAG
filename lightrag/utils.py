@@ -5087,9 +5087,12 @@ def _markdown_table_cell(value: Any) -> str:
 
     A literal ``|`` ends a cell, so a value holding one (common in text
     extracted from tables) would spill into the next column, and a line break
-    would end the row. Escape the pipe and turn line breaks into ``<br>``.
+    would end the row. A ``<`` opens raw HTML, so the ``<SEP>`` that joins
+    merged source IDs and descriptions would render as an unknown tag and
+    disappear. Escape ``<`` as ``&lt;`` and the pipe as ``\\|``, then turn
+    line breaks into ``<br>``.
     """
-    text = str(value).replace("|", "\\|")
+    text = str(value).replace("<", "&lt;").replace("|", "\\|")
     return re.sub(r"\r\n|\r|\n", "<br>", text)
 
 
