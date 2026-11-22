@@ -454,7 +454,8 @@ def test_every_window_adds_new_text(split_by_character):
             ends = [chunk["_source_span"]["end"] for chunk in chunks]
             expected_count = 1 + max(0, -(-(length - chunk_token_size) // step))
             if (
-                ends != sorted(set(ends))
+                not ends
+                or ends != sorted(set(ends))
                 or ends[-1] != length
                 or len(chunks) != expected_count
             ):
