@@ -179,7 +179,7 @@ class TestAliRerankResponseFormat:
         """Out-of-range / wrong-typed entries inside output.results must be
         discarded individually rather than failing the whole call, matching
         the standard-format malformed-item handling already covered in
-        tests/chunker/test_rerank_chunking.py and tests/test_jina_rerank.py."""
+        tests/chunker/test_rerank_chunking.py and tests/llm/test_jina_rerank.py."""
         session, _ = mock_rerank_session(
             {
                 "output": {
