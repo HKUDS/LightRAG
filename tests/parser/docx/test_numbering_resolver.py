@@ -526,16 +526,13 @@ def test_provenance_is_none_when_nothing_renders() -> None:
     assert r.last_label_format is None
 
 
-# Every count on one paren shape and case; the other three keep 2 ("ii",
-# the repeated letter that reads as alphabetic 35 without the numFmt).
+# The classifier's full 1-39 sweep over both formats and paren shapes is
+# test_parenthesized_roman_list_full_domain (test_smart_heading_style_key.py);
+# here, the resolver's wiring at 2 ("ii", which reads as alphabetic 35 without
+# the carried numFmt), once per format and per paren shape.
 @pytest.mark.parametrize(
     ("lvl_text", "num_fmt", "count"),
-    [("(%1)", "lowerRoman", count) for count in (1, 2, 3)]
-    + [
-        ("%1)", "lowerRoman", 2),
-        ("(%1)", "upperRoman", 2),
-        ("%1)", "upperRoman", 2),
-    ],
+    [("(%1)", "lowerRoman", 2), ("%1)", "upperRoman", 2)],
 )
 def test_parenthesized_roman_lists_keep_roman_ordinals(lvl_text, num_fmt, count):
     """The widened paren patterns accept repeated letters, so "(ii)" from a
