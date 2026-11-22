@@ -596,7 +596,7 @@ Menghapus entri LLM cache mode query (`mix:*`, `hybrid:*`, `local:*`, `global:*`
 
 Menghapus entri cache LLM yang chunk pemiliknya sudah tidak ada dan tidak lagi dirujuk oleh chunk lain yang masih ada. Entri ini tidak terjangkau oleh penghapusan dokumen dan masih menyimpan prompt ekstraksi beserta hasilnya. Secara default alat ini hanya melaporkan. Opsi `--apply` menghapus entri hanya setelah pembacaan ketat mengonfirmasi bahwa chunk sudah tidak ada.
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 Memigrasikan cache mode default (extraction, summary, analisis multimodal, smart-heading) antar-KV storage backend dengan tetap mempertahankan isolasi workspace.
 
