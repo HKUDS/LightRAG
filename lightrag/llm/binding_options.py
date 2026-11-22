@@ -486,22 +486,24 @@ class BindingOptions:
                 )(env_raw)
                 continue
 
+            if field_type in (bool, int, float):
+                # get_env_value warns on an unparseable value and leaves the
+                # field unset, instead of smuggling the raw string into a
+                # field that is supposed to hold a bool/int/float -- the same
+                # defect the bool branch was fixed for, extended to numbers
+                # (e.g. EXTRACT_OPENAI_LLM_TEMPERATURE="0.7x" must not reach
+                # the provider call as the string "0.7x").
+                parsed = get_env_value(role_env, _UNSET, field_type)
+                if parsed is _UNSET:
+                    continue
+                base[field_name] = parsed
+                continue
+
             try:
-                if field_type is bool:
-                    # get_env_value warns on a typo; leave the field unset
-                    # rather than silently reading it as False.
-                    parsed = get_env_value(role_env, _UNSET, bool)
-                    if parsed is _UNSET:
-                        continue
-                    base[field_name] = parsed
-                elif field_type in (list, List[str]):
+                if field_type in (list, List[str]):
                     base[field_name] = json.loads(env_raw)
                 elif field_type is dict:
                     base[field_name] = json.loads(env_raw)
-                elif field_type is int:
-                    base[field_name] = int(env_raw)
-                elif field_type is float:
-                    base[field_name] = float(env_raw)
                 else:
                     base[field_name] = env_raw
             except (ValueError, json.JSONDecodeError):
