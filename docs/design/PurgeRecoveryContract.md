@@ -48,8 +48,12 @@ the retained anchors and unfinished patch candidates, skips graph objects alread
 removed outright, and resolves remaining sources from live tracking, falling
 back to graph provenance only when tracking is absent. Missing chunk rows are
 filtered before rebuilding, so stale sources never enter a rebuilt tracking row.
-A source-backed target with no live chunks fails finalization and retains its
-anchors for repair. Intentionally source-less objects are preserved.
+A target whose recorded sources are all dangling is kept untouched in the
+graph, vectors and tracking. It is reported as degraded recovery and does not
+block document deletion. The report is persisted in `kg_recovery_warnings` on
+surviving document owners; when none can be found, it remains in the returned
+report and pipeline history. Intentionally source-less objects are preserved.
+Tracking and chunk-existence reads are batched across the target set.
 
 There is one `rebuild_knowledge_from_chunks` call for the staged documents, using
 `_build_global_config()` and the existing extraction-evidence policy. Only after
@@ -71,8 +75,10 @@ Queries filter missing chunk rows, so references to those chunks drop from
 context. The writer exclusion bounds this window through finalization; a failed
 or interrupted batch leaves its `DELETING` rows visible for explicit retry.
 
-Before downgrading to code without the schema-2 phases, complete all pending
-deletions. An older reader does not recognize the unpaid rebuild obligation.
+The schema version is informational; readers do not validate it. Before
+downgrading to code without the schema-2 phases, complete all pending deletions.
+An older reader ignores the unknown phase and performs a non-resuming purge,
+which can silently leave stale summaries because it misses the unpaid rebuild.
 
 Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback — is neither journaled nor proof-checked, because its own operation journal already names the complete candidate superset; the primitive reads that journal to union in candidates no anchor row can name yet.
 

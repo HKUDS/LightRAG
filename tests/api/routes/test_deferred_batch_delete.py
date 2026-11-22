@@ -9,10 +9,8 @@ from uuid import uuid4
 import pytest
 
 from lightrag.base import DocStatus, SourceAbsent
-from tests.pipeline import test_deferred_batch_delete as pipeline_tests
 from tests.pipeline.test_delete_fail_closed import _build_rag
 
-deletion_batch = pipeline_tests.batch
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
@@ -102,6 +100,20 @@ async def test_batch_route_preserves_recovery_and_source_files(
         else:
             assert rag.doc_status.data["d2"]["status"] == DocStatus.PROCESSED
             assert rag.entity_chunks.data["A"]["chunk_ids"] == ["c2", "c3"]
+            history = status["history_messages"]
+            assert (
+                len(
+                    [
+                        message
+                        for message in history
+                        if message.startswith("Deletion cancelled by user")
+                    ]
+                )
+                == 1
+            )
+            assert not any(
+                "Failed to delete" in message and "d2" in message for message in history
+            )
     else:
         assert not (tmp_path / "d1.txt").exists()
         assert not (tmp_path / "d2.txt").exists()
@@ -109,8 +121,9 @@ async def test_batch_route_preserves_recovery_and_source_files(
         assert set(rag.doc_status.data) == {"d3"}
 
 
-@pytest.mark.parametrize("interrupt", [False, True], ids=["success", "restart"])
-async def test_batch_deletion_with_persisted_storages(tmp_path, monkeypatch, interrupt):
+async def test_batch_deletion_survives_reopening_persisted_storages(
+    tmp_path, monkeypatch
+):
     import asyncio
     import json
 
@@ -164,11 +177,10 @@ async def test_batch_deletion_with_persisted_storages(tmp_path, monkeypatch, int
             )
         await rag._insert_done()
         surviving_chunk = (await rag.doc_status.get_by_id("d3"))["chunks_list"][0]
-        if interrupt:
-            failure = AsyncMock(
-                side_effect=RuntimeError("process stopped before finalization")
-            )
-            monkeypatch.setattr(rag, "afinalize_document_deletions", failure)
+        failure = AsyncMock(
+            side_effect=RuntimeError("process stopped before finalization")
+        )
+        monkeypatch.setattr(rag, "afinalize_document_deletions", failure)
         router = routes.create_document_routes(
             rag, routes.DocumentManager(str(tmp_path / "inputs"))
         )
@@ -183,18 +195,13 @@ async def test_batch_deletion_with_persisted_storages(tmp_path, monkeypatch, int
         )
         assert response.status == "deletion_started"
         await asyncio.gather(*tasks)
-        if interrupt:
-            assert failure.await_count == 1
-            assert (await rag.doc_status.get_by_id("d1"))[
-                "status"
-            ] == DocStatus.DELETING
-            await rag.finalize_storages()
-            rag = await _build_rag(tmp_path, workspace)
-            assert (await rag.doc_status.get_by_id("d2"))[
-                "status"
-            ] == DocStatus.DELETING
-            assert (await rag.adelete_by_doc_id("d1")).status == "success"
-            assert (await rag.adelete_by_doc_id("d2")).status == "success"
+        assert failure.await_count == 1
+        assert (await rag.doc_status.get_by_id("d1"))["status"] == DocStatus.DELETING
+        await rag.finalize_storages()
+        rag = await _build_rag(tmp_path, workspace)
+        assert (await rag.doc_status.get_by_id("d2"))["status"] == DocStatus.DELETING
+        assert (await rag.adelete_by_doc_id("d1")).status == "success"
+        assert (await rag.adelete_by_doc_id("d2")).status == "success"
         assert await rag.doc_status.get_by_id("d1") is None
         assert await rag.doc_status.get_by_id("d2") is None
         assert (await rag.doc_status.get_by_id("d3"))["status"] == DocStatus.PROCESSED

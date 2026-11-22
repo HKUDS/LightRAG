@@ -4318,7 +4318,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # not only the ids deleted above.
             await self._flush_storages([self.text_chunks, self.llm_response_cache])
 
-        warning_rows = await self._persist_custom_chunk_recovery_warning(
+        warning_rows = await self._persist_kg_recovery_warning(
             doc_id,
             journal,
             rebuild_report,
@@ -4389,7 +4389,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             **truncation_restore,
         )
 
-    async def _persist_custom_chunk_recovery_warning(
+    async def _persist_kg_recovery_warning(
         self,
         doc_id: str,
         journal: dict[str, Any],
@@ -4398,20 +4398,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         mode: str,
         pipeline_status: dict,
         pipeline_status_lock: Any,
+        surviving_chunk_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Persist bounded degraded-recovery warnings on surviving owners.
 
         Patch rollback always includes the target document. Create rollback
         removes that target entirely, so its warning is attached to documents
         owning the surviving chunks that contributed to degraded aggregates.
+        Deletion uses its already-read surviving chunk rows. If no document
+        survives, its warning remains in the returned report and job history.
         """
         if not report.has_warnings:
             return {}
 
         owner_doc_ids: set[str] = set()
         surviving_chunk_ids = sorted(report.surviving_chunk_ids)
-        if surviving_chunk_ids:
-            chunk_rows = await self.text_chunks.get_by_ids(surviving_chunk_ids)
+        if surviving_chunk_rows is not None or surviving_chunk_ids:
+            chunk_rows = (
+                surviving_chunk_rows
+                if surviving_chunk_rows is not None
+                else await self.text_chunks.get_by_ids(surviving_chunk_ids)
+            )
             for chunk_row in chunk_rows:
                 if not isinstance(chunk_row, dict):
                     continue
@@ -4424,7 +4431,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         else:
             owner_doc_ids.discard(doc_id)
 
-        if not owner_doc_ids:
+        if not owner_doc_ids and mode != "delete":
             raise RuntimeError(
                 "Cannot persist degraded KG recovery warning: no surviving "
                 "owner document was found"
@@ -4438,9 +4445,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             f"{src}~{tgt}" for src, tgt in report.degraded_relationships
         ]
         event = {
-            "code": "degraded_custom_chunk_rollback",
+            "code": "degraded_document_deletion"
+            if mode == "delete"
+            else "degraded_custom_chunk_rollback",
             "message": (
-                "Custom-chunk rollback completed with structural provenance "
+                "Document deletion completed but some KG aggregates could not "
+                "be fully rebuilt; "
+                "objects without live source chunks were preserved untouched."
+                if mode == "delete"
+                else "Custom-chunk rollback completed with structural provenance "
                 "repair, but some KG semantic aggregates could not be fully "
                 "rebuilt from extraction cache."
             ),
@@ -4491,7 +4504,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             }
             updated_rows[owner_doc_id] = updated_row
 
-        if missing_owner_doc_ids:
+        if missing_owner_doc_ids and mode != "delete":
             raise RuntimeError(
                 "Cannot persist degraded KG recovery warning: document status "
                 f"missing for {', '.join(missing_owner_doc_ids)}"
@@ -4502,7 +4515,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             await self._flush_storages([self.doc_status])
 
         log_message = (
-            "[rollback] Degraded KG recovery warning for custom-chunk operation "
+            f"[purge] Degraded KG recovery during deletion: "
+            f"{len(report.degraded_entities)} entity(ies), "
+            f"{len(report.degraded_relationships)} relation(s); "
+            f"warning recorded on {len(updated_rows)} surviving document(s)"
+            if mode == "delete"
+            else "[rollback] Degraded KG recovery warning for custom-chunk operation "
             f"{journal.get('operation_id')} persisted on "
             f"{len(updated_rows)} surviving document(s)"
         )
@@ -7800,62 +7818,78 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             relations.update(tuple(sorted(pair)) for pair in patch_relations)
             journals[doc_id] = journal
 
-        async def live_sources(
-            storage: BaseKVStorage | None, key: str, graph_data: dict[str, Any]
-        ) -> list[str]:
-            tracking = await storage.get_by_id(key) if storage is not None else None
+        entity_targets: dict[str, list[str]] = {}
+        relation_targets: dict[tuple[str, str], list[str]] = {}
+        nodes = await self.chunk_entity_relation_graph.get_nodes_batch(sorted(entities))
+        edges = await self.chunk_entity_relation_graph.get_edges_batch(
+            [{"src": src, "tgt": tgt} for src, tgt in sorted(relations)]
+        )
+        entity_names = [name for name in sorted(entities) if nodes.get(name)]
+        relation_pairs = [pair for pair in sorted(relations) if edges.get(pair)]
+        entity_tracking = (
+            await self.entity_chunks.get_by_ids(entity_names)
+            if self.entity_chunks is not None and entity_names
+            else [None] * len(entity_names)
+        )
+        relation_tracking = (
+            await self.relation_chunks.get_by_ids(
+                [make_relation_chunk_key(*pair) for pair in relation_pairs]
+            )
+            if self.relation_chunks is not None and relation_pairs
+            else [None] * len(relation_pairs)
+        )
+
+        def tracked_sources(tracking, graph_data):
             source_ids = (
                 tracking.get("chunk_ids", [])
                 if isinstance(tracking, dict)
                 else graph_data.get("source_id", "").split(GRAPH_FIELD_SEP)
             )
-            source_ids = list(
+            return list(
                 dict.fromkeys(
                     source_id
                     for source_id in source_ids
                     if source_id and source_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
                 )
             )
-            rows = await self.text_chunks.get_by_ids(source_ids) if source_ids else []
-            remaining = [
-                source_id
-                for source_id, row in zip(source_ids, rows)
-                if isinstance(row, dict)
-            ]
-            if not remaining and (
-                source_ids
-                or any(
-                    source_id and source_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
-                    for source_id in graph_data.get("source_id", "").split(
-                        GRAPH_FIELD_SEP
-                    )
-                )
-            ):
-                raise _PurgeStageError(
-                    f"Deferred rebuild target {key!r} has no live source chunks; "
-                    "recovery anchors retained for repair",
-                    stage="rebuild_knowledge_graph",
-                )
-            return remaining
 
-        entity_targets: dict[str, list[str]] = {}
-        relation_targets: dict[tuple[str, str], list[str]] = {}
-        nodes = await self.chunk_entity_relation_graph.get_nodes_batch(sorted(entities))
-        for name in sorted(entities):
-            if node := nodes.get(name):
-                remaining = await live_sources(self.entity_chunks, name, node)
-                if remaining:
-                    entity_targets[name] = remaining
-        edges = await self.chunk_entity_relation_graph.get_edges_batch(
-            [{"src": src, "tgt": tgt} for src, tgt in sorted(relations)]
+        entity_sources = {
+            name: tracked_sources(tracking, nodes[name])
+            for name, tracking in zip(entity_names, entity_tracking)
+        }
+        relation_sources = {
+            pair: tracked_sources(tracking, edges[pair])
+            for pair, tracking in zip(relation_pairs, relation_tracking)
+        }
+        all_sources = sorted(
+            {
+                chunk_id
+                for sources in (*entity_sources.values(), *relation_sources.values())
+                for chunk_id in sources
+            }
         )
-        for pair in sorted(relations):
-            if edge := edges.get(pair):
-                remaining = await live_sources(
-                    self.relation_chunks, make_relation_chunk_key(*pair), edge
-                )
-                if remaining:
-                    relation_targets[pair] = remaining
+        chunk_rows = (
+            await self.text_chunks.get_by_ids(all_sources) if all_sources else []
+        )
+        live_chunks = {
+            chunk_id: row
+            for chunk_id, row in zip(all_sources, chunk_rows)
+            if isinstance(row, dict)
+        }
+        skipped_entities: dict[str, list[str]] = {}
+        skipped_relations: dict[tuple[str, str], list[str]] = {}
+        for name, sources in entity_sources.items():
+            remaining = [chunk_id for chunk_id in sources if chunk_id in live_chunks]
+            if remaining:
+                entity_targets[name] = remaining
+            elif sources or tracked_sources(None, nodes[name]):
+                skipped_entities[name] = sources
+        for pair, sources in relation_sources.items():
+            remaining = [chunk_id for chunk_id in sources if chunk_id in live_chunks]
+            if remaining:
+                relation_targets[pair] = remaining
+            elif sources or tracked_sources(None, edges[pair]):
+                skipped_relations[pair] = sources
 
         report = await rebuild_knowledge_from_chunks(
             entities_to_rebuild=entity_targets,
@@ -7872,6 +7906,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             relation_chunks_storage=self.relation_chunks,
             doc_status_storage=self.doc_status,
         )
+        # No live evidence means no safe provenance rewrite. Keep the object,
+        # vector and tracking untouched, and surface the gap without preventing
+        # document deletion. Source-less manual objects need no warning.
+        report.degraded_entities.update(skipped_entities)
+        report.degraded_relationships.update(skipped_relations)
+        report.referenced_chunk_ids.update(all_sources)
+        if report.has_warnings:
+            await self._persist_kg_recovery_warning(
+                doc_ids[0],
+                {
+                    "operation_id": compute_mdhash_id(
+                        "\n".join(
+                            sorted(
+                                journal["operation_id"] for journal in journals.values()
+                            )
+                        ),
+                        prefix="delete-",
+                    )
+                },
+                report,
+                mode="delete",
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                surviving_chunk_rows=list(live_chunks.values()),
+            )
         await self._insert_done()
         for doc_id, journal in journals.items():
             await self._write_kg_purge_phase(
@@ -7886,8 +7945,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     async def afinalize_document_deletions(
         self, doc_ids: list[str], *, delete_llm_cache: bool = False
     ) -> list[DeletionResult]:
-        """Finish deferred deletions while the caller holds a batch reservation.
+        """Route-only finalization under the document-delete reservation.
 
+        The document route owns the destructive reservation and its
+        ``Deleting ...`` job name. Library callers retry a deferred document
+        through ``adelete_by_doc_id`` instead.
         Only pass documents whose ``adelete_by_doc_id(defer_rebuild=True)``
         returned ``deferred``. One aggregate rebuild precedes per-document
         cleanup. Rebuild failure retains every document and its anchors for

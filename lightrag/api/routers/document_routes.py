@@ -4324,9 +4324,19 @@ async def background_delete_documents(
         # files until the one aggregate rebuild has been durably committed.
         deletion_results: dict[str, DeletionResult] = {}
         deferred_docs = []
+        cancelled_docs: set[str] = set()
         for i, doc_id in enumerate(doc_ids, 1):
             async with pipeline_status_lock:
                 if pipeline_status.get("cancellation_requested", False):
+                    cancelled_docs.update(doc_ids[i - 1 :])
+                    cancel_message = (
+                        f"Deletion cancelled by user at document {i}/{total_docs}. "
+                        f"{i - 1} reached, {total_docs - i + 1} remaining; "
+                        "finalizing already-staged deletions."
+                    )
+                    logger.info(cancel_message)
+                    pipeline_status["latest_message"] = cancel_message
+                    append_pipeline_history(pipeline_status, cancel_message)
                     for remaining_id in doc_ids[i - 1 :]:
                         deletion_results[remaining_id] = DeletionResult(
                             status="fail",
@@ -4368,15 +4378,16 @@ async def background_delete_documents(
 
         # Report results and remove files only after finalization succeeds.
         for i, doc_id in enumerate(doc_ids, 1):
+            if doc_id in cancelled_docs:
+                failed_deletions.append(doc_id)
+                continue
             file_path = "#"
             try:
                 delete_physical_file = delete_file
                 file_preservation_reason = None
 
                 result = deletion_results[doc_id]
-                file_path = (
-                    getattr(result, "file_path", "-") if "result" in locals() else "-"
-                )
+                file_path = result.file_path or "-"
                 if result.status == "success":
                     if (
                         delete_file

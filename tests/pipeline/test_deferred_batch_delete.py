@@ -1,339 +1,28 @@
 """Batch rebuild intent survives failures without discarding recovery anchors."""
 
-import asyncio
 import copy
-import json
 import importlib
-from contextlib import asynccontextmanager
-from time import perf_counter
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
 from lightrag.base import DocStatus
 from lightrag.constants import GRAPH_FIELD_SEP, KG_PURGE_PHASE_REBUILD_DEFERRED
-from lightrag.utils import make_relation_chunk_key
-
-from .test_purge_primitive import (
-    _DocStatus,
-    _Graph,
-    _KV,
-    _edge,
-    _make_rag,
-    _node,
-    _status,
-)
+from lightrag.utils import compute_mdhash_id, make_relation_chunk_key, Tokenizer
+from .test_delete_fail_closed import _SimpleTokenizerImpl
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
-
 core = importlib.import_module("lightrag.lightrag")
 
 
-@pytest.fixture
-def batch(monkeypatch, request):
-    @asynccontextmanager
-    async def storage_lock(*args, **kwargs):
-        yield
-
-    monkeypatch.setattr("lightrag.operate.get_storage_keyed_lock", storage_lock)
-    document_count = getattr(request, "param", 3)
-    chunks = [f"c{i}" for i in range(1, document_count + 1)]
-    rag = _make_rag(
-        graph=_Graph(
-            nodes={name: _node(name, chunks) for name in ("A", "B")},
-            edges={("A", "B"): {**_edge(chunks), "weight": float(len(chunks))}},
-        ),
-        full_entities=_KV(
-            {
-                f"d{i}": {"entity_names": ["A", "B"]}
-                for i in range(1, document_count + 1)
-            }
-        ),
-        full_relations=_KV(
-            {
-                f"d{i}": {"relation_pairs": [["A", "B"]]}
-                for i in range(1, document_count + 1)
-            }
-        ),
-        entity_chunks=_KV({name: {"chunk_ids": chunks.copy()} for name in ("A", "B")}),
-        relation_chunks=_KV(
-            {make_relation_chunk_key("A", "B"): {"chunk_ids": chunks.copy()}}
-        ),
-        text_chunks=_KV(
-            {
-                f"c{i}": {
-                    "content": f"text {i}",
-                    "full_doc_id": f"d{i}",
-                    "source_id": "custom",
-                }
-                for i in range(1, document_count + 1)
-            }
-        ),
-        doc_status=_DocStatus(
-            {
-                f"d{i}": {
-                    "status": DocStatus.PROCESSED,
-                    "chunks_list": [f"c{i}"],
-                    "file_path": f"d{i}.txt",
-                    "metadata": {},
-                }
-                for i in range(1, document_count + 1)
-            }
-        ),
-    )
-    rag.workspace = "deferred-test"
-    rag.full_docs = _KV(
-        {f"d{i}": {"content": f"text {i}"} for i in range(1, document_count + 1)}
-    )
-    status, lock = _status()
-    status.update(busy=True, destructive_busy=True, job_name="Deleting 2 Documents")
-    monkeypatch.setattr(core, "get_namespace_data", AsyncMock(return_value=status))
-    monkeypatch.setattr(core, "get_namespace_lock", lambda *args, **kwargs: lock)
-    return rag, status, lock
-
-
-async def test_batch_rebuilds_once_and_matches_sequential_deletion(batch, monkeypatch):
-    rag, status, lock = batch
+@pytest.mark.parametrize("deletion_batch", [4], indirect=True)
+async def test_batch_rebuilds_once_and_matches_sequential_deletion(
+    deletion_batch, monkeypatch
+):
+    rag, status, lock = deletion_batch
     monkeypatch.setattr(core.time, "time", lambda: 1700000000)
-    sequential = copy.deepcopy(rag)
-    original = core.rebuild_knowledge_from_chunks
-    rebuild = AsyncMock(wraps=original)
-    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
-    for doc_id in ("d1", "d2"):
-        result = await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
-        assert result.status == "deferred"
-        assert rag.doc_status.data[doc_id]["status"] == DocStatus.DELETING
-        assert doc_id in rag.full_docs.data
-        assert doc_id in rag.full_entities.data
-    assert rebuild.await_count == 0
-    results = await rag.afinalize_document_deletions(["d1", "d2"])
-    assert [result.status for result in results] == ["success", "success"]
-    assert rebuild.await_count == 1
-    assert rebuild.call_args.kwargs["entities_to_rebuild"] == {"A": ["c3"], "B": ["c3"]}
-    assert rebuild.call_args.kwargs["relationships_to_rebuild"] == {("A", "B"): ["c3"]}
-    assert rag.chunk_entity_relation_graph.nodes["A"]["source_id"] == "c3"
-    assert rag.chunk_entity_relation_graph.edges[("A", "B")]["source_id"] == "c3"
-    assert set(rag.text_chunks.data) == {"c3"}
-    assert set(rag.full_docs.data) == {"d3"}
-    assert set(rag.doc_status.data) == {"d3"}
-    for doc_id in ("d1", "d2"):
-        assert (await sequential.adelete_by_doc_id(doc_id)).status == "success"
-    assert rebuild.await_count == 3
-    assert (
-        rag.chunk_entity_relation_graph.nodes
-        == sequential.chunk_entity_relation_graph.nodes
-    )
-    assert (
-        rag.chunk_entity_relation_graph.edges
-        == sequential.chunk_entity_relation_graph.edges
-    )
-    assert rag.entity_chunks.data == sequential.entity_chunks.data
-    assert rag.relation_chunks.data == sequential.relation_chunks.data
-    assert rag.entities_vdb.data == sequential.entities_vdb.data
-    assert rag.relationships_vdb.data == sequential.relationships_vdb.data
-
-
-@pytest.mark.parametrize("failure_phase", ["rebuild_pending", "rebuild_deferred"])
-async def test_crash_after_chunks_disappear_is_recoverable(
-    batch, monkeypatch, failure_phase
-):
-    rag, status, lock = batch
-    write_phase = rag._write_kg_purge_phase
-    interrupted = []
-
-    async def crash(doc_id, phase, **kwargs):
-        if phase == KG_PURGE_PHASE_REBUILD_DEFERRED and not interrupted:
-            interrupted.append(phase)
-            if failure_phase == "rebuild_deferred":
-                await write_phase(doc_id, phase, **kwargs)
-            raise RuntimeError("simulated process interruption")
-        await write_phase(doc_id, phase, **kwargs)
-
-    monkeypatch.setattr(rag, "_write_kg_purge_phase", crash)
-    result = await rag.adelete_by_doc_id("d1", defer_rebuild=True)
-    assert result.status == "fail"
-    assert interrupted == [KG_PURGE_PHASE_REBUILD_DEFERRED]
-    assert "c1" not in rag.text_chunks.data
-    assert rag.doc_status.journal("d1")["phase"] == failure_phase
-    assert "d1" in rag.full_entities.data
-    monkeypatch.setattr(rag, "_write_kg_purge_phase", write_phase)
-    # Discard every transient target list: only storage survives this retry.
-    result = await rag.adelete_by_doc_id("d1")
-    assert result.status == "success"
-    assert rag.chunk_entity_relation_graph.nodes["A"][
-        "source_id"
-    ] == GRAPH_FIELD_SEP.join(["c2", "c3"])
-
-
-async def test_rebuild_failure_keeps_documents_and_diagnostics_for_retry(
-    batch, monkeypatch
-):
-    rag, status, lock = batch
-    for doc_id in ("d1", "d2"):
-        assert (
-            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
-        ).status == "deferred"
-    original = core.rebuild_knowledge_from_chunks
-    rebuild = AsyncMock(side_effect=RuntimeError("LLM temporarily unavailable"))
-    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
-    results = await rag.afinalize_document_deletions(["d1", "d2"])
-    assert rebuild.await_count == 1
-    assert [result.status for result in results] == ["fail", "fail"]
-    for doc_id in ("d1", "d2"):
-        row = rag.doc_status.data[doc_id]
-        assert row["status"] == DocStatus.DELETING
-        assert row["metadata"]["deletion_failure_stage"] == "rebuild_knowledge_graph"
-        assert "LLM temporarily unavailable" in row["error_msg"]
-        assert doc_id in rag.full_entities.data
-        assert doc_id in rag.full_docs.data
-    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", original)
-    assert [
-        result.status for result in await rag.afinalize_document_deletions(["d1", "d2"])
-    ] == ["success", "success"]
-
-
-async def test_batch_deleting_last_owner_skips_removed_graph_objects(
-    batch, monkeypatch
-):
-    rag, status, lock = batch
-    for doc_id in ("d1", "d2", "d3"):
-        assert (
-            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
-        ).status == "deferred"
-    rebuild = AsyncMock(wraps=core.rebuild_knowledge_from_chunks)
-    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
-    results = await rag.afinalize_document_deletions(["d1", "d2", "d3"])
-    assert [result.status for result in results] == ["success"] * 3
-    assert rebuild.await_count == 1
-    assert rebuild.call_args.kwargs["entities_to_rebuild"] == {}
-    assert rebuild.call_args.kwargs["relationships_to_rebuild"] == {}
-    assert rag.chunk_entity_relation_graph.nodes == {}
-    assert rag.chunk_entity_relation_graph.edges == {}
-    assert rag.doc_status.data == {}
-
-
-async def test_deferred_payload_cleanup_failure_retains_journal(batch, monkeypatch):
-    rag, status, lock = batch
-    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
-    delete = rag.full_docs.delete
-    fail = AsyncMock(side_effect=RuntimeError("payload deletion unavailable"))
-    monkeypatch.setattr(rag.full_docs, "delete", fail)
-    result = (await rag.afinalize_document_deletions(["d1"]))[0]
-    assert result.status == "fail"
-    assert fail.await_count == 1
-    assert rag.doc_status.data["d1"]["status"] == DocStatus.DELETING
-    assert rag.doc_status.journal("d1")["phase"] == "completed"
-    monkeypatch.setattr(rag.full_docs, "delete", delete)
-    assert (await rag.adelete_by_doc_id("d1")).status == "success"
-    assert "d1" not in rag.full_docs.data
-    assert "d1" not in rag.doc_status.data
-
-
-async def test_cancelled_prefix_keeps_unreached_document_and_its_contributions(batch):
-    rag, status, lock = batch
-    untouched = copy.deepcopy(rag.doc_status.data["d2"])
-    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
-    status["cancellation_requested"] = True
-    results = await rag.afinalize_document_deletions(["d1"])
-    assert results[0].status == "success"
-    assert rag.doc_status.data["d2"] == untouched
-    assert rag.entity_chunks.data["A"]["chunk_ids"] == ["c2", "c3"]
-    assert set(rag.chunk_entity_relation_graph.nodes) == {"A", "B"}
-
-
-async def test_finalization_filters_dead_tracking_ids(batch, monkeypatch):
-    rag, status, lock = batch
-    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
-    rag.entity_chunks.data["A"]["chunk_ids"].append("dead-chunk")
-    rebuild = AsyncMock(wraps=core.rebuild_knowledge_from_chunks)
-    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
-    assert (await rag.afinalize_document_deletions(["d1"]))[0].status == "success"
-    assert rebuild.call_args.kwargs["entities_to_rebuild"]["A"] == ["c2", "c3"]
-    assert rag.entity_chunks.data["A"]["chunk_ids"] == ["c2", "c3"]
-
-
-async def test_orphan_target_retains_anchors_and_fails_finalization(batch):
-    rag, status, lock = batch
-    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
-    rag.entity_chunks.data["A"]["chunk_ids"] = ["dead-chunk"]
-    results = await rag.afinalize_document_deletions(["d1"])
-    assert results[0].status == "fail"
-    assert "no live source chunks" in results[0].message
-    assert "d1" in rag.full_entities.data
-    assert rag.doc_status.data["d1"]["status"] == DocStatus.DELETING
-
-
-async def test_pre_graph_patch_candidates_survive_deferred_retry(batch):
-    rag, status, lock = batch
-    rag.full_entities.data.pop("d1")
-    rag.full_relations.data.pop("d1")
-    rag.doc_status.data["d1"]["metadata"] = {
-        "kg_write_state": "pre_graph",
-        "custom_chunk_patch": {
-            "entity_names": ["A", "B"],
-            "relation_pairs": [["A", "B"]],
-        },
-    }
-    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
-    assert (await rag.adelete_by_doc_id("d1")).status == "success"
-    assert rag.entity_chunks.data["A"]["chunk_ids"] == ["c2", "c3"]
-    assert rag.chunk_entity_relation_graph.edges[("A", "B")][
-        "source_id"
-    ] == GRAPH_FIELD_SEP.join(["c2", "c3"])
-
-
-async def test_failed_rebuild_commit_keeps_pending_intent(batch, monkeypatch):
-    rag, status, lock = batch
-    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
-    flush = rag._insert_done
-    fail = AsyncMock(side_effect=RuntimeError("rebuilt state could not be committed"))
-    monkeypatch.setattr(rag, "_insert_done", fail)
-    result = (await rag.afinalize_document_deletions(["d1"]))[0]
-    assert result.status == "fail"
-    assert fail.await_count == 1
-    assert rag.doc_status.journal("d1")["phase"] == KG_PURGE_PHASE_REBUILD_DEFERRED
-    assert "d1" in rag.full_entities.data
-    monkeypatch.setattr(rag, "_insert_done", flush)
-    assert (await rag.adelete_by_doc_id("d1")).status == "success"
-
-
-async def test_partial_anchor_cleanup_retry_does_not_repeat_rebuild(batch, monkeypatch):
-    rag, status, lock = batch
-    for doc_id in ("d1", "d2"):
-        assert (
-            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
-        ).status == "deferred"
-    delete = rag.full_relations.delete
-    fail = AsyncMock(side_effect=RuntimeError("anchor cleanup unavailable"))
-    monkeypatch.setattr(rag.full_relations, "delete", fail)
-    rebuild = AsyncMock(wraps=core.rebuild_knowledge_from_chunks)
-    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
-    results = await rag.afinalize_document_deletions(["d1", "d2"])
-    assert [result.status for result in results] == ["fail", "fail"]
-    assert fail.await_count == 2
-    assert rebuild.await_count == 1
-    monkeypatch.setattr(rag.full_relations, "delete", delete)
-    assert (await rag.adelete_by_doc_id("d1")).status == "success"
-    assert (await rag.adelete_by_doc_id("d2")).status == "success"
-    assert rebuild.await_count == 1
-
-
-@pytest.mark.parametrize("batch", [4, 16], indirect=True)
-async def test_shared_batch_reduces_rebuild_and_summary_calls(
-    batch, monkeypatch, record_property
-):
-    from lightrag.utils import Tokenizer
-    from .test_delete_fail_closed import _SimpleTokenizerImpl
-
-    rag, status, lock = batch
-    monkeypatch.setattr(core.time, "time", lambda: 1700000000)
-    llm_calls = []
-
-    async def summary_llm(prompt, **kwargs):
-        llm_calls.append(prompt)
-        await asyncio.sleep(0.001)
-        return "Combined description"
-
+    summary_llm = AsyncMock(return_value="Combined description")
     for chunk_id, row in rag.text_chunks.data.items():
         cache_id = f"extract-{chunk_id}"
         row["llm_cache_list"] = [cache_id]
@@ -374,30 +63,37 @@ async def test_shared_batch_reduces_rebuild_and_summary_calls(
     rag._build_global_config = lambda: config
     rag.llm_response_cache.global_config = {"enable_llm_cache": True}
     sequential = copy.deepcopy(rag)
-    doc_ids = list(rag.doc_status.data)[:-2]
     rebuild = AsyncMock(wraps=core.rebuild_knowledge_from_chunks)
     monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
-    start = perf_counter()
-    for doc_id in doc_ids:
-        assert (await sequential.adelete_by_doc_id(doc_id)).status == "success"
-    sequential_seconds = perf_counter() - start
-    sequential_calls = len(llm_calls)
-    assert rebuild.await_count == len(doc_ids)
-    rebuild.reset_mock()
-    llm_calls.clear()
-    start = perf_counter()
-    for doc_id in doc_ids:
-        assert (
-            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
-        ).status == "deferred"
-    assert all(
-        result.status == "success"
-        for result in await rag.afinalize_document_deletions(doc_ids)
-    )
-    deferred_seconds = perf_counter() - start
+    for doc_id in ("d1", "d2"):
+        result = await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
+        assert result.status == "deferred"
+        assert rag.doc_status.data[doc_id]["status"] == DocStatus.DELETING
+        assert doc_id in rag.full_docs.data
+        assert doc_id in rag.full_entities.data
+    assert rebuild.await_count == 0
+    results = await rag.afinalize_document_deletions(["d1", "d2"])
+    assert [result.status for result in results] == ["success", "success"]
     assert rebuild.await_count == 1
-    assert len(llm_calls) == 3
-    assert sequential_calls == 3 * len(doc_ids)
+    assert summary_llm.await_count == 3
+    assert rebuild.call_args.kwargs["entities_to_rebuild"] == {
+        "A": ["c3", "c4"],
+        "B": ["c3", "c4"],
+    }
+    assert rebuild.call_args.kwargs["relationships_to_rebuild"] == {
+        ("A", "B"): ["c3", "c4"]
+    }
+    assert set(rag.text_chunks.data) == {"c3", "c4"}
+    assert set(rag.full_docs.data) == {"d3", "d4"}
+    assert set(rag.doc_status.data) == {"d3", "d4"}
+    sequential_llm = AsyncMock(return_value="Combined description")
+    sequential._build_global_config = lambda: (
+        config | {"role_llm_funcs": {"extract": sequential_llm}}
+    )
+    for doc_id in ("d1", "d2"):
+        assert (await sequential.adelete_by_doc_id(doc_id)).status == "success"
+    assert rebuild.await_count == 3
+    assert sequential_llm.await_count == 6
     assert (
         rag.chunk_entity_relation_graph.nodes
         == sequential.chunk_entity_relation_graph.nodes
@@ -406,14 +102,267 @@ async def test_shared_batch_reduces_rebuild_and_summary_calls(
         rag.chunk_entity_relation_graph.edges
         == sequential.chunk_entity_relation_graph.edges
     )
-    metrics = {
-        "deleted_documents": len(doc_ids),
-        "sequential_rebuilds": len(doc_ids),
-        "deferred_rebuilds": 1,
-        "sequential_summary_calls": sequential_calls,
-        "deferred_summary_calls": len(llm_calls),
-        "sequential_seconds": sequential_seconds,
-        "deferred_seconds": deferred_seconds,
+    assert rag.entity_chunks.data == sequential.entity_chunks.data
+    assert rag.relation_chunks.data == sequential.relation_chunks.data
+    assert rag.entities_vdb.data == sequential.entities_vdb.data
+    assert rag.relationships_vdb.data == sequential.relationships_vdb.data
+
+
+@pytest.mark.parametrize("failure_phase", ["rebuild_pending", "rebuild_deferred"])
+async def test_crash_after_chunks_disappear_is_recoverable(
+    deletion_batch, monkeypatch, failure_phase
+):
+    rag, status, lock = deletion_batch
+    write_phase = rag._write_kg_purge_phase
+    interrupted = []
+
+    async def crash(doc_id, phase, **kwargs):
+        if phase == KG_PURGE_PHASE_REBUILD_DEFERRED and not interrupted:
+            interrupted.append(phase)
+            if failure_phase == "rebuild_deferred":
+                await write_phase(doc_id, phase, **kwargs)
+            raise RuntimeError("simulated process interruption")
+        await write_phase(doc_id, phase, **kwargs)
+
+    monkeypatch.setattr(rag, "_write_kg_purge_phase", crash)
+    result = await rag.adelete_by_doc_id("d1", defer_rebuild=True)
+    assert result.status == "fail"
+    assert interrupted == [KG_PURGE_PHASE_REBUILD_DEFERRED]
+    assert "c1" not in rag.text_chunks.data
+    assert rag.doc_status.journal("d1")["phase"] == failure_phase
+    assert "d1" in rag.full_entities.data
+    monkeypatch.setattr(rag, "_write_kg_purge_phase", write_phase)
+    # Discard every transient target list: only storage survives this retry.
+    result = await rag.adelete_by_doc_id("d1")
+    assert result.status == "success"
+    assert rag.chunk_entity_relation_graph.nodes["A"][
+        "source_id"
+    ] == GRAPH_FIELD_SEP.join(["c2", "c3"])
+
+
+@pytest.mark.parametrize("failure_point", ["rebuild", "commit"])
+async def test_rebuild_failure_keeps_documents_and_diagnostics_for_retry(
+    deletion_batch, monkeypatch, failure_point
+):
+    rag, status, lock = deletion_batch
+    for doc_id in ("d1", "d2"):
+        assert (
+            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
+        ).status == "deferred"
+    target = core if failure_point == "rebuild" else rag
+    attribute = (
+        "rebuild_knowledge_from_chunks"
+        if failure_point == "rebuild"
+        else "_insert_done"
+    )
+    original = getattr(target, attribute)
+    fail = AsyncMock(side_effect=RuntimeError("injected rebuild-stage failure"))
+    monkeypatch.setattr(target, attribute, fail)
+    results = await rag.afinalize_document_deletions(["d1", "d2"])
+    assert fail.await_count == 1
+    assert [result.status for result in results] == ["fail", "fail"]
+    for doc_id in ("d1", "d2"):
+        row = rag.doc_status.data[doc_id]
+        assert row["status"] == DocStatus.DELETING
+        assert row["metadata"]["deletion_failure_stage"] == "rebuild_knowledge_graph"
+        assert "injected rebuild-stage failure" in row["error_msg"]
+        assert (
+            rag.doc_status.journal(doc_id)["phase"] == KG_PURGE_PHASE_REBUILD_DEFERRED
+        )
+        assert doc_id in rag.full_entities.data
+        assert doc_id in rag.full_docs.data
+    monkeypatch.setattr(target, attribute, original)
+    assert [
+        result.status for result in await rag.afinalize_document_deletions(["d1", "d2"])
+    ] == ["success", "success"]
+
+
+async def test_batch_deleting_last_owner_skips_removed_graph_objects(
+    deletion_batch, monkeypatch
+):
+    rag, status, lock = deletion_batch
+    for doc_id in ("d1", "d2", "d3"):
+        assert (
+            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
+        ).status == "deferred"
+    rebuild = AsyncMock(wraps=core.rebuild_knowledge_from_chunks)
+    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
+    results = await rag.afinalize_document_deletions(["d1", "d2", "d3"])
+    assert [result.status for result in results] == ["success"] * 3
+    assert rebuild.await_count == 1
+    assert rebuild.call_args.kwargs["entities_to_rebuild"] == {}
+    assert rebuild.call_args.kwargs["relationships_to_rebuild"] == {}
+    assert rag.chunk_entity_relation_graph.nodes == {}
+    assert rag.chunk_entity_relation_graph.edges == {}
+    assert rag.doc_status.data == {}
+
+
+async def test_finalization_filters_dead_tracking_ids(deletion_batch, monkeypatch):
+    rag, status, lock = deletion_batch
+    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
+    rag.entity_chunks.data["A"]["chunk_ids"].append("dead-chunk")
+    entity_reads = AsyncMock(wraps=rag.entity_chunks.get_by_ids)
+    relation_reads = AsyncMock(wraps=rag.relation_chunks.get_by_ids)
+    chunk_reads = AsyncMock(wraps=rag.text_chunks.get_by_ids)
+    monkeypatch.setattr(rag.entity_chunks, "get_by_ids", entity_reads)
+    monkeypatch.setattr(rag.relation_chunks, "get_by_ids", relation_reads)
+    monkeypatch.setattr(rag.text_chunks, "get_by_ids", chunk_reads)
+    original_rebuild = core.rebuild_knowledge_from_chunks
+
+    async def check_batch_reads(**kwargs):
+        assert entity_reads.await_args_list == [((["A", "B"],), {})]
+        assert relation_reads.await_count == 1
+        assert chunk_reads.await_count == 1
+        assert set(chunk_reads.call_args.args[0]) == {"c2", "c3", "dead-chunk"}
+        return await original_rebuild(**kwargs)
+
+    rebuild = AsyncMock(side_effect=check_batch_reads)
+    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
+    assert (await rag.afinalize_document_deletions(["d1"]))[0].status == "success"
+    assert rebuild.call_args.kwargs["entities_to_rebuild"]["A"] == ["c2", "c3"]
+    assert rag.entity_chunks.data["A"]["chunk_ids"] == ["c2", "c3"]
+
+
+@pytest.mark.parametrize("target_kind", ["entity", "relation", "all"])
+async def test_dangling_targets_are_preserved_and_reported_without_blocking_deletion(
+    deletion_batch, monkeypatch, target_kind
+):
+    rag, status, lock = deletion_batch
+    entity_names = {"entity": ["A"], "relation": [], "all": ["A", "B"]}[target_kind]
+    pairs = [] if target_kind == "entity" else [("A", "B")]
+    for name in entity_names:
+        rag.entity_chunks.data[name]["chunk_ids"] = ["c1", "dead"]
+    for pair in pairs:
+        rag.relation_chunks.data[make_relation_chunk_key(*pair)]["chunk_ids"] = [
+            "c1",
+            "dead",
+        ]
+    for doc_id in ("d1", "d2"):
+        assert (
+            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
+        ).status == "deferred"
+    graph = rag.chunk_entity_relation_graph
+    nodes_before = copy.deepcopy(graph.nodes)
+    edges_before = copy.deepcopy(graph.edges)
+    tracking_before = copy.deepcopy(rag.entity_chunks.data)
+    relations_before = copy.deepcopy(rag.relation_chunks.data)
+    for name in entity_names:
+        rag.entities_vdb.data[compute_mdhash_id(name, prefix="ent-")] = {
+            "content": "original vector"
+        }
+    for src, tgt in pairs:
+        rag.relationships_vdb.data[compute_mdhash_id(src + tgt, prefix="rel-")] = {
+            "content": "original vector"
+        }
+    graph.upsert_node = AsyncMock(wraps=graph.upsert_node)
+    graph.upsert_edge = AsyncMock(wraps=graph.upsert_edge)
+    rag.entities_vdb.upsert = AsyncMock(wraps=rag.entities_vdb.upsert)
+    rag.relationships_vdb.upsert = AsyncMock(wraps=rag.relationships_vdb.upsert)
+    rag.entity_chunks.upsert = AsyncMock(wraps=rag.entity_chunks.upsert)
+    rag.relation_chunks.upsert = AsyncMock(wraps=rag.relation_chunks.upsert)
+    reports = []
+    original = rag._rebuild_deferred_kg_contributions
+
+    async def capture_report(*args, **kwargs):
+        report = await original(*args, **kwargs)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(rag, "_rebuild_deferred_kg_contributions", capture_report)
+    results = await rag.afinalize_document_deletions(["d1", "d2"])
+    assert [result.status for result in results] == ["success", "success"]
+    assert len(reports) == 1
+    for name in entity_names:
+        assert graph.nodes[name] == nodes_before[name]
+        assert rag.entity_chunks.data[name] == tracking_before[name]
+        vector_id = compute_mdhash_id(name, prefix="ent-")
+        assert rag.entities_vdb.data[vector_id] == {"content": "original vector"}
+        assert name not in [call.args[0] for call in graph.upsert_node.await_args_list]
+        assert all(
+            name not in call.args[0]
+            for call in rag.entity_chunks.upsert.await_args_list
+        )
+        assert all(
+            vector_id not in call.args[0]
+            for call in rag.entities_vdb.upsert.await_args_list
+        )
+        assert reports[0].degraded_entities[name] == ["dead"]
+    for pair in pairs:
+        key = make_relation_chunk_key(*pair)
+        vector_id = compute_mdhash_id("".join(pair), prefix="rel-")
+        assert graph.edges[pair] == edges_before[pair]
+        assert rag.relation_chunks.data[key] == relations_before[key]
+        assert rag.relationships_vdb.data[vector_id] == {"content": "original vector"}
+        assert pair not in [call.args[:2] for call in graph.upsert_edge.await_args_list]
+        assert all(
+            key not in call.args[0]
+            for call in rag.relation_chunks.upsert.await_args_list
+        )
+        assert all(
+            vector_id not in call.args[0]
+            for call in rag.relationships_vdb.upsert.await_args_list
+        )
+        assert reports[0].degraded_relationships[pair] == ["dead"]
+    assert set(rag.doc_status.data) == {"d3"}
+    assert reports[0].has_warnings
+    if target_kind == "all":
+        assert "Degraded KG recovery during deletion" in "\n".join(
+            status["history_messages"]
+        )
+    else:
+        warnings = rag.doc_status.data["d3"]["metadata"]["kg_recovery_warnings"]
+        assert warnings[-1]["code"] == "degraded_document_deletion"
+        category = "degraded_entities" if entity_names else "degraded_relationships"
+        assert warnings[-1][category]["count"] > 0
+
+
+async def test_pre_graph_patch_candidates_survive_deferred_retry(deletion_batch):
+    rag, status, lock = deletion_batch
+    rag.full_entities.data.pop("d1")
+    rag.full_relations.data.pop("d1")
+    rag.doc_status.data["d1"]["metadata"] = {
+        "kg_write_state": "pre_graph",
+        "custom_chunk_patch": {
+            "entity_names": ["A", "B"],
+            "relation_pairs": [["A", "B"]],
+        },
     }
-    record_property("batch_benchmark", json.dumps(metrics))
-    print(json.dumps(metrics))
+    assert (await rag.adelete_by_doc_id("d1", defer_rebuild=True)).status == "deferred"
+    assert (await rag.adelete_by_doc_id("d1")).status == "success"
+    assert rag.entity_chunks.data["A"]["chunk_ids"] == ["c2", "c3"]
+    assert rag.chunk_entity_relation_graph.edges[("A", "B")][
+        "source_id"
+    ] == GRAPH_FIELD_SEP.join(["c2", "c3"])
+
+
+@pytest.mark.parametrize("storage_name", ["full_docs", "full_relations"])
+async def test_cleanup_retry_does_not_repeat_rebuild(
+    deletion_batch, monkeypatch, storage_name
+):
+    rag, status, lock = deletion_batch
+    for doc_id in ("d1", "d2"):
+        assert (
+            await rag.adelete_by_doc_id(doc_id, defer_rebuild=True)
+        ).status == "deferred"
+    storage = getattr(rag, storage_name)
+    delete = storage.delete
+    fail = AsyncMock(side_effect=RuntimeError("cleanup unavailable"))
+    monkeypatch.setattr(storage, "delete", fail)
+    rebuild = AsyncMock(wraps=core.rebuild_knowledge_from_chunks)
+    monkeypatch.setattr(core, "rebuild_knowledge_from_chunks", rebuild)
+    results = await rag.afinalize_document_deletions(["d1", "d2"])
+    assert [result.status for result in results] == ["fail", "fail"]
+    assert fail.await_count == 2
+    assert rebuild.await_count == 1
+    for doc_id in ("d1", "d2"):
+        assert rag.doc_status.data[doc_id]["status"] == DocStatus.DELETING
+        expected_phase = (
+            "completed" if storage_name == "full_docs" else "anchors_pending"
+        )
+        assert rag.doc_status.journal(doc_id)["phase"] == expected_phase
+    monkeypatch.setattr(storage, "delete", delete)
+    assert (await rag.adelete_by_doc_id("d1")).status == "success"
+    assert (await rag.adelete_by_doc_id("d2")).status == "success"
+    assert rebuild.await_count == 1
+    assert "d1" not in rag.full_docs.data
+    assert "d2" not in rag.doc_status.data

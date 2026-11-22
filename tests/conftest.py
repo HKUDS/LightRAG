@@ -595,3 +595,84 @@ def _configured_embedding_model(monkeypatch):
 
     if not (os.environ.get("EMBEDDING_MODEL") or "").strip():
         monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+
+@pytest.fixture
+def deletion_batch(monkeypatch, request):
+    import importlib
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from lightrag.base import DocStatus
+    from lightrag.utils import make_relation_chunk_key
+    from tests.pipeline.test_purge_primitive import (
+        _DocStatus,
+        _Graph,
+        _KV,
+        _edge,
+        _make_rag,
+        _node,
+        _status,
+    )
+
+    core = importlib.import_module("lightrag.lightrag")
+
+    @asynccontextmanager
+    async def storage_lock(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr("lightrag.operate.get_storage_keyed_lock", storage_lock)
+    document_count = getattr(request, "param", 3)
+    chunks = [f"c{i}" for i in range(1, document_count + 1)]
+    rag = _make_rag(
+        graph=_Graph(
+            nodes={name: _node(name, chunks) for name in ("A", "B")},
+            edges={("A", "B"): {**_edge(chunks), "weight": float(len(chunks))}},
+        ),
+        full_entities=_KV(
+            {
+                f"d{i}": {"entity_names": ["A", "B"]}
+                for i in range(1, document_count + 1)
+            }
+        ),
+        full_relations=_KV(
+            {
+                f"d{i}": {"relation_pairs": [["A", "B"]]}
+                for i in range(1, document_count + 1)
+            }
+        ),
+        entity_chunks=_KV({name: {"chunk_ids": chunks.copy()} for name in ("A", "B")}),
+        relation_chunks=_KV(
+            {make_relation_chunk_key("A", "B"): {"chunk_ids": chunks.copy()}}
+        ),
+        text_chunks=_KV(
+            {
+                f"c{i}": {
+                    "content": f"text {i}",
+                    "full_doc_id": f"d{i}",
+                    "source_id": "custom",
+                }
+                for i in range(1, document_count + 1)
+            }
+        ),
+        doc_status=_DocStatus(
+            {
+                f"d{i}": {
+                    "status": DocStatus.PROCESSED,
+                    "chunks_list": [f"c{i}"],
+                    "file_path": f"d{i}.txt",
+                    "metadata": {},
+                }
+                for i in range(1, document_count + 1)
+            }
+        ),
+    )
+    rag.workspace = "deferred-test"
+    rag.full_docs = _KV(
+        {f"d{i}": {"content": f"text {i}"} for i in range(1, document_count + 1)}
+    )
+    status, lock = _status()
+    status.update(busy=True, destructive_busy=True, job_name="Deleting 2 Documents")
+    monkeypatch.setattr(core, "get_namespace_data", AsyncMock(return_value=status))
+    monkeypatch.setattr(core, "get_namespace_lock", lambda *args, **kwargs: lock)
+    return rag, status, lock
