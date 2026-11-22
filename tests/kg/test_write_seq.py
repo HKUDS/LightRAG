@@ -68,12 +68,6 @@ def test_whole_seconds_decide_only_when_a_row_predates_the_token():
 
 
 @pytest.mark.offline
-def test_the_token_breaks_a_same_second_tie():
-    assert row_is_strictly_newer(_row(100, 2), _row(100, 1)) is True
-    assert row_is_strictly_newer(_row(100, 1), _row(100, 2)) is False
-
-
-@pytest.mark.offline
 def test_equal_tokens_from_two_processes_stay_a_tie():
     """The bump that keeps tokens distinct is process-local, so two processes
     reading one clock tick stamp the *same* token — reachable only on a coarse

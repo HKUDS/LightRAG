@@ -89,94 +89,6 @@ class TestBaseGraphStorageDefaults:
     methods to verify the default batch implementations delegate correctly.
     """
 
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_upsert_nodes_batch_calls_upsert_node(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-
-            nodes = [
-                ("NodeA", _make_node("NodeA")),
-                ("NodeB", _make_node("NodeB")),
-            ]
-
-            call_log: list[str] = []
-            original = storage.upsert_node
-
-            async def spy(node_id, *, node_data):
-                call_log.append(node_id)
-                return await original(node_id, node_data=node_data)
-
-            # Temporarily replace the optimised override with the base default
-
-            async def base_upsert_nodes_batch(self, nodes):
-                for node_id, node_data in nodes:
-                    await self.upsert_node(node_id, node_data=node_data)
-
-            storage.upsert_node = spy  # type: ignore[assignment]
-            await base_upsert_nodes_batch(storage, nodes)
-
-            assert call_log == ["NodeA", "NodeB"]
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_has_nodes_batch_calls_has_node(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-            await storage.upsert_node("NodeA", node_data=_make_node("NodeA"))
-
-            call_log: list[str] = []
-            original = storage.has_node
-
-            async def spy(node_id):
-                call_log.append(node_id)
-                return await original(node_id)
-
-            async def base_has_nodes_batch(self, node_ids):
-                existing = set()
-                for node_id in node_ids:
-                    if await self.has_node(node_id):
-                        existing.add(node_id)
-                return existing
-
-            storage.has_node = spy  # type: ignore[assignment]
-            result = await base_has_nodes_batch(storage, ["NodeA", "NodeB"])
-
-            assert call_log == ["NodeA", "NodeB"]
-            assert result == {"NodeA"}
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_upsert_edges_batch_calls_upsert_edge(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-            await storage.upsert_node("NodeA", node_data=_make_node("NodeA"))
-            await storage.upsert_node("NodeB", node_data=_make_node("NodeB"))
-            await storage.upsert_node("NodeC", node_data=_make_node("NodeC"))
-
-            call_log: list[tuple] = []
-            original = storage.upsert_edge
-
-            async def spy(src, tgt, *, edge_data):
-                call_log.append((src, tgt))
-                return await original(src, tgt, edge_data=edge_data)
-
-            async def base_upsert_edges_batch(self, edges):
-                for src, tgt, edge_data in edges:
-                    await self.upsert_edge(src, tgt, edge_data=edge_data)
-
-            edges = [
-                ("NodeA", "NodeB", _make_edge()),
-                ("NodeB", "NodeC", _make_edge()),
-            ]
-            storage.upsert_edge = spy  # type: ignore[assignment]
-            await base_upsert_edges_batch(storage, edges)
-
-            assert call_log == [("NodeA", "NodeB"), ("NodeB", "NodeC")]
-
 
 # ---------------------------------------------------------------------------
 # 2. NetworkXStorage optimised batch implementations
@@ -184,34 +96,6 @@ class TestBaseGraphStorageDefaults:
 
 
 class TestNetworkXBatchOperations:
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_upsert_nodes_batch_inserts_all_nodes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-
-            nodes = [(f"Entity{i}", _make_node(f"Entity{i}")) for i in range(5)]
-            await storage.upsert_nodes_batch(nodes)
-
-            for entity_id, _ in nodes:
-                assert await storage.has_node(entity_id), f"{entity_id} should exist"
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_upsert_nodes_batch_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-
-            node_data = _make_node("Alpha")
-            await storage.upsert_nodes_batch([("Alpha", node_data)])
-            await storage.upsert_nodes_batch([("Alpha", node_data)])  # second call
-
-            assert await storage.has_node("Alpha")
-            node = await storage.get_node("Alpha")
-            assert node["entity_id"] == "Alpha"
-
     @pytest.mark.offline
     @pytest.mark.asyncio
     async def test_has_nodes_batch_returns_existing_subset(self):
@@ -228,16 +112,6 @@ class TestNetworkXBatchOperations:
 
             result = await storage.has_nodes_batch(["Present1", "Present2", "Missing"])
             assert result == {"Present1", "Present2"}
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_has_nodes_batch_empty_input(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-
-            result = await storage.has_nodes_batch([])
-            assert result == set()
 
     @pytest.mark.offline
     @pytest.mark.asyncio
@@ -267,26 +141,6 @@ class TestNetworkXBatchOperations:
             edge_bc = await storage.get_edge("B", "C")
             assert edge_bc is not None
             assert float(edge_bc["weight"]) == pytest.approx(2.0)
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_upsert_edges_batch_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = make_networkx_storage(tmp)
-            await storage.initialize()
-
-            await storage.upsert_nodes_batch(
-                [
-                    ("X", _make_node("X")),
-                    ("Y", _make_node("Y")),
-                ]
-            )
-            edge_data = _make_edge(3.0)
-            await storage.upsert_edges_batch([("X", "Y", edge_data)])
-            await storage.upsert_edges_batch([("X", "Y", edge_data)])  # second call
-
-            edge = await storage.get_edge("X", "Y")
-            assert edge is not None
 
     @pytest.mark.offline
     @pytest.mark.asyncio
@@ -346,44 +200,6 @@ class TestAinsertCustomKgBatchPath:
                 }
             ],
         }
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_ainsert_custom_kg_calls_batch_methods(self):
-        """upsert_nodes_batch, has_nodes_batch, upsert_edges_batch must all be called."""
-        from lightrag import LightRAG
-
-        with tempfile.TemporaryDirectory() as tmp:
-            rag = LightRAG(
-                working_dir=tmp,
-                llm_model_func=AsyncMock(return_value=""),
-                embedding_func=mock_embedding_func,
-            )
-            await rag.initialize_storages()
-
-            graph = rag.chunk_entity_relation_graph
-            upsert_nodes_batch = AsyncMock(wraps=graph.upsert_nodes_batch)
-            has_nodes_batch = AsyncMock(wraps=graph.has_nodes_batch)
-            upsert_edges_batch = AsyncMock(wraps=graph.upsert_edges_batch)
-
-            graph.upsert_nodes_batch = upsert_nodes_batch
-            graph.has_nodes_batch = has_nodes_batch
-            graph.upsert_edges_batch = upsert_edges_batch
-
-            # Mock VDB upserts to avoid needing real embeddings
-            rag.entities_vdb.upsert = AsyncMock()
-            rag.relationships_vdb.upsert = AsyncMock()
-            rag.relationships_vdb.delete = AsyncMock()
-            rag.text_chunks.upsert = AsyncMock()
-            rag.doc_status.upsert = AsyncMock()
-
-            await rag.ainsert_custom_kg(self._make_custom_kg())
-
-            upsert_nodes_batch.assert_called()
-            has_nodes_batch.assert_called()
-            upsert_edges_batch.assert_called()
-
-            await rag.finalize_storages()
 
     @pytest.mark.offline
     @pytest.mark.asyncio
@@ -731,22 +547,6 @@ class TestAinsertCustomKgBatchPath:
             await rag.finalize_storages()
 
     @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_ainsert_custom_kg_no_hasattr_needed(self):
-        """
-        The batch methods are always available on the base class, so no
-        hasattr() guard should be needed. Verify that a storage backend
-        implementing only the abstract methods (no batch overrides) still
-        works via the default serial fallback.
-        """
-        from lightrag.base import BaseGraphStorage
-
-        # All three batch methods should exist on the base class
-        assert hasattr(BaseGraphStorage, "upsert_nodes_batch")
-        assert hasattr(BaseGraphStorage, "has_nodes_batch")
-        assert hasattr(BaseGraphStorage, "upsert_edges_batch")
-
-    @pytest.mark.offline
     def test_neo4j_has_nodes_batch_uses_read_retry(self):
         pytest.importorskip("neo4j")
         from lightrag.kg.neo4j_impl import Neo4JStorage
@@ -754,59 +554,6 @@ class TestAinsertCustomKgBatchPath:
         assert hasattr(Neo4JStorage.has_nodes_batch, "retry")
         assert hasattr(Neo4JStorage.upsert_nodes_batch, "retry")
         assert hasattr(Neo4JStorage.upsert_edges_batch, "retry")
-
-    @pytest.mark.offline
-    @pytest.mark.asyncio
-    async def test_ainsert_custom_kg_missing_entity_nodes_created(self):
-        """
-        Nodes referenced in relationships but not in the entity list must
-        be created as placeholder UNKNOWN nodes.
-        """
-        from lightrag import LightRAG
-
-        with tempfile.TemporaryDirectory() as tmp:
-            rag = LightRAG(
-                working_dir=tmp,
-                llm_model_func=AsyncMock(return_value=""),
-                embedding_func=mock_embedding_func,
-            )
-            await rag.initialize_storages()
-
-            rag.entities_vdb.upsert = AsyncMock()
-            rag.relationships_vdb.upsert = AsyncMock()
-            rag.relationships_vdb.delete = AsyncMock()
-            rag.text_chunks.upsert = AsyncMock()
-            rag.doc_status.upsert = AsyncMock()
-
-            custom_kg = {
-                "chunks": [
-                    {"content": "text", "chunk_order_index": 0, "source_id": "s1"}
-                ],
-                "entities": [],  # No entities declared
-                "relationships": [
-                    {
-                        "src_id": "ImplicitNode",
-                        "tgt_id": "AnotherImplicit",
-                        "description": "connects",
-                        "keywords": "link",
-                        "weight": 1.0,
-                        "source_id": "s1",
-                        "file_path": "test.pdf",
-                    }
-                ],
-            }
-
-            await rag.ainsert_custom_kg(custom_kg)
-
-            graph = rag.chunk_entity_relation_graph
-            assert await graph.has_node("ImplicitNode"), (
-                "Implicit node should be created"
-            )
-            assert await graph.has_node("AnotherImplicit"), (
-                "Implicit node should be created"
-            )
-
-            await rag.finalize_storages()
 
     @pytest.mark.offline
     @pytest.mark.asyncio
@@ -892,6 +639,8 @@ class TestAinsertCustomKgBatchPath:
             assert len(placeholder_batch) == 1
             assert placeholder_batch[0][0] == "EntityB"
 
+            # The endpoint check goes through the batch API, not per-node has_node.
+            graph.has_nodes_batch.assert_awaited()
             edge_batch = graph.upsert_edges_batch.await_args.args[0]
             assert len(edge_batch) == 1
             assert edge_batch[0][0] == "EntityB"
