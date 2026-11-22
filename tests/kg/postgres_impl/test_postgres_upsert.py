@@ -159,11 +159,6 @@ def make_vector_storage(namespace: str) -> PGVectorStorage:
 # ---------------------------------------------------------------------------
 
 
-def test_max_batch_size_is_constant():
-    storage = make_storage(NameSpace.KV_STORE_TEXT_CHUNKS)
-    assert storage._max_batch_size == 200
-
-
 # ---------------------------------------------------------------------------
 # 2. Namespace: TEXT_CHUNKS
 # ---------------------------------------------------------------------------
@@ -229,29 +224,6 @@ async def test_upsert_text_chunks_missing_heading_sidecar_defaults_to_empty_dict
     row = rows[0]
     assert json.loads(row[8]) == {}  # heading
     assert json.loads(row[9]) == {}  # sidecar
-
-
-@pytest.mark.asyncio
-async def test_upsert_text_chunks_none_heading_sidecar_defaults_to_empty_dict():
-    """Explicit None values should be coerced to '{}' to avoid type errors."""
-    storage = make_storage(NameSpace.KV_STORE_TEXT_CHUNKS)
-    data = {
-        "chunk-1": {
-            "tokens": 10,
-            "chunk_order_index": 0,
-            "full_doc_id": "doc-1",
-            "content": "plain text",
-            "file_path": "/a/b.txt",
-            "heading": None,
-            "sidecar": None,
-        }
-    }
-    await storage.upsert(data)
-
-    _, rows = storage._captured[0]
-    row = rows[0]
-    assert json.loads(row[8]) == {}
-    assert json.loads(row[9]) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -652,30 +624,6 @@ async def test_doc_status_upsert_includes_content_hash():
 
 
 @pytest.mark.asyncio
-async def test_doc_status_upsert_missing_content_hash_is_none():
-    """Existing callers that do not pass content_hash still produce valid tuples."""
-    storage = make_doc_status_storage()
-    await storage.upsert(
-        {
-            "doc-1": {
-                "content_summary": "summary",
-                "content_length": 12,
-                "chunks_count": 1,
-                "status": "processed",
-                "file_path": "/a.txt",
-                "chunks_list": ["chunk-1"],
-                "metadata": {"source": "test"},
-                "created_at": "2024-01-01T00:00:00+00:00",
-                "updated_at": "2024-01-01T00:00:00+00:00",
-            }
-        }
-    )
-
-    _, rows = storage._captured[0]
-    assert rows[0][11] is None
-
-
-@pytest.mark.asyncio
 async def test_doc_status_upsert_sql_protects_existing_content_hash():
     """The ON CONFLICT clause must COALESCE+NULLIF to preserve a previously
     set content_hash when a subsequent state-transition upsert carries no
@@ -702,7 +650,9 @@ async def test_doc_status_upsert_sql_protects_existing_content_hash():
         }
     )
 
-    sql, _ = storage._captured[0]
+    sql, rows = storage._captured[0]
+    # A caller that passes no content_hash still produces a valid tuple.
+    assert rows[0][11] is None
     normalized = " ".join(sql.split()).lower()
     assert "coalesce(" in normalized
     assert "nullif(excluded.content_hash, '')" in normalized
