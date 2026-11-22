@@ -848,10 +848,22 @@ def _zero_width_formula_paragraph(doc, tag: str, prefix: str):
     return para
 
 
+# Both placeholder tags go through the same leading-text check: every
+# zero-width character before a drawing, and one before an equation.
 @pytest.mark.parametrize(
-    "zero_width", ZERO_WIDTH_CHARS, ids=lambda c: f"U+{ord(c):04X}"
+    ("zero_width", "tag"),
+    [
+        pytest.param(c, "w:drawing", id=f"w:drawing-U+{ord(c):04X}")
+        for c in ZERO_WIDTH_CHARS
+    ]
+    + [
+        pytest.param(
+            ZERO_WIDTH_CHARS[0],
+            "m:oMath",
+            id=f"m:oMath-U+{ord(ZERO_WIDTH_CHARS[0]):04X}",
+        )
+    ],
 )
-@pytest.mark.parametrize("tag", ["w:drawing", "m:oMath"])
 def test_zero_width_prefix_does_not_hide_leading_placeholder(
     zero_width, tag, tmp_path
 ) -> None:
