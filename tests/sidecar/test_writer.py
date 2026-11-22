@@ -469,27 +469,13 @@ def test_writer_positions_round_trip_bbox(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
-def test_position_origin_to_jsonable_omits_when_none() -> None:
-    """Spec §八 per-position origin: ``None`` ⇒ field absent (inherit from
-    meta ``bbox_attributes.origin``)."""
-    pos = IRPosition(type="bbox", anchor=1, range=[1.0, 2.0, 3.0, 4.0])
-    assert "origin" not in pos.to_jsonable()
-
-
-@pytest.mark.offline
-def test_position_origin_to_jsonable_emits_when_set() -> None:
-    """Spec §八 per-position origin: explicit value ⇒ override field in JSON."""
-    pos = IRPosition(
-        type="bbox", anchor=1, range=[1.0, 2.0, 3.0, 4.0], origin="LEFTTOP"
-    )
-    out = pos.to_jsonable()
-    assert out["origin"] == "LEFTTOP"
-
-
-@pytest.mark.offline
 def test_writer_position_origin_mixed_per_block(tmp_path: Path) -> None:
     """Docling mixed coord_origin scenario: doc-level origin in meta,
-    per-position override on the minority. Coordinates land verbatim."""
+    per-position override on the minority. Coordinates land verbatim.
+
+    Spec §八 per-position origin: ``None`` leaves the field absent (inherit
+    from meta ``bbox_attributes.origin``), an explicit value is written as
+    the override; both positions below pin one side each."""
     parsed = tmp_path / "mixed.parsed"
     ir = IRDoc(
         document_name="mixed.pdf",
