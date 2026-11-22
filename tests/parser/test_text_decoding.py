@@ -66,22 +66,10 @@ def test_bomless_non_utf8_mentions_the_bom_requirement():
     assert "Please convert it to UTF-8" in message
 
 
-# Every text suffix reaches the same ``_decode_text``: all encodings on txt,
-# and csv / md keep one each.
-@pytest.mark.parametrize(
-    ("data", "suffix"),
-    [pytest.param(data, "txt", id=f"{name}-txt") for name, data in BOM_ENCODED.items()]
-    + [
-        pytest.param(
-            next(iter(BOM_ENCODED.values())),
-            suffix,
-            id=f"{next(iter(BOM_ENCODED))}-{suffix}",
-        )
-        for suffix in ("csv", "md")
-    ],
-)
-def test_legacy_extract_text_accepts_bom_encodings(data, suffix):
-    assert extract_text(data, suffix) == TEXT
+def test_legacy_extract_text_accepts_a_bom_encoding():
+    # The codec sweep is test_bom_selects_codec_and_is_dropped, on the shared
+    # decode_text_bytes; this is the legacy extractor's wiring to it.
+    assert extract_text(BOM_ENCODED["utf-16-le"], "txt") == TEXT
 
 
 @pytest.mark.parametrize("body", ["", " \r\n\t"])

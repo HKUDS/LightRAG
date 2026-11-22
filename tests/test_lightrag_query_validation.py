@@ -25,20 +25,13 @@ async def test_core_rag_query_entry_points_reject_short_queries_before_storage_a
         )
 
 
-# "" and "   " meet the same ``query.strip()``: whitespace on every entry point
-# and mode, and "" once.
+# Both entry points call validate_query_not_empty before they look at the
+# mode, and the blank spellings are test_validate_query_not_empty_rejects_blank_text:
+# one node per entry point, on bypass, the mode that skips the RAG minimum.
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("method_name", "mode", "query"),
-    [
-        (method_name, mode, "   ")
-        for method_name in ("aquery_llm", "aquery_data")
-        for mode in ("mix", "naive", "bypass")
-    ]
-    + [("aquery_llm", "bypass", "")],
-)
+@pytest.mark.parametrize("method_name", ["aquery_llm", "aquery_data"])
 async def test_core_query_entry_points_reject_empty_queries_in_every_mode(
-    method_name, mode, query
+    method_name,
 ):
     """`bypass` skips retrieval, so it skips the RAG minimum — but an empty
     prompt is nothing to send to an LLM, and reaching the provider with one
@@ -48,6 +41,6 @@ async def test_core_query_entry_points_reject_empty_queries_in_every_mode(
     with pytest.raises(EmptyQueryError):
         await getattr(LightRAG, method_name)(
             rag,
-            query,
-            param=QueryParam(mode=mode),
+            "   ",
+            param=QueryParam(mode="bypass"),
         )

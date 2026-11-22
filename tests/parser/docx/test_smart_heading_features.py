@@ -848,25 +848,11 @@ def _zero_width_formula_paragraph(doc, tag: str, prefix: str):
     return para
 
 
-# Both placeholder tags go through the same leading-text check: every
-# zero-width character before a drawing, and one before an equation.
-@pytest.mark.parametrize(
-    ("zero_width", "tag"),
-    [
-        pytest.param(c, "w:drawing", id=f"w:drawing-U+{ord(c):04X}")
-        for c in ZERO_WIDTH_CHARS
-    ]
-    + [
-        pytest.param(
-            ZERO_WIDTH_CHARS[0],
-            "m:oMath",
-            id=f"m:oMath-U+{ord(ZERO_WIDTH_CHARS[0]):04X}",
-        )
-    ],
-)
-def test_zero_width_prefix_does_not_hide_leading_placeholder(
-    zero_width, tag, tmp_path
-) -> None:
+# One zero-width character per placeholder tag: every character goes through
+# the same _has_visible_char predicate, swept in
+# test_visible_char_and_pad_scan_share_one_definition.
+@pytest.mark.parametrize("tag", ["w:drawing", "m:oMath"])
+def test_zero_width_prefix_does_not_hide_leading_placeholder(tag, tmp_path) -> None:
     """ZWSP → drawing/OMML → tabs → text: the invisible prefix must not read as
     "text came first".
 
@@ -877,7 +863,7 @@ def test_zero_width_prefix_does_not_hide_leading_placeholder(
     users actually hit (these characters arrive via web/PDF copy-paste).
     """
     doc = Document()
-    para = _zero_width_formula_paragraph(doc, tag, zero_width)
+    para = _zero_width_formula_paragraph(doc, tag, ZERO_WIDTH_CHARS[0])
     assert leading_nontext_content(para._p) is True
     assert _first_record_pad(doc, tmp_path) == ("center", 0.0)
 

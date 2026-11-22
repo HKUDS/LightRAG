@@ -119,14 +119,12 @@ def test_prefix_only_is_indistinguishable_from_a_caller_sending_it():
 # ---------------------------------------------------------------------------
 
 
-# None and "" are both "no prefix configured": every prompt with None, and
-# "" once.
+# None and "" are both "no prefix configured": the non-blank prompts with None,
+# and one with "". Blank prompts with either are
+# test_empty_and_whitespace_combinations, which asserts the same text.
 @pytest.mark.parametrize(
     ("user_prompt", "prefix"),
-    [
-        (user_prompt, None)
-        for user_prompt in (None, "", "   ", "Be concise.", " padded ", "多行\n文本")
-    ]
+    [(user_prompt, None) for user_prompt in ("Be concise.", " padded ", "多行\n文本")]
     + [("Be concise.", "")],
 )
 def test_unconfigured_prefix_preserves_legacy_cache_key_component(user_prompt, prefix):

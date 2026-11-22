@@ -21,15 +21,12 @@ _QUERYPARAM_INT_ENVS = [
 ]
 
 
-# Every field reads its variable through the same get_env_value: each
-# variable with "", and the other blank spellings on TOP_K.
+# The probe sets every variable to the blank value in one interpreter and
+# returns every default, so one node per spelling checks all five fields.
 @pytest.mark.offline
-@pytest.mark.parametrize(
-    "env_value,env_key,expected",
-    [("", key, expected) for key, expected in _QUERYPARAM_INT_ENVS]
-    + [(blank, *_QUERYPARAM_INT_ENVS[0]) for blank in ("  ", "\t")],
-)
-def test_empty_queryparam_int_env_falls_back_on_import(
-    env_value: str, env_key: str, expected: str
-) -> None:
-    assert import_defaults_with_blank_env(env_value)[env_key] == expected
+@pytest.mark.parametrize("env_value", ["", "  ", "\t"])
+def test_empty_queryparam_int_env_falls_back_on_import(env_value: str) -> None:
+    defaults = import_defaults_with_blank_env(env_value)
+    assert {key: defaults[key] for key, _ in _QUERYPARAM_INT_ENVS} == dict(
+        _QUERYPARAM_INT_ENVS
+    )
