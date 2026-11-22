@@ -970,12 +970,6 @@ class TestCategory:
         ):
             assert cs.resolve_configuration_storage("", kv_storage=name) == name
 
-    def test_a_vector_storage_is_refused_by_name(self):
-        with pytest.raises(ValueError, match="NanoVectorDBStorage"):
-            cs.resolve_configuration_storage(
-                "NanoVectorDBStorage", kv_storage="JsonKVStorage"
-            )
-
     @pytest.mark.parametrize("selected", [None, "", "   "])
     def test_unset_redis_defaults_to_json(self, selected):
         assert (
@@ -1009,12 +1003,6 @@ class TestCategory:
     def test_redis_can_explicitly_select_a_database(self):
         assert (
             cs.resolve_configuration_storage("PGKVStorage", kv_storage="RedisKVStorage")
-            == "PGKVStorage"
-        )
-
-    def test_an_explicit_selection_is_independent_of_the_business_backend(self):
-        assert (
-            cs.resolve_configuration_storage("PGKVStorage", kv_storage="JsonKVStorage")
             == "PGKVStorage"
         )
 

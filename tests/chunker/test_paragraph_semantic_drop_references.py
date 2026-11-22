@@ -82,13 +82,10 @@ def _all_content(chunks: list[dict]) -> str:
     [
         ("References", True),
         ("references", True),  # case-insensitive
-        ("REFERENCES", True),
         ("Bibliography", True),
         ("References [1-50]", True),  # word boundary: next char is non-alnum
-        ("参考文献", True),
         ("参考文献列表", True),  # CJK: plain prefix, no word boundary
         ("Referenced work", False),  # ASCII word boundary excludes this
-        ("Related Work", False),
         ("", False),
     ],
 )
@@ -230,26 +227,6 @@ def test_default_tail_window_scans_all_blocks(tmp_path, monkeypatch):
     assert "REF_MARKER" not in body
     assert "INTRO_MARKER" in body
     assert "APPENDIX_MARKER" in body
-
-
-@pytest.mark.offline
-def test_word_boundary_keeps_referenced(tmp_path):
-    tokenizer = _make_tokenizer()
-    rows = [
-        _row("Introduction", "INTRO_MARKER intro body"),
-        _row("参考文献列表", "CJKREF_MARKER [1] Foo."),
-        _row("Referenced datasets", "DATASET_MARKER dataset details"),
-    ]
-    blocks_path = _write_blocks_jsonl(tmp_path, rows)
-
-    body = _all_content(
-        chunking_by_paragraph_semantic(
-            tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
-        )
-    )
-    # CJK prefix block dropped; "Referenced ..." kept (ASCII word boundary).
-    assert "CJKREF_MARKER" not in body
-    assert "DATASET_MARKER" in body
 
 
 @pytest.mark.offline

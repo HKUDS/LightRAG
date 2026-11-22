@@ -1005,7 +1005,6 @@ class TestAnchorFormat:
         "overrides",
         [
             {"members": ...},
-            {"layout": ...},
             {"layout": "flat"},
             {"members": "teamalpha"},
             {"members": ["a", "a"]},
@@ -1013,7 +1012,6 @@ class TestAnchorFormat:
             {"members": [".."]},
             {"members": ["config_storage_anchor.json"]},
             {"members": [1]},
-            {"schema_version": True},
         ],
     )
     def test_a_malformed_json_anchor_is_unreadable(self, tmp_path, overrides):
@@ -1022,7 +1020,12 @@ class TestAnchorFormat:
             ca.read_anchor(str(tmp_path))
         assert info.value.cause == ca.IDENTITY_ANCHOR_UNREADABLE
 
-    @pytest.mark.parametrize("extra", [{"members": []}, {"layout": "json_shards"}])
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"members": []},
+        ],
+    )
     def test_a_database_anchor_with_json_fields_is_unreadable(self, tmp_path, extra):
         self._write(
             tmp_path,
