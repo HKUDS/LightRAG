@@ -552,7 +552,16 @@ async def test_manual_freeze_cannot_be_raised_while_an_admin_write_holds_busy(ra
 async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch):
     """A hung embedding endpoint must not fence ingestion indefinitely: past
     ``admin_write_max_hold_seconds`` the admin write fails (500 through the
-    routes), and its ``finally`` releases the reservation AND the admin lock."""
+    routes), and its ``finally`` releases the reservation AND the admin lock.
+
+    It is also the clean-suspension half of a distinction the Codex review of
+    PR #3901 asked for: a cancellation taken before the commit point must not
+    read like one re-raised after a successful commit
+    (``test_ceiling_firing_mid_commit_reports_the_commit_as_durable``), and
+    neither may claim the operation wrote nothing -- a multi-step flow
+    (``_merge_entities_impl`` commits the merged node before it removes the
+    sources) can have committed at an earlier step even when the ceiling
+    catches it at a clean await."""
     monkeypatch.setattr(rag, "admin_write_max_hold_seconds", 0.2)
     status, _lock = await _status_handles(rag)
 
@@ -569,11 +578,15 @@ async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch)
     finally:
         rag.entities_vdb.upsert = original
 
-    assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in message
     # Stopped at a suspension point: no commit was in flight, and the message
-    # says that rather than the mid-commit wording (see the two tests below).
-    assert "No commit of its own is known to have completed" in str(excinfo.value)
-    assert "IS durable" not in str(excinfo.value)
+    # says that rather than the mid-commit wording.
+    assert "No commit of its own is known to have completed" in message
+    assert "IS durable" not in message
+    # It does not tell the caller the operation is undone either.
+    assert "Re-read the entity or relation before retrying" in message
+    assert "still durable" in message
     assert status["busy"] is False and status["busy_owner"] is None
     # The admin lock is free again: the next admin write goes straight through.
     async with asyncio.timeout(5):
@@ -862,14 +875,27 @@ async def test_ainsert_custom_kg_takes_both_gates(rag):
 async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
     rag, monkeypatch
 ):
-    """The entity IS on disk afterwards, and the error says so.
+    """The entity IS on disk afterwards, the error says so, and the admin lock
+    was held past the ceiling for the whole commit.
 
     Verified red before the fix: the ceiling used to rewrite every expiry
     cancellation into the same "was aborted" message.
+
+    The lock hold matters beyond bookkeeping: any check that reasons "the
+    ceiling releases the lock, so waiting longer than the ceiling is
+    pointless" is wrong, and would push operators to shorten
+    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`` into avoidable 409s. The admin lock
+    is taken BEFORE the ceiling starts and released AFTER it ends, and
+    ``commit_in_storage_io`` finishes an in-flight commit before letting the
+    cancellation through. The caller sees the error only once the gate's
+    ``finally`` has released both halves, so the elapsed time measured here
+    IS the lock hold.
     """
     from lightrag.kg.networkx_impl import NetworkXStorage
 
-    monkeypatch.setattr(rag, "admin_write_max_hold_seconds", 0.3)
+    # The commit outlasts the ceiling twice over, so the timer fires inside it.
+    ceiling, commit_work = 0.3, 0.6
+    monkeypatch.setattr(rag, "admin_write_max_hold_seconds", ceiling)
     status, _lock = await _status_handles(rag)
     graphml_file = rag.chunk_entity_relation_graph._graphml_xml_file
     original_write = NetworkXStorage.write_nx_graph
@@ -877,13 +903,15 @@ async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
     def _slow_write(graph, file_name, workspace="_"):
         # Runs in the storage-IO pool, so the ceiling's timer still fires: the
         # cancellation lands while commit_in_storage_io is deferring it.
-        time.sleep(1.0)
+        time.sleep(commit_work)
         return original_write(graph, file_name, workspace)
 
     monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(_slow_write))
 
+    started = time.perf_counter()
     with pytest.raises(AdminWriteHoldExceededError) as excinfo:
         await _create_alice(rag)
+    held = time.perf_counter() - started
 
     message = str(excinfo.value)
     assert "IS durable" in message
@@ -894,6 +922,10 @@ async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
     on_disk = NetworkXStorage.load_nx_graph(graphml_file)
     assert on_disk is not None and on_disk.has_node("Alice")
 
+    # The lock outlived the ceiling by the in-flight commit, not by noise.
+    assert held > ceiling
+    assert held >= commit_work
+
     # Both gates still released, which is what the ceiling exists for.
     assert status["busy"] is False and status["busy_owner"] is None
     async with asyncio.timeout(5):
@@ -901,51 +933,6 @@ async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
             ["admin"], namespace=f"{rag.workspace}:GraphAdmin"
         ):
             pass
-
-
-@pytest.mark.asyncio
-async def test_the_two_ceiling_messages_are_distinguishable(rag, monkeypatch):
-    """Codex review of PR #3901: the timeout must distinguish a cancellation
-    taken before the commit point from one re-raised after a successful commit,
-    instead of reporting both as aborted. Neither message may claim the
-    operation wrote nothing -- a multi-step flow (``_merge_entities_impl``
-    commits the merged node before it removes the sources) can have committed at
-    an earlier step even when the ceiling catches it at a clean await."""
-    from lightrag.kg.networkx_impl import NetworkXStorage
-
-    monkeypatch.setattr(rag, "admin_write_max_hold_seconds", 0.3)
-
-    # (a) stopped at an ordinary suspension point: the embedding round-trip.
-    never = asyncio.Event()
-    original_upsert = rag.entities_vdb.upsert
-    rag.entities_vdb.upsert = lambda data: never.wait()
-    try:
-        with pytest.raises(AdminWriteHoldExceededError) as clean:
-            await _create_alice(rag)
-    finally:
-        rag.entities_vdb.upsert = original_upsert
-
-    # (b) stopped inside the commit region.
-    original_write = NetworkXStorage.write_nx_graph
-
-    def _slow_write(graph, file_name, workspace="_"):
-        time.sleep(1.0)
-        return original_write(graph, file_name, workspace)
-
-    monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(_slow_write))
-    with pytest.raises(AdminWriteHoldExceededError) as deferred:
-        await rag.acreate_entity(
-            "Bob", {"description": "another person", "entity_type": "PERSON"}
-        )
-
-    clean_text, deferred_text = str(clean.value), str(deferred.value)
-    assert clean_text != deferred_text
-    assert "No commit of its own is known to have completed" in clean_text
-    assert "IS durable" in deferred_text
-    # Neither one tells the caller the operation is undone.
-    for text in (clean_text, deferred_text):
-        assert "Re-read the entity or relation before retrying" in text
-        assert "still durable" in text or "IS durable" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1205,9 +1192,10 @@ async def test_a_failed_write_under_the_ceiling_is_not_reported_as_durable(
     graphml_file = graph_store._graphml_xml_file
 
     def _slow_failing_write(graph, file_name, workspace="_"):
-        # Slow enough for the ceiling to fire mid-write, then fail: the cancel
-        # is withheld to the end of the region and wins over this error.
-        time.sleep(1.0)
+        # Slow enough for the ceiling to fire mid-write (twice the 0.3 s
+        # ceiling), then fail: the cancel is withheld to the end of the region
+        # and wins over this error.
+        time.sleep(0.6)
         raise OSError(28, "No space left on device")
 
     original_write = NetworkXStorage.write_nx_graph
@@ -1468,9 +1456,9 @@ def test_an_acquire_timeout_above_the_ceiling_does_not_warn(tmp_path, monkeypatc
     An earlier revision warned here, reasoning that the ceiling releases the
     lock first. It does not: the lock is taken before the ceiling starts and
     released after it ends, and a cancellation-resistant commit runs past the
-    expiry (see ``test_the_admin_lock_is_held_past_the_ceiling``). The warning
-    pushed operators toward shorter timeouts and avoidable 409s, so it is gone
-    -- and this pins that it stays gone.
+    expiry (see ``test_ceiling_firing_mid_commit_reports_the_commit_as_durable``).
+    The warning pushed operators toward shorter timeouts and avoidable 409s, so
+    it is gone -- and this pins that it stays gone.
     """
     monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT", 900.0)
 
@@ -1490,44 +1478,6 @@ def test_an_acquire_timeout_above_the_ceiling_does_not_warn(tmp_path, monkeypatc
     ]
     assert instance._admin_write_gate_required() is True
     assert instance.admin_write_max_hold_seconds < 900.0
-
-
-async def test_the_admin_lock_is_held_past_the_ceiling(rag, monkeypatch):
-    """The ceiling does NOT bound the admin lock, and the gap can be large.
-
-    Why this matters beyond bookkeeping: any check that reasons "the ceiling
-    releases the lock, so waiting longer than the ceiling is pointless" is
-    wrong, and would push operators to shorten
-    ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT`` into avoidable 409s.
-
-    Two structural reasons, both visible in ``_admin_write_gate``: the admin
-    lock is taken BEFORE the ceiling starts (the ``pipeline_status`` fetch and
-    the reservation acquire run inside the lock, outside the ceiling) and
-    released AFTER it ends, and ``commit_in_storage_io`` finishes an in-flight
-    commit before letting the cancellation through. The caller sees the error
-    only once the gate's ``finally`` has released both halves, so the elapsed
-    time measured here IS the lock hold.
-    """
-    ceiling, commit_work = 0.2, 1.0
-    monkeypatch.setattr(rag, "admin_write_max_hold_seconds", ceiling)
-
-    graph = rag.chunk_entity_relation_graph
-    real_write = type(graph).write_nx_graph
-
-    def slow_write(nx_graph, file_name, workspace="_"):
-        time.sleep(commit_work)
-        return real_write(nx_graph, file_name, workspace)
-
-    monkeypatch.setattr(type(graph), "write_nx_graph", staticmethod(slow_write))
-
-    started = time.perf_counter()
-    with pytest.raises(AdminWriteHoldExceededError):
-        await _create_alice(rag)
-    held = time.perf_counter() - started
-
-    assert held > ceiling
-    # The overrun is the in-flight commit, not scheduling noise.
-    assert held >= commit_work
 
 
 def test_the_hold_ceiling_accessor_never_returns_none(tmp_path):

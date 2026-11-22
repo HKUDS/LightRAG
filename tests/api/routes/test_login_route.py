@@ -19,6 +19,8 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
+from tests.api._cheap_bcrypt import CHEAP_DUMMY_SPEC
+
 
 pytestmark = pytest.mark.offline
 
@@ -123,6 +125,15 @@ def _build_server(monkeypatch):
     )
 
     app = lightrag_server.create_app(args)
+    # The accounts here are plaintext, so the only bcrypt a login runs is the
+    # timing-equalizing dummy: a cost-4 one keeps every path and call count.
+    # Patched where AuthHandler reads it: other tests reload lightrag.api.auth,
+    # so sys.modules may hold a newer module than the one the handler uses.
+    monkeypatch.setitem(
+        type(lightrag_server.auth_handler).verify_password.__globals__,
+        "_DUMMY_VERIFY_SPEC",
+        CHEAP_DUMMY_SPEC,
+    )
     return lightrag_server, app
 
 
