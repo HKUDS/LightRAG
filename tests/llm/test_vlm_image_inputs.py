@@ -82,6 +82,26 @@ def test_declared_mime_type_is_lowercased(item):
     assert image_cache_metadata([image]) == image_cache_metadata([canonical])
 
 
+@pytest.mark.parametrize(
+    "item",
+    [
+        f"data:image/jpg;base64,{_b64(JPEG_BYTES)}",
+        f"DATA:IMAGE/JPG;BASE64,{_b64(JPEG_BYTES)}",
+        {"base64": _b64(JPEG_BYTES), "mime_type": "image/jpg"},
+        {"base64": _b64(JPEG_BYTES), "mime_type": "Image/JPG"},
+    ],
+)
+def test_declared_mime_type_alias_is_canonicalized(item):
+    # "image/jpg" is a common but non-standard alias for the IANA-registered
+    # "image/jpeg": browsers and some tooling emit it, but Anthropic's
+    # media_type and Bedrock's image.format fields only accept the
+    # canonical "image/jpeg" / "jpeg" and reject "image/jpg" outright.
+    [image] = normalize_image_inputs([item])
+    [canonical] = normalize_image_inputs([f"data:image/jpeg;base64,{_b64(JPEG_BYTES)}"])
+    assert image.mime_type == "image/jpeg"
+    assert image_cache_metadata([image]) == image_cache_metadata([canonical])
+
+
 @pytest.mark.parametrize("marker", ["base65", "baſe64"])
 def test_data_url_rejects_invalid_or_non_ascii_markers(marker):
     with pytest.raises(ValueError):

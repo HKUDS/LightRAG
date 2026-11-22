@@ -12,7 +12,10 @@ element may be:
 
 A declared MIME type (from a data URL or the dict's ``mime_type``) is
 lowercased, as MIME types are case-insensitive while provider APIs and the
-cache key expect the canonical lowercase form.
+cache key expect the canonical lowercase form. A declared type that is a
+known non-standard alias (``image/jpg``) is further canonicalized
+(``image/jpeg``), since the Anthropic and Bedrock bindings pass the type
+straight into a provider enum that rejects the alias.
 
 The provider-specific binding code converts the normalized result to its own
 content-block format. The VLM pipeline uses :func:`image_cache_metadata` for
@@ -86,6 +89,18 @@ def _detect_mime(raw: bytes) -> str:
     return "image/png"
 
 
+# Non-standard MIME aliases that real-world callers declare (via a data URL
+# or the dict's mime_type) mapped to the canonical IANA type. "image/jpg" is
+# produced by extension-based guessers and some browsers/tools, but it is
+# not one of the four types Anthropic's media_type and Bedrock's
+# image.format enums accept, so a declared alias must be canonicalized the
+# same way :func:`_detect_mime`'s sniffing already always yields the
+# canonical form.
+_MIME_ALIASES = {
+    "image/jpg": "image/jpeg",
+}
+
+
 def _decode_base64(data: str) -> bytes:
     cleaned = re.sub(r"\s+", "", data)
     try:
@@ -129,6 +144,7 @@ def normalize_image_inputs(
         mime_type = item.get("mime_type") or _detect_mime(raw_bytes)
         if isinstance(mime_type, str):
             mime_type = mime_type.lower()
+            mime_type = _MIME_ALIASES.get(mime_type, mime_type)
         sha = hashlib.sha256(raw_bytes).hexdigest()
         clean_b64 = base64.b64encode(raw_bytes).decode("ascii")
         dims = _dimensions_from_bytes(raw_bytes)
