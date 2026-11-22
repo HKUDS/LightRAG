@@ -1,11 +1,11 @@
-"""Shared subprocess probe for "empty env var must not crash import" tests.
+"""Shared subprocess probe for env-backed dataclass default tests.
 
 Env-backed dataclass defaults are evaluated once, at import, so each check
 needs a fresh interpreter. Spawning one per (variable, value) pair cost
 ~1.3s apiece and dominated the offline suite's slowest-tests list. Instead,
-one interpreter per blank value sets EVERY probed variable to it and reports
+one interpreter per value sets EVERY probed variable to it and reports
 every default at once; results are cached per value, so the whole family of
-tests spawns one process per distinct blank value.
+tests spawns one process per distinct value.
 
 Setting all variables together keeps each assertion meaningful: every field
 reads only its own variable, and a crash in any of them fails the import
@@ -30,8 +30,14 @@ PROBED_FIELDS: dict[str, tuple[str, str, str]] = {
     "MAX_ENTITY_TOKENS": ("lightrag.base", "QueryParam", "max_entity_tokens"),
     "MAX_RELATION_TOKENS": ("lightrag.base", "QueryParam", "max_relation_tokens"),
     "MAX_TOTAL_TOKENS": ("lightrag.base", "QueryParam", "max_total_tokens"),
+    "RERANK_BY_DEFAULT": ("lightrag.base", "QueryParam", "enable_rerank"),
     "EMBEDDING_BATCH_NUM": ("lightrag.lightrag", "LightRAG", "embedding_batch_num"),
     "LLM_TIMEOUT": ("lightrag.lightrag", "LightRAG", "default_llm_timeout"),
+    "ENTITY_EXTRACTION_USE_JSON": (
+        "lightrag.lightrag",
+        "LightRAG",
+        "entity_extraction_use_json",
+    ),
     "COSINE_THRESHOLD": (
         "lightrag.lightrag",
         "LightRAG",
