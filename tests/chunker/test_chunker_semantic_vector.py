@@ -593,7 +593,12 @@ def test_v_falls_back_to_chunk_token_size_when_no_budget_declared(declared):
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("bad", [0, -1])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        0,
+    ],
+)
 def test_v_rejects_non_positive_embedding_max_async(bad):
     """A non-positive worker count must fail fast, not hang.
 

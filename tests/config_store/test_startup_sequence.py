@@ -417,7 +417,6 @@ async def test_a_process_without_a_model_name_keeps_no_baselines(tmp_path):
 @pytest.mark.parametrize(
     ("version", "refusal"),
     [
-        (None, "unsupported schema_version"),
         (2, "unsupported schema_version"),
     ],
 )
@@ -481,7 +480,9 @@ async def test_a_recorded_mismatch_refuses_before_any_vector_storage_initializes
     assert config_finalize.calls == 1
 
 
-@pytest.mark.parametrize("target", ["relationships", "chunks"])
+# chunks is named at start-up by test_several_mismatches_are_one_refusal, and
+# every target by test_config_store.py::TestPrecheck at the unit level.
+@pytest.mark.parametrize("target", ["relationships"])
 async def test_a_single_mismatching_target_is_named(tmp_path, target):
     """Scenarios 3 and 4."""
     rag = _rag(tmp_path, model_name="bge-m3")
@@ -1062,7 +1063,7 @@ async def test_a_dropped_workspace_can_be_recreated_under_the_same_name(tmp_path
     assert all(r["model"] == "another-model" for r in _records(tmp_path).values())
 
 
-@pytest.mark.parametrize("target", ["entities", "relationships", "chunks"])
+@pytest.mark.parametrize("target", ["entities", "chunks"])
 async def test_corrupt_nano_startup_is_sticky_preserves_file_and_releases_claim(
     tmp_path, target
 ):

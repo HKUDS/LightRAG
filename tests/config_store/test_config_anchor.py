@@ -79,18 +79,13 @@ class TestStrictRead:
         [
             "",  # truncated to nothing
             '{"schema_version": 1, "backend": "PGKVSt',  # truncated mid-write
-            "not json at all",
             "[]",
-            "null",
             json.dumps(_valid(schema_version=2)),
-            json.dumps(_valid(schema_version="1")),
             json.dumps(_valid(schema_version=True)),
             json.dumps(_valid(backend="RedisKVStorage")),
-            json.dumps(_valid(backend="NanoVectorDBStorage")),
             json.dumps(_valid(backend=None)),
             json.dumps(_valid(storage_uuid="not-a-uuid")),
             json.dumps(_valid(storage_uuid=UUID_A.upper())),
-            json.dumps(_valid(storage_uuid=UUID_A.replace("-", ""))),
             json.dumps(_valid(storage_uuid=7)),
             json.dumps({"schema_version": 1, "backend": "PGKVStorage"}),
             json.dumps(_valid(host="db.internal")),

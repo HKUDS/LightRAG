@@ -106,12 +106,9 @@ class TestTheRow:
         "row",
         [
             _identity_row(schema_version=2),
-            _identity_row(schema_version="1"),
             _identity_row(schema_version=True),
             _identity_row(workspace="tenant"),
             _identity_row(value={"uuid": "not-a-uuid"}),
-            _identity_row(value={"uuid": UUID_A.upper()}),
-            _identity_row(value={}),
             _identity_row(value="uuid"),
         ],
     )

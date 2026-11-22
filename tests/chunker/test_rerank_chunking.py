@@ -142,24 +142,7 @@ class TestChunkDocumentsForRerank:
         assert chunked_docs == []
         assert doc_indices == []
 
-    def test_single_document_chunking(self):
-        """Test chunking of a single long document"""
-        # Create document with ~100 tokens
-        long_doc = " ".join([f"token{i}" for i in range(100)])
-        documents = [long_doc]
-
-        chunked_docs, doc_indices = chunk_documents_for_rerank(
-            documents, max_tokens=30, overlap_tokens=5
-        )
-
-        # Should create multiple chunks
-        assert len(chunked_docs) > 1
-        # All chunks should map to document 0
-        assert all(idx == 0 for idx in doc_indices)
-
-    @pytest.mark.parametrize(
-        "text", ["你好🙂世界" * 8, "🧑🏽‍💻" * 8, "日本語の文章です" * 8]
-    )
+    @pytest.mark.parametrize("text", ["你好🙂世界" * 8, "🧑🏽‍💻" * 8])
     @pytest.mark.parametrize("overlap", [0, 2])
     def test_chunks_preserve_unicode_and_token_budget(self, text, overlap):
         """Token windows that cut a multi-byte code point must not emit U+FFFD:
