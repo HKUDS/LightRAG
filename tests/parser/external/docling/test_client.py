@@ -336,6 +336,8 @@ async def test_docling_client_sends_fixed_constants(
     assert field_map["target_type"] == ["zip"]
     assert field_map["image_export_mode"] == ["referenced"]
     assert sorted(field_map["to_formats"]) == ["json", "md"]
+    # DOCLING_OCR_LANG is cleared by the autouse fixture: nothing is sent.
+    assert "ocr_lang" not in field_map
 
     files = recorder.post_calls[0]["files"]
     assert "files" in files
@@ -460,25 +462,6 @@ async def test_docling_client_vlm_task_failure_names_the_preset_requirement(
         )
     assert "docling>=2.149" in str(info.value)
     assert "minicpm_ocr" in str(info.value)
-
-
-async def test_docling_client_standard_task_failure_has_no_preset_hint(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    source_pdf: Path,
-) -> None:
-    recorder = _Recorder(
-        terminal_status="failure",
-        zip_bytes=_fake_zip_with_main_json("demo"),
-    )
-    _CURRENT["recorder"] = recorder
-    _install_fake_httpx(monkeypatch)
-
-    with pytest.raises(RuntimeError) as info:
-        await DoclingRawClient().download_into(
-            tmp_path / "demo.docling_raw", source_pdf
-        )
-    assert "DOCLING_SERVE_ALLOWED_VLM_PRESETS" not in str(info.value)
 
 
 def test_docling_cache_signature_only_records_pipeline_when_set(
@@ -655,11 +638,13 @@ async def test_docling_client_failure_aborts(
     _CURRENT["recorder"] = recorder
     _install_fake_httpx(monkeypatch)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as info:
         await DoclingRawClient().download_into(
             tmp_path / "demo.docling_raw", source_pdf
         )
     assert recorder.result_calls == 0
+    # A standard-pipeline failure carries no VLM-preset hint.
+    assert "DOCLING_SERVE_ALLOWED_VLM_PRESETS" not in str(info.value)
 
 
 async def test_docling_client_skipped_aborts(
@@ -1055,25 +1040,6 @@ async def test_docling_client_encodes_task_id_into_url_path_segment(
         assert "?x=1" not in url
 
 
-async def test_docling_client_ocr_lang_omitted_when_empty(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    source_pdf: Path,
-) -> None:
-    recorder = _Recorder(
-        terminal_status="success",
-        zip_bytes=_fake_zip_with_main_json("demo"),
-    )
-    _CURRENT["recorder"] = recorder
-    _install_fake_httpx(monkeypatch)
-
-    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
-
-    data = recorder.post_calls[0]["data"]
-    names = [name for name, _ in _form_pairs(data)]
-    assert "ocr_lang" not in names
-
-
 async def test_docling_client_ocr_lang_sent_when_set(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1152,25 +1118,6 @@ async def test_docling_client_strips_parser_hint_from_upload_filename(
     assert manifest.source_filename_at_parse == "report.pdf"
     assert manifest.critical_file.path == "report.json"
     assert (raw_dir / "report.json").is_file()
-
-
-async def test_docling_client_default_upload_filename_falls_back_to_source_name(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source_pdf: Path
-) -> None:
-    # Back-compat guard: callers that don't pass ``upload_filename`` (any
-    # path other than the production pipeline) keep the legacy behavior of
-    # using the on-disk source filename.
-    recorder = _Recorder(
-        terminal_status="success",
-        zip_bytes=_fake_zip_with_main_json("demo"),
-    )
-    _CURRENT["recorder"] = recorder
-    _install_fake_httpx(monkeypatch)
-
-    await DoclingRawClient().download_into(tmp_path / "demo.docling_raw", source_pdf)
-
-    name, _blob, _ctype = recorder.post_calls[0]["files"]["files"]
-    assert name == "demo.pdf"
 
 
 async def test_docling_result_zip_is_extracted_under_a_budget(

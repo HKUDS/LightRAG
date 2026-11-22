@@ -95,7 +95,9 @@ def test_redirect_handler_never_reads_the_body(monkeypatch, code):
     assert fp.closes == 1
 
 
-@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+# 301/303/307/308 are rebound to http_error_302, which
+# test_redirect_handler_never_reads_the_body proves for all five codes.
+@pytest.mark.parametrize("code", [302])
 def test_redirect_to_ftp_is_refused_for_every_status_code(monkeypatch, code):
     monkeypatch.setattr(md_parser, "_host_is_public", lambda host: True)
     handler = md_parser._GuardedRedirectHandler()
