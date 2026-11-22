@@ -3,7 +3,9 @@
 Descriptions extracted from tables often hold a literal ``|``. Written into a
 Markdown table row unescaped, it ends the cell early, so the rest of the value
 spills into an extra column that renderers drop. A line break ends the row,
-and the ``<SEP>`` joining merged source IDs renders as an unknown HTML tag.
+the ``<SEP>`` joining merged source IDs renders as an unknown HTML tag, a
+stored backslash can cancel a pipe's escape, and a backtick opens a code span
+in which the escaped ``<`` would show as ``&lt;``.
 """
 
 from __future__ import annotations
@@ -20,30 +22,62 @@ from tests.utils._export_fakes import NullVdb, make_networkx_storage
 
 pytestmark = pytest.mark.offline
 
+_RELATIONSHIP = {"__id__": "rel-1", "content": "net | gross"}
+
 
 class _VdbWithClientStorage(NullVdb):
     """Feeds the raw VectorDB Relationships section (FaissVectorDBStorage shape)."""
 
     @property
     def client_storage(self) -> dict[str, Any]:
-        return {"data": [{"__id__": "rel-1", "content": "net | gross"}]}
+        return {"data": [dict(_RELATIONSHIP)]}
 
 
 def _cells(row: str) -> list[str]:
-    """Split a Markdown table row on its unescaped pipes."""
-    return [
-        cell.strip().replace("\\|", "|")
-        for cell in re.split(r"(?<!\\)\|", row.strip())[1:-1]
-    ]
+    """Split a row the way a backslash-parity renderer does, then decode.
+
+    A pipe ends a cell unless an odd number of backslashes precedes it. An
+    unescaped backtick (it would open a code span, inside which nothing is
+    decoded) and a raw ``<`` other than ``<br>`` (it would open an HTML tag)
+    fail the test. Each cell is decoded back to plain text: ``\\x`` is ``x``,
+    ``&lt;`` is ``<`` and ``<br>`` is a line break.
+    """
+    cells, current, i = [], "", 0
+    body = row.strip()[1:]
+    while i < len(body):
+        char = body[i]
+        if char == "\\" and i + 1 < len(body):
+            current += char + body[i + 1]
+            i += 2
+            continue
+        assert char != "`", f"unescaped backtick opens a code span: {row!r}"
+        if char == "|":
+            cells.append(current)
+            current = ""
+        else:
+            current += char
+        i += 1
+    assert current.strip() == "", f"row does not end with a pipe: {row!r}"
+    decoded = []
+    for cell in cells:
+        assert "<" not in cell.replace("<br>", ""), f"raw HTML in cell: {row!r}"
+        text = cell.strip().replace("<br>", "\n").replace("&lt;", "<")
+        decoded.append(re.sub(r"\\(.)", r"\1", text))
+    return decoded
 
 
 @pytest.mark.asyncio
-async def test_values_stay_in_their_cells(tmp_path: Path) -> None:
+async def test_values_stay_in_their_cells_and_read_back_unchanged(
+    tmp_path: Path,
+) -> None:
     graph = nx.Graph()
     graph.add_node(
-        "REVENUE", description="Q1 | Q2 totals", source_id="chunk-1<SEP>chunk-2"
+        "REVENUE",
+        description="Q1 | Q2 totals for `List<T>`",
+        source_id="chunk-1<SEP>chunk-2",
     )
     graph.add_node("ACME\nCORP", description="vendor", source_id="chunk-3")
+    graph.add_node("A\\|B", description="path C:\\x", source_id="chunk-5")
     graph.add_edge(
         "REVENUE", "ACME\nCORP", description="reported | audited", source_id="chunk-4"
     )
@@ -67,10 +101,12 @@ async def test_values_stay_in_their_cells(tmp_path: Path) -> None:
         tables[heading] = [dict(zip(_cells(header), _cells(r))) for r in rows]
 
     entities = {r["entity_name"]: r for r in tables["## Entities"]}
-    assert set(entities) == {"REVENUE", "ACME<br>CORP"}
-    assert entities["REVENUE"]["source_id"] == "chunk-1&lt;SEP>chunk-2"
-    assert "'description': 'Q1 | Q2 totals'" in entities["REVENUE"]["graph_data"]
+    assert set(entities) == set(graph.nodes)
+    for name, row in entities.items():
+        assert row["source_id"] == graph.nodes[name]["source_id"]
+        assert row["graph_data"] == str(graph.nodes[name])
     (relation,) = tables["## Relations"]
-    assert "'description': 'reported | audited'" in relation["graph_data"]
+    edge = graph.edges["REVENUE", "ACME\nCORP"]
+    assert relation["graph_data"] == str(edge)
     (relationship,) = tables["## Relationships"]
-    assert "'content': 'net | gross'" in relationship["data"]
+    assert relationship["data"] == str(_RELATIONSHIP)
