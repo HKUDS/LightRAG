@@ -30,6 +30,7 @@ async def bedrock_endpoint(
         model = request.match_info["model"]
         requests.append(
             {
+                "model": model,
                 "body": body,
                 "session_token": request.headers.get("X-Amz-Security-Token"),
             }
@@ -98,6 +99,7 @@ async def test_server_embedding_dimension(
 
     assert result.shape == (2, dimension)
     assert len(requests) == (1 if model.startswith("cohere.") else 2)
+    assert all(r["model"] == model for r in requests)
     if "v2" in model and send_dimensions:
         assert all(r["body"]["dimensions"] == dimension for r in requests)
     else:
