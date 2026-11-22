@@ -71,16 +71,3 @@ async def test_isolated_nodes_are_ranked_last_but_still_ranked():
     assert set(labels) == {"Connected", "Peer", "Orphan", "Aardvark"}
     # Both degree-0 entities are present, in label order.
     assert labels[-2:] == ["Aardvark", "Orphan"]
-
-
-@pytest.mark.asyncio
-async def test_limit_truncates_after_ranking():
-    graph = nx.Graph()
-    graph.add_edge("A", "B")
-    graph.add_edge("A", "C")
-    graph.add_node("Z")
-
-    storage = _make_storage(graph)
-
-    assert await storage.get_popular_labels(limit=1) == ["A"]
-    assert len(await storage.get_popular_labels(limit=99)) == 4

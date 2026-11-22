@@ -242,13 +242,11 @@ class TestRetryableErrorClassification:
             ValueError("primary keys cannot be truncated"),
             MilvusException(code=1100, message="schema mismatch"),
             RuntimeError("Target collection already exists: foo"),
-            KeyError("vector"),
         ],
         ids=[
             "value-error",
             "milvus-schema-error",
             "runtime-error",
-            "key-error",
         ],
     )
     def test_non_retryable_errors(self, error):

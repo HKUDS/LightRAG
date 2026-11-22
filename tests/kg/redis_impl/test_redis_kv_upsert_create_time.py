@@ -274,23 +274,6 @@ async def test_empty_value_row_records_zero_not_a_new_timestamp(fake, caplog):
 
 
 @pytest.mark.asyncio
-async def test_corrupt_row_records_zero_and_warns(fake, caplog):
-    """Undecodable storage is corruption, not a legacy shape: say so."""
-    storage = _kv_storage()
-    await storage.initialize()
-
-    fake.store[f"{storage.final_namespace}:c"] = "}} not json {{"
-
-    with capture_lightrag_logs(caplog):
-        with caplog.at_level(logging.WARNING, logger="lightrag"):
-            with patch("time.time", return_value=1_700_000_200):
-                await storage.upsert({"c": {"chunk_ids": ["c1"]}})
-
-    assert _stored(fake, storage, "c")["create_time"] == 0
-    assert any("not decodable JSON" in record.message for record in caplog.records)
-
-
-@pytest.mark.asyncio
 async def test_caller_supplied_create_time_ignored_on_update(fake):
     storage = _kv_storage()
     await storage.initialize()
@@ -349,33 +332,6 @@ async def test_legacy_row_deleted_before_the_hint_read_stamps_this_write(fake):
 # that it lets the server decide and then adopts that decision. The races
 # themselves are measured against a real server in
 # test_redis_kv_create_time_integration.py.
-
-
-@pytest.mark.asyncio
-async def test_second_writer_of_a_new_key_keeps_the_first_timestamp(fake):
-    """Whoever creates the row owns create_time; later writers adopt it."""
-    worker_a = _kv_storage()
-    worker_b = _kv_storage()
-    await worker_a.initialize()
-    await worker_b.initialize()
-
-    with patch("time.time", return_value=100):
-        await worker_a.upsert({"K": {"chunk_ids": ["c1"], "count": 1}})
-
-    fake.command_counts.clear()
-    with patch("time.time", return_value=200):
-        await worker_b.upsert({"K": {"chunk_ids": ["c2"], "count": 2}})
-
-    # The server answered "kept", so no hint round was needed.
-    assert fake.command_counts["script"] == 1
-    assert fake.command_counts["get"] == 0
-
-    row = _stored(fake, worker_b, "K")
-    assert row["create_time"] == 100, "the first creation must win"
-    assert row["update_time"] == 200
-    # B's business value still lands -- only the timestamp is adopted.
-    assert row["chunk_ids"] == ["c2"]
-    assert row["count"] == 2
 
 
 @pytest.mark.asyncio

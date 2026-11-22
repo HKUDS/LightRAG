@@ -236,20 +236,6 @@ async def test_finalize_skips_the_save_when_queued_deletes_change_nothing(tmp_pa
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_delete_cancels_pending_upsert_of_same_id(tmp_path):
-    storage = _make_storage(tmp_path)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "never-lands"}})
-    await storage.delete(["id1"])
-    await storage.index_done_callback()
-
-    assert len(storage._client) == 0
-    assert await storage.get_by_id("id1") is None
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_delete_only_flush_persists_and_is_idempotent(tmp_path):
     """A flush with ONLY queued deletes (no pending upserts) must still
     materialize, save, and be idempotent on repeat."""

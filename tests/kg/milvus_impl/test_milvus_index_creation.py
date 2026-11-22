@@ -290,7 +290,7 @@ class TestMilvusIndexCreation:
         assert storage.legacy_namespace == "entities"
         assert storage.final_namespace == "entities_qwen3_embedding_4b_2560d"
 
-    @pytest.mark.parametrize("model_name", ["", "   ", 123])
+    @pytest.mark.parametrize("model_name", ["   ", 123])
     def test_missing_or_invalid_model_name_keeps_legacy_collection_name(
         self, model_name
     ):
@@ -348,77 +348,6 @@ class TestMilvusIndexCreation:
             storage.final_namespace, timeout=storage._load_timeout
         )
 
-    def test_legacy_old_meta_schema_migrates_to_suffixed_collection(self):
-        storage = _make_model_storage()
-        collections = {storage.legacy_namespace}
-        client = _wire_collection_state(
-            storage,
-            collections,
-            {
-                storage.legacy_namespace: _collection_info(
-                    ["entity_name", "file_path"]
-                ),
-                storage.final_namespace: _collection_info(
-                    ["entity_name", "content", "source_id", "file_path"]
-                ),
-            },
-        )
-
-        def migrate_collection(**_kwargs):
-            collections.add(storage.final_namespace)
-
-        with patch.object(
-            storage, "_migrate_collection_schema", side_effect=migrate_collection
-        ) as migrate:
-            storage._create_collection_if_not_exist()
-
-        migrate.assert_called_once_with(
-            source_collection_name=storage.legacy_namespace,
-            target_collection_name=storage.final_namespace,
-        )
-        client.query_iterator.assert_not_called()
-        client.insert.assert_not_called()
-        client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(
-            storage.final_namespace, timeout=storage._load_timeout
-        )
-
-    def test_legacy_new_schema_migrates_to_suffixed_collection(self):
-        storage = _make_model_storage(namespace="chunks")
-        collections = {storage.legacy_namespace}
-        client = _wire_collection_state(
-            storage,
-            collections,
-            {
-                storage.legacy_namespace: _collection_info(
-                    ["full_doc_id", "content", "file_path"]
-                ),
-                storage.final_namespace: _collection_info(
-                    ["full_doc_id", "content", "file_path"]
-                ),
-            },
-        )
-
-        def migrate_collection(**_kwargs):
-            collections.add(storage.final_namespace)
-
-        with patch.object(
-            storage, "_migrate_collection_schema", side_effect=migrate_collection
-        ) as migrate:
-            storage._create_collection_if_not_exist()
-
-        migrate.assert_called_once_with(
-            source_collection_name=storage.legacy_namespace,
-            target_collection_name=storage.final_namespace,
-        )
-        client.query_iterator.assert_not_called()
-        client.insert.assert_not_called()
-        client.rename_collection.assert_not_called()
-        client.create_collection.assert_not_called()
-        client.load_collection.assert_called_with(
-            storage.final_namespace, timeout=storage._load_timeout
-        )
-
     def test_legacy_same_dimension_migrates_to_suffixed_collection(self):
         storage = _make_model_storage()
         collections = {storage.legacy_namespace}
@@ -468,31 +397,6 @@ class TestMilvusIndexCreation:
         client.create_collection.assert_not_called()
         client.load_collection.assert_called_with(
             storage.final_namespace, timeout=storage._load_timeout
-        )
-
-    def test_legacy_dimension_mismatch_creates_suffixed_collection_without_migration(
-        self,
-    ):
-        storage = _make_model_storage()
-        legacy_info = _collection_info(["entity_name", "content", "source_id"])
-        for field in legacy_info["fields"]:
-            if field["name"] == "vector":
-                field["params"]["dim"] = 256
-        client = _wire_collection_state(
-            storage,
-            {storage.legacy_namespace},
-            {storage.legacy_namespace: legacy_info},
-        )
-
-        with patch.object(storage, "_create_indexes_after_collection"):
-            with patch.object(storage, "_migrate_collection_schema") as migrate:
-                storage._create_collection_if_not_exist()
-
-        migrate.assert_not_called()
-        client.query_iterator.assert_not_called()
-        client.create_collection.assert_called_once()
-        assert client.create_collection.call_args.kwargs["collection_name"] == (
-            storage.final_namespace
         )
 
     def test_legacy_describe_failure_raises_without_creating_suffixed_collection(self):

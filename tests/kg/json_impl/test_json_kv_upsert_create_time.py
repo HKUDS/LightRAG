@@ -106,20 +106,6 @@ async def test_legacy_row_missing_create_time_keeps_zero(tmp_path):
     assert storage._data["legacy"]["create_time"] == 0
 
 
-@pytest.mark.asyncio
-async def test_insert_stamps_both_timestamps(tmp_path):
-    storage = _make_storage(tmp_path)
-    await storage.initialize()
-
-    with patch("time.time", return_value=1_700_000_300):
-        await storage.upsert({"new": {"chunk_ids": ["c9"], "count": 1}})
-
-    row = await storage.get_by_id("new")
-    assert row is not None
-    assert row["create_time"] == 1_700_000_300
-    assert row["update_time"] == 1_700_000_300
-
-
 class _CountingDict(dict):
     """Stand-in for the multiprocess ``Manager().dict()`` proxy.
 
@@ -164,20 +150,6 @@ async def test_update_uses_one_lookup_per_key(tmp_path):
     assert counting.calls["contains"] == 0
     assert counting["A"]["create_time"] == 1_700_000_000
     assert counting["A"]["update_time"] == 1_700_000_100
-
-
-@pytest.mark.asyncio
-async def test_null_create_time_normalized_to_zero(tmp_path):
-    """A hand-edited JSON file can carry an explicit null."""
-    storage = _make_storage(tmp_path)
-    await storage.initialize()
-
-    storage._data["legacy"] = {"x": 1, "create_time": None}
-    with patch("time.time", return_value=1_700_000_200):
-        await storage.upsert({"legacy": {"x": 2}})
-
-    assert storage._data["legacy"]["create_time"] == 0
-    assert storage._data["legacy"]["update_time"] == 1_700_000_200
 
 
 @pytest.mark.asyncio

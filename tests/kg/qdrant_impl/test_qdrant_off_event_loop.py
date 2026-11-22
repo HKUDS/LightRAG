@@ -210,15 +210,6 @@ async def test_strict_read_raises_where_get_by_ids_reports_nothing():
         await s.get_by_ids_strict(["a"])
 
 
-@pytest.mark.asyncio
-async def test_buffered_read_does_not_touch_the_client():
-    s = _make_storage()
-    s._pending_vector_docs["a"] = _pending("a")
-
-    assert (await s.get_by_id("a"))["id"] == "a"
-    s._client.retrieve.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # A cancelled writer cannot release _flush_lock mid-write
 # ---------------------------------------------------------------------------

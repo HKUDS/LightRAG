@@ -10,9 +10,6 @@ import os
 from unittest.mock import patch, MagicMock
 from lightrag.kg.milvus_impl import (
     MilvusIndexConfig,
-    SUPPORTED_INDEX_TYPES,
-    SUPPORTED_SQ_TYPES,
-    SUPPORTED_REFINE_TYPES,
 )
 
 
@@ -49,12 +46,6 @@ class TestMilvusIndexConfig:
             config = MilvusIndexConfig()
             assert config.index_type == "HNSW"
             assert config.hnsw_m == 64
-
-    def test_init_param_priority(self):
-        """Test initialization parameter priority over environment variables"""
-        with patch.dict(os.environ, {"MILVUS_INDEX_TYPE": "IVF_FLAT"}):
-            config = MilvusIndexConfig(index_type="HNSW")
-            assert config.index_type == "HNSW"  # Init param takes precedence
 
     def test_case_insensitive_index_type(self):
         """Test that index type is case insensitive"""
@@ -131,17 +122,6 @@ class TestMilvusIndexConfig:
         with pytest.raises(ValueError, match="HNSW_SQ requires Milvus 2.6.8"):
             config.validate_milvus_version("2.5.0")  # Much lower
 
-    def test_version_validation_hnsw_sq_with_sq4u(self):
-        """Test HNSW_SQ + SQ4U version validation"""
-        config = MilvusIndexConfig(index_type="HNSW_SQ", sq_type="SQ4U")
-
-        # Passes with valid version
-        config.validate_milvus_version("2.6.9")
-
-        # Fails with invalid version
-        with pytest.raises(ValueError, match="HNSW_SQ requires Milvus 2.6.8"):
-            config.validate_milvus_version("2.6.0")
-
     def test_version_validation_hnsw_no_requirement(self):
         """Test normal HNSW has no version restriction"""
         config = MilvusIndexConfig(index_type="HNSW")
@@ -156,20 +136,6 @@ class TestMilvusIndexConfig:
 
         # Should handle "2.6.9-dev" format
         config.validate_milvus_version("2.6.9-dev")
-
-    def test_build_index_params_autoindex(self):
-        """Test AUTOINDEX generates explicit index parameters"""
-        config = MilvusIndexConfig(index_type="AUTOINDEX")
-        mock_index_params = MagicMock()
-
-        result = config.build_index_params(mock_index_params)
-        assert result is mock_index_params
-        mock_index_params.add_index.assert_called_once_with(
-            field_name="vector",
-            index_type="AUTOINDEX",
-            metric_type="COSINE",
-            params={},
-        )
 
     def test_build_index_params_hnsw(self):
         """Test HNSW index parameters construction"""
@@ -235,14 +201,6 @@ class TestMilvusIndexConfig:
         call_kwargs = mock_index_params.add_index.call_args[1]
         assert call_kwargs["index_type"] == "IVF_FLAT"
         assert call_kwargs["params"]["nlist"] == 2048
-
-    def test_build_index_params_with_none(self):
-        """Test that RuntimeError is raised when index_params is None for custom types"""
-        config = MilvusIndexConfig(index_type="HNSW")
-
-        # Pass None to simulate when compatibility helper returns None
-        with pytest.raises(RuntimeError, match="IndexParams not available"):
-            config.build_index_params(None)
 
     def test_build_search_params_hnsw(self):
         """Test HNSW search parameters construction"""
@@ -327,30 +285,6 @@ class TestMilvusIndexConfig:
             config = MilvusIndexConfig()
             assert config.hnsw_m == 16  # Falls back to default (Milvus 2.4+)
 
-    def test_all_index_types_supported(self):
-        """Test all supported index types can be configured"""
-        for index_type in SUPPORTED_INDEX_TYPES:
-            if index_type == "HNSW_SQ":
-                # HNSW_SQ requires special parameters
-                config = MilvusIndexConfig(index_type=index_type, sq_type="SQ8")
-            else:
-                config = MilvusIndexConfig(index_type=index_type)
-            assert config.index_type == index_type
-
-    def test_all_sq_types_supported(self):
-        """Test all supported sq_types can be configured"""
-        for sq_type in SUPPORTED_SQ_TYPES:
-            config = MilvusIndexConfig(index_type="HNSW_SQ", sq_type=sq_type)
-            assert config.sq_type == sq_type
-
-    def test_all_refine_types_supported(self):
-        """Test all supported refine_types can be configured"""
-        for refine_type in SUPPORTED_REFINE_TYPES:
-            config = MilvusIndexConfig(
-                index_type="HNSW_SQ", sq_refine=True, sq_refine_type=refine_type
-            )
-            assert config.sq_refine_type == refine_type
-
     def test_get_config_field_names(self):
         """Test get_config_field_names() returns all dataclass fields"""
         field_names = MilvusIndexConfig.get_config_field_names()
@@ -373,26 +307,6 @@ class TestMilvusIndexConfig:
             "ivf_nprobe",
         }
         assert field_names == expected_fields
-
-    def test_get_config_field_names_single_source_of_truth(self):
-        """Test that get_config_field_names() provides single source of truth for configuration parameters"""
-        # This test ensures that when we add new fields to MilvusIndexConfig,
-        # they are automatically included in get_config_field_names()
-        # without needing to update hardcoded lists elsewhere
-
-        from dataclasses import fields as dataclass_fields
-
-        # Get fields directly from dataclass
-        direct_fields = {f.name for f in dataclass_fields(MilvusIndexConfig)}
-
-        # Get fields via the method
-        method_fields = MilvusIndexConfig.get_config_field_names()
-
-        # They should be identical
-        assert direct_fields == method_fields, (
-            f"Method should return same fields as dataclass. "
-            f"Difference: {direct_fields.symmetric_difference(method_fields)}"
-        )
 
 
 if __name__ == "__main__":

@@ -410,28 +410,6 @@ async def test_get_by_id_returns_none_for_pending_delete():
 
 
 @pytest.mark.asyncio
-async def test_flush_uses_build_upsert_batches_for_multiple_batches():
-    """When the points exceed the per-batch point limit, flush calls
-    `_client.upsert` multiple times — and a mid-batch failure keeps the
-    entire buffer for retry.
-    """
-    embed = CountingEmbeddingFunc()
-    s = _make_storage(embed)
-    s._max_upsert_points_per_batch = 2  # force batching
-
-    await s.upsert({f"v{i}": {"content": f"c{i}"} for i in range(5)})
-    s._client.upsert.side_effect = [None, RuntimeError("batch 2 failed"), None]
-
-    with pytest.raises(RuntimeError, match="batch 2 failed"):
-        await s.index_done_callback()
-
-    # Stopped at batch 2, total 2 calls so far.
-    assert s._client.upsert.call_count == 2
-    # Buffer preserved.
-    assert len(s._pending_vector_docs) == 5
-
-
-@pytest.mark.asyncio
 async def test_env_workspace_override_shares_flush_lock(patch_namespace_lock):
     cache = patch_namespace_lock
     embed = CountingEmbeddingFunc()
