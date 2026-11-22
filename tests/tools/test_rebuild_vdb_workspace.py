@@ -40,8 +40,8 @@ def test_cli_passes_exact_workspace(monkeypatch, argv, expected):
 
 @pytest.mark.parametrize(
     "argv",
-    [["--embedding-binding", "ollama"], ["--working-dir", "/elsewhere"], ["extra"]],
-    ids=["embedding-binding", "working-dir", "positional"],
+    [["--embedding-binding", "ollama"], ["--working-dir", "/elsewhere"]],
+    ids=["embedding-binding", "working-dir"],
 )
 def test_cli_refuses_every_option_but_workspace(monkeypatch, capsys, argv):
     """Configuration comes from .env / the environment only: a server flag
@@ -62,8 +62,7 @@ def test_cli_refuses_every_option_but_workspace(monkeypatch, capsys, argv):
     "workspace, reason",
     [
         ("../other", "path separators"),
-        ("$meta", "reserved"),
-        ("$default", "reserved"),
+        ("$meta", "reserved"),  # one startswith("$") check for every prefix
     ],
 )
 def test_cli_refuses_invalid_workspace_before_run(

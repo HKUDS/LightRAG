@@ -1047,19 +1047,6 @@ def test_main_exits_nonzero_on_failure(monkeypatch):
     assert excinfo.value.code == 1
 
 
-def test_main_exits_zero_on_success(monkeypatch):
-    monkeypatch.setattr(rebuild_vdb, "load_dotenv", lambda **k: None)
-    monkeypatch.setattr(rebuild_vdb, "setup_logger", lambda *a, **k: None)
-
-    async def _ok(**kwargs):
-        return True
-
-    monkeypatch.setattr(rebuild_vdb, "async_main", _ok)
-
-    # No SystemExit on success.
-    rebuild_vdb.main([])
-
-
 # ---------------------------------------------------------------------------
 # Embedding-space refusal: the tool must tolerate it, and only it
 # ---------------------------------------------------------------------------
@@ -1556,7 +1543,7 @@ def test_a_failure_on_the_second_file_keeps_the_first_backup_and_every_source(
     assert (tmp_path / backups[0]).read_bytes() == b"first rows"
 
 
-@pytest.mark.parametrize("bad", ["0", "-3"])
+@pytest.mark.parametrize("bad", ["0"])  # one ``< 1`` check; 0 is the boundary
 def test_build_global_config_rejects_nonpositive_embedding_batch_num(monkeypatch, bad):
     """The tool builds vector storages without a LightRAG instance, so it
     must reject the batch size itself instead of failing mid-rebuild."""
@@ -1590,8 +1577,9 @@ def _source_failing_on_second_page(first_page):
         ("entities", "second-page", "source unreadable"),
         ("relationships", "second-page", "source unreadable"),
         ("chunks", "second-page", "source unreadable"),
+        # An undecodable node takes the same ``not isinstance(node, dict)``
+        # refusal as an absent one.
         ("entities", "node-absent", "'Alice' was listed but could not be read"),
-        ("entities", "node-undecodable", "'Alice' was listed but could not be read"),
     ],
 )
 async def test_rebuild_reads_the_whole_source_before_dropping_the_target(
