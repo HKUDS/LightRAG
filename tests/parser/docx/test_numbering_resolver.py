@@ -384,17 +384,13 @@ def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text)
             assert label == lvl_text.replace("%1", letters)
 
 
-# Both letter formats share ``_to_alpha``'s domain check: every count and
-# both start sources run on lowerLetter, and upperLetter keeps one count per
-# start source.
+# The start source only picks the counter before the shared range and
+# ``_to_alpha`` checks: every count on lowerLetter from the abstract start,
+# plus one case for the override source and one for upperLetter.
 @pytest.mark.parametrize(
     ("num_fmt", "count", "override"),
-    [
-        ("lowerLetter", count, override)
-        for count in (-1, 0, 79, 2147483647)
-        for override in (False, True)
-    ]
-    + [("upperLetter", 79, override) for override in (False, True)],
+    [("lowerLetter", count, False) for count in (-1, 0, 79, 2147483647)]
+    + [("lowerLetter", 79, True), ("upperLetter", 79, False)],
 )
 def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
     """Every count here is outside ``_to_alpha``'s 1-78 domain — below it as well
