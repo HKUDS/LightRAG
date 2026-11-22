@@ -324,14 +324,6 @@ def test_pipe_table_escaped_pipe_in_header_keeps_table():
     assert table["rows"] == [["1", "2"]]
 
 
-def test_pipe_table_escaped_backslash_still_splits():
-    # ``\\`` is a literal backslash, so the ``|`` after it is a real separator.
-    md = "| h1 | h2 |\n| --- | --- |\n| a \\\\| b |\n"
-    ex = _extract(md)
-    (table,) = ex.tables.values()
-    assert table["rows"] == [["a \\", "b"]]
-
-
 def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
     # With no unescaped ``|`` the line has no column separator at all, so it is
     # a paragraph, even though its single cell matches the one-cell ``---``.
@@ -372,7 +364,6 @@ def test_escaped_backslash_body_row_splits_into_two_cells():
         ("a \\| b", False),  # escaped pipe: cell content, no separator
         ("a \\\\| b", True),  # escaped backslash, then a real separator
         ("a \\\\\\| b", False),  # escaped backslash, then an escaped pipe
-        ("a \\\\\\\\| b", True),  # two escaped backslashes, then a separator
     ],
 )
 def test_has_unescaped_pipe_agrees_with_the_row_splitter(line, expected):

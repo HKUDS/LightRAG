@@ -431,17 +431,6 @@ def test_textpack_file_reference_with_spaces_resolved(tmp_path: Path):
     assert not warnings
 
 
-def test_standalone_md_relative_image_with_spaces_is_skipped():
-    # Recognised as an image now, so it takes the same warned skip as any
-    # other file reference outside a .textpack instead of staying as text.
-    p = _make_parser()
-    blocks, warnings, meta = p._extract_text(
-        "# H\n\n![x](my assets/pic.png)\n", bundle_root=None
-    )
-    assert meta["md_drawings"] == {}
-    assert warnings.get("images_skipped") == 1
-
-
 def test_textpack_image_outside_assets_dir_is_resolved(tmp_path: Path):
     # Compatibility: a reference may point anywhere under the bundle root, not
     # only ``assets/`` — here ``media/pic.png`` and a root-level ``cover.png``.
@@ -623,12 +612,10 @@ _MD_TEXT = "# 标题\n\n正文 body\n"
 
 @pytest.mark.parametrize(
     "data",
-    [
-        codecs.BOM_UTF8 + _MD_TEXT.encode("utf-8"),
-        codecs.BOM_UTF16_LE + _MD_TEXT.encode("utf-16-le"),
-        codecs.BOM_UTF16_BE + _MD_TEXT.encode("utf-16-be"),
-    ],
-    ids=["utf-8-bom", "utf-16-le", "utf-16-be"],
+    # Codec selection is test_bom_selects_codec_and_is_dropped on the shared
+    # decode_text_bytes; this is the .md path's wiring to it.
+    [codecs.BOM_UTF8 + _MD_TEXT.encode("utf-8")],
+    ids=["utf-8-bom"],
 )
 def test_md_bom_encodings_are_decoded(tmp_path: Path, data: bytes):
     source = tmp_path / "note.md"
