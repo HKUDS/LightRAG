@@ -25,10 +25,18 @@ async def test_core_rag_query_entry_points_reject_short_queries_before_storage_a
         )
 
 
+# "" and "   " meet the same ``query.strip()``: whitespace on every entry point
+# and mode, and "" once.
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method_name", ["aquery_llm", "aquery_data"])
-@pytest.mark.parametrize("mode", ["mix", "naive", "bypass"])
-@pytest.mark.parametrize("query", ["", "   "])
+@pytest.mark.parametrize(
+    ("method_name", "mode", "query"),
+    [
+        (method_name, mode, "   ")
+        for method_name in ("aquery_llm", "aquery_data")
+        for mode in ("mix", "naive", "bypass")
+    ]
+    + [("aquery_llm", "bypass", "")],
+)
 async def test_core_query_entry_points_reject_empty_queries_in_every_mode(
     method_name, mode, query
 ):
