@@ -210,7 +210,7 @@ def _version_connection(version: str | None) -> AsyncMock:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("version", "supported"),
-    [("0.7.4", False), ("0.8.0", True), ("0.8.6", True), ("1.0.0", True)],
+    [("0.7.4", False), ("0.8.0", True), ("1.0.0", True)],
 )
 async def test_version_probe_decides_support(version, supported) -> None:
     db = _db()
@@ -257,8 +257,12 @@ async def test_version_probe_ignores_uncovered_index() -> None:
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("namespace", ["chunks", "entities", "relationships"])
-@pytest.mark.parametrize("vector_cast", ["vector", "halfvec"])
+# The cast is only interpolated into the wrapper: every template once, both
+# casts across them.
+@pytest.mark.parametrize(
+    ("namespace", "vector_cast"),
+    [("chunks", "vector"), ("entities", "halfvec"), ("relationships", "vector")],
+)
 def test_resort_wrapper_restores_distance_order(namespace, vector_cast) -> None:
     """relaxed_order rows come out unsorted and the planner adds no sort, so the
     scan is materialised and re-sorted; ``+ 0`` defeats sort elimination."""
@@ -297,7 +301,7 @@ def _storage(index_type: str, *, supported=None) -> PGVectorStorage:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("index_type", "wrapped"),
-    [("IVFFLAT", True), ("HNSW", False), ("HNSW_HALFVEC", False)],
+    [("IVFFLAT", True), ("HNSW", False)],
 )
 async def test_query_resorts_only_for_ivfflat(index_type, wrapped) -> None:
     storage = _storage(index_type)

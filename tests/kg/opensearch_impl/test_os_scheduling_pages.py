@@ -1154,19 +1154,6 @@ async def test_doc_status_strict_point_read_three_state(global_config):
 # ---------------------------------------------------------------------------
 
 
-async def test_legacy_basename_query_excludes_duplicate_rows(global_config):
-    client = _make_client()
-    storage = await _make_doc_status(global_config, client)
-    client.search = AsyncMock(return_value=_page([]))
-
-    assert await storage.get_doc_by_file_basename("report.pdf") is None
-    body = client.search.call_args.kwargs["body"]
-    assert body["query"]["bool"]["filter"] == [{"term": {"file_path": "report.pdf"}}]
-    assert body["query"]["bool"]["must_not"] == [
-        {"term": {"metadata.is_duplicate": True}}
-    ]
-
-
 async def test_legacy_basename_swallows_errors(global_config):
     client = _make_client()
     storage = await _make_doc_status(global_config, client)

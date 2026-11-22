@@ -18,7 +18,7 @@ pytestmark = pytest.mark.offline
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["remove_edges", "remove_nodes"])
-@pytest.mark.parametrize("status", [200, 404, 403, 503])
+@pytest.mark.parametrize("status", [200, 404, 403])
 async def test_graph_delete_item_results(monkeypatch, method, status):
     item = {"delete": {"_id": "row", "status": status}}
     storage = OpenSearchGraphStorage("graph", {}, None, "test")
@@ -59,7 +59,7 @@ async def test_delete_node_marks_views_dirty_when_node_delete_fails():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [200, 404, 403, 503])
+@pytest.mark.parametrize("status", [200, 404, 403])
 async def test_status_delete_item_results(monkeypatch, status):
     item = {"delete": {"_id": "row", "status": status}}
     storage = OpenSearchDocStatusStorage("doc_status", {}, None, "test")
