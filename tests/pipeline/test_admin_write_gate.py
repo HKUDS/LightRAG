@@ -876,8 +876,9 @@ async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
 
     def _slow_write(graph, file_name, workspace="_"):
         # Runs in the storage-IO pool, so the ceiling's timer still fires: the
-        # cancellation lands while commit_in_storage_io is deferring it.
-        time.sleep(1.0)
+        # cancellation lands while commit_in_storage_io is deferring it. Twice
+        # the 0.3 s ceiling, so the timer fires inside it with room to spare.
+        time.sleep(0.6)
         return original_write(graph, file_name, workspace)
 
     monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(_slow_write))
@@ -929,7 +930,7 @@ async def test_the_two_ceiling_messages_are_distinguishable(rag, monkeypatch):
     original_write = NetworkXStorage.write_nx_graph
 
     def _slow_write(graph, file_name, workspace="_"):
-        time.sleep(1.0)
+        time.sleep(0.6)  # twice the ceiling, as in the test above
         return original_write(graph, file_name, workspace)
 
     monkeypatch.setattr(NetworkXStorage, "write_nx_graph", staticmethod(_slow_write))
@@ -1205,9 +1206,10 @@ async def test_a_failed_write_under_the_ceiling_is_not_reported_as_durable(
     graphml_file = graph_store._graphml_xml_file
 
     def _slow_failing_write(graph, file_name, workspace="_"):
-        # Slow enough for the ceiling to fire mid-write, then fail: the cancel
-        # is withheld to the end of the region and wins over this error.
-        time.sleep(1.0)
+        # Slow enough for the ceiling to fire mid-write (twice the 0.3 s
+        # ceiling), then fail: the cancel is withheld to the end of the region
+        # and wins over this error.
+        time.sleep(0.6)
         raise OSError(28, "No space left on device")
 
     original_write = NetworkXStorage.write_nx_graph
@@ -1508,7 +1510,7 @@ async def test_the_admin_lock_is_held_past_the_ceiling(rag, monkeypatch):
     only once the gate's ``finally`` has released both halves, so the elapsed
     time measured here IS the lock hold.
     """
-    ceiling, commit_work = 0.2, 1.0
+    ceiling, commit_work = 0.2, 0.5
     monkeypatch.setattr(rag, "admin_write_max_hold_seconds", ceiling)
 
     graph = rag.chunk_entity_relation_graph
