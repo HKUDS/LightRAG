@@ -315,7 +315,7 @@ def test_env_base_flow_vllm_defaults_prefer_original_env_values_on_rerun(
             "LLM_BINDING_API_KEY=sk-existing",
             "EMBEDDING_BINDING=openai",
             "EMBEDDING_MODEL=BAAI/original-embed",
-            "EMBEDDING_DIM=1024",
+            "EMBEDDING_DIM=768",
             "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
             "EMBEDDING_BINDING_API_KEY=embed-key",
             "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
@@ -383,7 +383,7 @@ env_base_flow
     assert values["EMBEDDING_MODEL"] == "BAAI/original-embed"
     assert values["RERANK_MODEL"] == "BAAI/original-rerank"
     assert values["VLLM_EMBED_MODEL"] == "BAAI/original-embed"
-    assert values["EMBEDDING_DIM"] == "1024"
+    assert values["EMBEDDING_DIM"] == "768"
     assert values["VLLM_EMBED_PORT"] == "9101"
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
     assert values["VLLM_EMBED_DEVICE"] == "cpu"
