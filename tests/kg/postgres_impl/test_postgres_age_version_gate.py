@@ -412,6 +412,8 @@ async def test_raising_installed_lookup_fails_closed(monkeypatch):
     with pytest.raises(RuntimeError, match="Could not determine"):
         await PostgreSQLDB.configure_age_extension(conn)
 
+    assert conn.create_extension_calls() == [], conn.sql_calls()
+
 
 # ---------------------------------------------------------------------------
 # A broken pg_available_extensions is an unread source, not a safe one
@@ -1279,9 +1281,15 @@ _ALL_SOURCE_STATES = [
 # The no-override sweep runs only the states the decision table cannot express
 # (an unreadable lookup, a NULL default_version): every table cell already
 # asserts its own CREATE / no-CREATE outcome there. Each of these states was a
-# fail-open until the sweep reached it.
+# fail-open until the sweep reached it. An unreadable installed lookup refuses
+# before the available lookup runs, so every such state is one path, pinned by
+# test_raising_installed_lookup_fails_closed instead.
 _TABLE_CELLS = {(i, a) for i, a, _ in _DECISION_TABLE}
-_NON_TABLE_STATES = [state for state in _ALL_SOURCE_STATES if state not in _TABLE_CELLS]
+_NON_TABLE_STATES = [
+    (installed, available)
+    for installed, available in _ALL_SOURCE_STATES
+    if (installed, available) not in _TABLE_CELLS and installed is not _UNREADABLE
+]
 
 # Under the override there are six branches: installed lookup failed; absent
 # installed with an unreadable or NULL available; nothing to gate; the
