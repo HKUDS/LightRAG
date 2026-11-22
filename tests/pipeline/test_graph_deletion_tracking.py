@@ -184,23 +184,42 @@ async def creation_rag(tmp_path):
         await rag.finalize_storages()
 
 
+_MIXED_SOURCE_ID = GRAPH_FIELD_SEP.join(
+    ["manual_creation", "chunk-new", "UNKNOWN", "", "chunk-new", "chunk-2"]
+)
+
+
+def _orphan_evidence_cases():
+    """Both branches (no real source, real sources) on every kind and entry
+    point; the other source-less spellings only on one of them, since every
+    path filters them through the same real-source-ID normalization."""
+    cases = []
+    for kind in ("entity", "relation"):
+        for entrypoint in ("sdk", "helper"):
+            cases.append(
+                pytest.param(kind, entrypoint, None, [], id=f"none-{kind}-{entrypoint}")
+            )
+            cases.append(
+                pytest.param(
+                    kind,
+                    entrypoint,
+                    _MIXED_SOURCE_ID,
+                    ["chunk-new", "chunk-2"],
+                    id=f"mixed-{kind}-{entrypoint}",
+                )
+            )
+    for spelling in ("", "manual_creation", "UNKNOWN"):
+        cases.append(
+            pytest.param(
+                "entity", "sdk", spelling, [], id=f"{spelling or 'empty'}-entity-sdk"
+            )
+        )
+    return cases
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("entrypoint", ["sdk", "helper"])
-@pytest.mark.parametrize("kind", ["entity", "relation"])
 @pytest.mark.parametrize(
-    "source_id,expected",
-    [
-        (None, []),
-        ("", []),
-        ("manual_creation", []),
-        ("UNKNOWN", []),
-        (
-            GRAPH_FIELD_SEP.join(
-                ["manual_creation", "chunk-new", "UNKNOWN", "", "chunk-new", "chunk-2"]
-            ),
-            ["chunk-new", "chunk-2"],
-        ),
-    ],
+    ("kind", "entrypoint", "source_id", "expected"), _orphan_evidence_cases()
 )
 async def test_explicit_creation_replaces_orphan_evidence(
     creation_rag, monkeypatch, kind, source_id, expected, entrypoint
