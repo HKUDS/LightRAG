@@ -32,17 +32,12 @@ chunk tracking row the same merge writes, which already deduplicates in order
 strings reproduces insertion order outright under roughly a fifth of the
 possible hash seeds, so a small fixture lets the set-based implementation pass
 by coincidence -- including under ``PYTHONHASHSEED=0``, the value CI systems
-pin for reproducibility. At twenty IDs no probed seed reproduces insertion
-order, either in whole or in either ten-element half, so every assertion below
-fails deterministically against the old implementation rather than only for
-most seeds.
+pin for reproducibility. At twenty IDs no checked seed (0-5 and random ones)
+reproduces insertion order, either in whole or in either ten-element half, so
+every assertion below fails against the old implementation under whatever
+seed the test process runs with. That is also why no test starts interpreters
+under several seeds: each of these already fails under any one of them.
 """
-
-import contextlib
-import os
-import subprocess
-import sys
-import textwrap
 
 import pytest
 
@@ -54,7 +49,7 @@ from lightrag.utils_graph import _merge_attributes
 pytestmark = pytest.mark.offline
 
 # Set iteration order is sensitive to the exact strings, and this spelling is
-# the one the seed probe covered: do not renumber or re-pad these.
+# the one the seed check covered: do not renumber or re-pad these.
 FIRST_HALF = [f"chunk-{i:02d}" for i in range(1, 11)]
 SECOND_HALF = [f"chunk-{i:02d}" for i in range(11, 21)]
 ALL_CHUNKS = FIRST_HALF + SECOND_HALF
@@ -120,64 +115,3 @@ def test_join_unique_order_lets_ignore_new_keep_the_oldest_chunks():
     )
 
     assert kept == FIRST_HALF
-
-
-_PROBE = textwrap.dedent(
-    """
-    from lightrag.constants import GRAPH_FIELD_SEP
-    from lightrag.utils_graph import _merge_attributes
-
-    first = [f"chunk-{i:02d}" for i in range(1, 11)]
-    second = [f"chunk-{i:02d}" for i in range(11, 21)]
-    merged = _merge_attributes(
-        [
-            {"source_id": GRAPH_FIELD_SEP.join(first)},
-            {"source_id": GRAPH_FIELD_SEP.join(second)},
-        ],
-        {"source_id": "join_unique"},
-    )
-    print(merged["source_id"].replace(GRAPH_FIELD_SEP, ","))
-    """
-)
-
-# PYTHONHASHSEED is fixed once per interpreter, so the seed has to be chosen
-# before the process starts -- which is why this runs out of process at all.
-# Inheriting the caller's seed is not enough: a CI runner that pins
-# PYTHONHASHSEED=0 for reproducibility would hand every probe the same seed and
-# the test would silently lose its power to detect variance. The seeds are
-# passed explicitly instead, and 0 is deliberately one of them because it is
-# the value that turns hash randomization off.
-_PROBE_SEEDS = ("0", "1", "2")
-
-
-def test_join_unique_order_is_identical_under_every_hash_seed():
-    """The merged order must not depend on how the IDs happen to hash."""
-    # Launched together rather than in sequence: the probes are independent and
-    # each pays a fresh interpreter start plus a lightrag import.
-    merged_orders = {}
-    with contextlib.ExitStack() as stack:
-        # Entered as context managers so a failing assertion below still closes
-        # and reaps the probes that have not been read yet.
-        processes = [
-            stack.enter_context(
-                subprocess.Popen(
-                    [sys.executable, "-c", _PROBE],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    # Inherit the environment so the probe can import lightrag
-                    # at all; override only the seed.
-                    env={**os.environ, "PYTHONHASHSEED": seed},
-                )
-            )
-            for seed in _PROBE_SEEDS
-        ]
-
-        for seed, process in zip(_PROBE_SEEDS, processes):
-            stdout, stderr = process.communicate()
-            assert process.returncode == 0, (
-                f"probe failed (PYTHONHASHSEED={seed}): {stderr}"
-            )
-            merged_orders[seed] = stdout.strip().splitlines()[-1]
-
-    assert set(merged_orders.values()) == {",".join(ALL_CHUNKS)}, merged_orders
