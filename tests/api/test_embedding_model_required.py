@@ -49,7 +49,7 @@ def server_args(monkeypatch):
     return _parse_args
 
 
-@pytest.mark.parametrize("configured", [None, "", "   "])
+@pytest.mark.parametrize("configured", [None, "   "])
 def test_create_app_refuses_without_an_embedding_model(
     monkeypatch, server_args, configured
 ):

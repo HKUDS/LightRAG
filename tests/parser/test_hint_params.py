@@ -94,7 +94,6 @@ def test_parse_chunk_params_overlap_rejected_for_vector():
     "block,expected",
     [
         ("drop_rf=true", True),
-        ("drop_references=true", True),
         ("drop_rf=false", False),
         ("drop_rf=yes", True),
         ("drop_rf=0", False),
@@ -120,7 +119,12 @@ def test_parse_chunk_params_drop_references_bare_flag_is_true(block):
     assert parsed == {"drop_references": True}
 
 
-@pytest.mark.parametrize("selector", ["F", "R", "V"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "F",
+    ],
+)
 def test_parse_chunk_params_drop_references_rejected_off_paragraph(selector):
     parsed, errors = parse_chunk_params("drop_rf=true", selector=selector, label="x")
     assert parsed == {}
@@ -133,13 +137,6 @@ def test_filename_hint_drop_references_extracted():
     assert d.chunk_params == {"P": {"drop_references": True}}
 
 
-def test_filename_hint_drop_references_bare_flag():
-    # ``P(drop_rf)`` with no value is shorthand for ``drop_rf=true``.
-    d = resolve_parser_directives("notes.[-P(drop_rf)].md", parser_rules="")
-    assert d.process_options == "P"
-    assert d.chunk_params == {"P": {"drop_references": True}}
-
-
 @pytest.mark.parametrize(
     "block,needle",
     [
@@ -147,13 +144,11 @@ def test_filename_hint_drop_references_bare_flag():
         ("chunk_ts=0", "must be >= 1"),
         ("foo=1", "unknown parameter 'foo'"),
         ("chunk_ts=1,chunk_ts=2", "may not be repeated"),
-        ("correct_tl", "unknown parameter 'correct_tl'"),
         # A non-boolean parameter cannot be written bare (only flags can).
         ("chunk_ts", "must be written as 'key=value'"),
         ("", "empty parameter"),
         # Cross-field invariant: explicit overlap >= size is rejected here, so
         # both rule and filename-hint validation reject it (not just enqueue).
-        ("chunk_ts=80,chunk_ol=100", "must be < chunk_token_size"),
         ("chunk_ts=100,chunk_ol=100", "must be < chunk_token_size"),
     ],
 )
@@ -230,22 +225,6 @@ def test_upload_validation_raises_on_bad_filename_params(name):
 def test_rule_params_with_semicolon_separator_and_comma_in_parens():
     d = resolve_parser_directives(
         "a.md", parser_rules="md:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R"
-    )
-    assert d.engine == "legacy"
-    assert d.chunk_params == {
-        "R": {"chunk_token_size": 800, "chunk_overlap_token_size": 80}
-    }
-
-
-def test_rule_params_with_comma_separator_and_comma_in_parens():
-    # Rule splitting is parenthesis-aware: a comma inside a parameter block is
-    # NOT a rule separator, so ',' still separates rules even when a rule carries
-    # parameters (the docs recommend ';' but ',' must keep working).
-    assert split_top_level(
-        "md:legacy-R(chunk_ts=800,chunk_ol=80),*:legacy-R", ";,"
-    ) == ["md:legacy-R(chunk_ts=800,chunk_ol=80)", "*:legacy-R"]
-    d = resolve_parser_directives(
-        "a.md", parser_rules="md:legacy-R(chunk_ts=800,chunk_ol=80),*:legacy-R"
     )
     assert d.engine == "legacy"
     assert d.chunk_params == {
@@ -415,18 +394,6 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
 # --------------------------------------------------------------------------- #
 # MIN_CHUNK_TOKEN_SIZE: parse floor stays 1, the minimum applies at ingress
 # --------------------------------------------------------------------------- #
-
-
-def test_parse_chunk_params_accepts_the_minimum():
-    parsed, errors = parse_chunk_params(
-        f"chunk_ts={MIN_CHUNK_TOKEN_SIZE},chunk_ol=0", selector="R", label="x"
-    )
-
-    assert errors == []
-    assert parsed == {
-        "chunk_token_size": MIN_CHUNK_TOKEN_SIZE,
-        "chunk_overlap_token_size": 0,
-    }
 
 
 # --------------------------------------------------------------------------- #

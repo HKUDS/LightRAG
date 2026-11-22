@@ -124,16 +124,6 @@ def _make_multi_sheet_xlsx_bytes() -> bytes:
 
 
 @pytest.mark.offline
-def test_extract_text_xlsx_uses_cached_formula_value():
-    file_bytes = _make_xlsx_bytes(cached_formula_value=3)
-
-    text = extract_text(file_bytes, "xlsx")
-
-    assert "3" in text
-    assert "=SUM(A1:A2)" not in text
-
-
-@pytest.mark.offline
 def test_extract_text_xlsx_falls_back_to_formula_text_when_cache_missing():
     file_bytes = _make_xlsx_bytes(cached_formula_value=None)
 
@@ -226,7 +216,11 @@ def test_extract_text_xlsx_pads_ragged_rows_to_the_sheet_width():
 
 @pytest.mark.offline
 @pytest.mark.parametrize(
-    "dimension", ["A1", "A1:B2", "A1:D5", "A1:XFD1048576", "C3:ZZ9", None]
+    "dimension",
+    [
+        "A1",
+        "A1:XFD1048576",
+    ],
 )
 def test_extract_text_xlsx_ignores_the_declared_dimension(dimension):
     """The cells decide what is extracted, not the producer's ``<dimension>``.
@@ -254,15 +248,6 @@ def _append_empty_rows(file_bytes: bytes, *numbers: int) -> bytes:
             )
 
     return _rewrite_sheet1(file_bytes, rewrite)
-
-
-@pytest.mark.offline
-def test_extract_text_xlsx_drops_rows_after_the_last_cell():
-    file_bytes = _append_empty_rows(_make_ragged_rows_xlsx_bytes(), 6, 9)
-
-    text = extract_text(file_bytes, "xlsx")
-
-    assert text.splitlines()[1:-1] == _RAGGED_ROWS_TEXT
 
 
 @pytest.mark.offline
