@@ -73,7 +73,21 @@ rule below names the defect it prevents.
   give True" and "falsy values give False" are two parametrized tests, not one
   loop with two halves.
 - **A loop is fine when the repetition is the behavior**, for example repeated
-  round-trips under concurrency or a sequence of state transitions.
+  round-trips under concurrency or a sequence of state transitions. An
+  exhaustive **value sweep** counts as such a loop only when all three hold:
+  1. the expected value comes from an independent oracle that holds over the
+     whole input domain (a formula or an invariant, not a hand-written table);
+  2. every iteration is cheap, so the whole loop runs in milliseconds;
+  3. the loop collects every mismatch (`[(length, overlap, ...), ...]`) and
+     asserts that list is `[]`, so it never stops at the first failure and the
+     failure names every value that broke.
+
+  A dimension that selects a different code branch stays a parametrized node,
+  so the node id names the branch; only the purely numeric dimensions move
+  into the loop. `test_every_window_adds_new_text`
+  (`tests/chunker/test_chunking.py`) is the example: `split_by_character`
+  picks the code path and stays parametrized, while length and overlap only
+  change the window arithmetic and are swept inside.
 - **Reduce large values before comparing them.** If a failure would diff
   thousands of tokens or a whole graph, assert on a list of
   `(index, kind)` mismatches instead, so the failure says which case broke

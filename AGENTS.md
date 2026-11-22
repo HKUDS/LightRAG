@@ -239,7 +239,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - **Expected exceptions go through `pytest.raises`**, never `try/except`. Never wrap the call under test in `except Exception: pass`.
 - **A fake that must never be called records the call as well as raising**: a broad `except Exception` in the code under test swallows `AssertionError`.
 - **Concurrent workers must surface their exceptions** (`ThreadPoolExecutor.map`, `future.result()`, `asyncio.gather`/`TaskGroup`), with `max_workers` at least the `Barrier` parties and a `Barrier` timeout.
-- **Cases are `@pytest.mark.parametrize`, not a `for` loop**, unless the repetition is the behavior. Reduce large values before comparing them so the failure names the case.
+- **Cases are `@pytest.mark.parametrize`, not a `for` loop**, unless the repetition is the behavior. An exhaustive value sweep qualifies only under the three conditions in [Failures name the case](docs/design/BackendTestingGuide.md#failures-name-the-case) (independent oracle, millisecond loop, collected mismatch list), and branch-selecting dimensions stay parametrized. Reduce large values before comparing them so the failure names the case.
 - **Every test must earn its place** in a ~13000-test suite: it pins a behavior no existing test pins, tests that share a scenario and differ only in what they assert are one test, and nothing waits on real time, spawns processes or builds a full `LightRAG` where a stub does. See [Every test must earn its place](docs/design/BackendTestingGuide.md#every-test-must-earn-its-place).
 
 #### React component tests
