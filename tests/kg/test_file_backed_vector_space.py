@@ -318,20 +318,6 @@ async def test_writing_to_an_already_marked_store_keeps_certifying_it(
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.asyncio
-async def test_a_refused_storage_can_be_constructed(backend, tmp_path):
-    """The wedge this removes: the refusal used to come from __post_init__.
-
-    The tool cannot drop what it cannot build, so construction must succeed
-    even against a store this instance will refuse to attach to.
-    """
-    await _seed(backend, tmp_path, _Embed("bge-m3", 8))
-
-    storage = backend.storage(tmp_path, _Embed("e5-large", 8))  # must not raise
-    assert storage is not None
-
-
-@pytest.mark.parametrize("backend", BACKENDS)
-@pytest.mark.asyncio
 async def test_a_refused_storage_can_still_drop(backend, tmp_path):
     await _seed(backend, tmp_path, _Embed("bge-m3", 8))
 

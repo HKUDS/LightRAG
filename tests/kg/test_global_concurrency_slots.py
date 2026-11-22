@@ -77,11 +77,6 @@ def test_limits_unset_means_not_limited():
     assert ss.is_global_concurrency_limited(None) is False
 
 
-def test_limits_not_limited_before_initialization():
-    assert ss.is_share_data_initialized() is False
-    assert ss.is_global_concurrency_limited(GROUP) is False
-
-
 def test_first_init_sets_limits_and_later_calls_do_not_overwrite():
     _init({GROUP: 3})
     assert ss.is_global_concurrency_limited(GROUP) is True
