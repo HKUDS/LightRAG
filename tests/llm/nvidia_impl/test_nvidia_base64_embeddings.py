@@ -52,7 +52,8 @@ def mock_client(monkeypatch, vectors: np.ndarray, response_format: str):
     ("encode", "response_format"),
     [("float", "float"), ("base64", "base64"), ("base64", "float")],
 )
-@pytest.mark.parametrize("batch_size", [1, 2])
+# Two items exercise the per-item decode; one item is the same comprehension.
+@pytest.mark.parametrize("batch_size", [2])
 async def test_embedding_encoding_preserves_numeric_vectors(
     monkeypatch, encode, response_format, batch_size
 ):

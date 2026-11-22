@@ -1311,7 +1311,8 @@ async def test_abandoned_running_call_frees_worker(
         concurrency_group=GROUP if global_limit else None,
     )(func)
     call = asyncio.create_task(
-        wrapped("blocked", _timeout=0.2 if abandonment == "timeout" else None)
+        # ``func`` blocks until ``finally``, so a short user timeout cannot race it.
+        wrapped("blocked", _timeout=0.1 if abandonment == "timeout" else None)
     )
     try:
         await asyncio.wait_for(entered.wait(), timeout=2.0)

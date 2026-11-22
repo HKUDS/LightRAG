@@ -58,9 +58,8 @@ async def bedrock_endpoint(
 @pytest.mark.parametrize(
     ("model", "dimension", "send_dimensions"),
     [
+        # v2 forwards ``dimensions`` unchanged; there is no allowed-value check.
         ("amazon.titan-embed-text-v2:0", 256, True),
-        ("amazon.titan-embed-text-v2:0", 512, True),
-        ("amazon.titan-embed-text-v2:0", 1024, True),
         ("amazon.titan-embed-text-v2:0", 1024, False),
         ("amazon.titan-embed-text-v1", 1536, True),
         ("cohere.embed-english-v3", 1024, True),

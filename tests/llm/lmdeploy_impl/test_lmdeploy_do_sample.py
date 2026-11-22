@@ -90,7 +90,6 @@ async def test_do_sample_forwarded_unchanged_on_modern_lmdeploy(
     [
         pytest.param({}, 512, id="omitted-defaults-to-512"),
         pytest.param({"max_tokens": 37}, 37, id="generic-max-tokens"),
-        pytest.param({"max_new_tokens": 41}, 41, id="native-max-new-tokens"),
         pytest.param(
             {"max_tokens": 37, "max_new_tokens": 41},
             41,

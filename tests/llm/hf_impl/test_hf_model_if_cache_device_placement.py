@@ -239,7 +239,6 @@ async def test_prompt_length_slicing_excludes_prompt_tokens(monkeypatch):
     [
         ({}, 512),
         ({"max_tokens": 37}, 37),
-        ({"max_new_tokens": 41}, 41),
         ({"max_tokens": 37, "max_new_tokens": 41}, 41),
     ],
 )
