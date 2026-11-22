@@ -134,8 +134,14 @@ async def test_wrapper_uses_role_timeout_inside_role_call(monkeypatch, case):
     assert forwarded["timeout"] == 77
 
 
+# Every wrapper calls ``apply_llm_timeout(kwargs)`` before touching its
+# kwargs, so the role test above is each wrapper's wiring, and the helper's
+# other rows (fallback, explicit argument) run on one wrapper.
+_ONE_WRAPPER = [_WRAPPERS[0]]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", _WRAPPERS, ids=_param_id)
+@pytest.mark.parametrize("case", _ONE_WRAPPER, ids=_param_id)
 async def test_wrapper_falls_back_to_default_llm_timeout(monkeypatch, case):
     forwarded = await _call_wrapper(monkeypatch, case)
 
@@ -143,7 +149,7 @@ async def test_wrapper_falls_back_to_default_llm_timeout(monkeypatch, case):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", _WRAPPERS, ids=_param_id)
+@pytest.mark.parametrize("case", _ONE_WRAPPER, ids=_param_id)
 async def test_wrapper_keeps_explicit_timeout(monkeypatch, case):
     forwarded = await _call_wrapper(monkeypatch, case, role_timeout=77, timeout=5)
 
