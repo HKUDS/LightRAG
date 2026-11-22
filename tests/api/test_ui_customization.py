@@ -440,7 +440,13 @@ class TestBundleValidation:
             # entity need not be DECLARED here — resolving it is the
             # renderer's job — and an internal subset may define its own,
             # which is how Illustrator writes its namespace attributes.
-            pytest.param(b'<svg t="a&amp;b" xmlns="x"/>', id="entity-reference"),
+            # A custom (subset-declared) name, not a predefined one: restricting
+            # references to the five predefined entities would reject it.
+            pytest.param(
+                b'<!DOCTYPE svg [<!ENTITY ns_x "http://x/">]>'
+                b'<svg xmlns:x="&ns_x;" xmlns="x"/>',
+                id="reference-to-subset-declared-entity",
+            ),
             pytest.param(b'<svg t="&#169;" xmlns="x"/>', id="decimal-char-reference"),
             pytest.param(b'<svg t="&#x00A9;" xmlns="x"/>', id="hex-char-reference"),
             pytest.param(
