@@ -518,79 +518,12 @@ async def test_initialize_label_lookup_is_scoped_to_this_graph(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Long graph names.  PostgreSQL's `name` type truncates at 63 bytes and AGE
-# stores graph names as `name`, so both catalog lookups must cast the
-# *parameter* to `name` rather than the stored value to `text`.  Comparing an
-# untruncated text parameter never matches, which would silently reinstate the
-# per-process create_graph and per-startup create_*label errors this PR removes.
+# stores graph names as `name`, so both catalog lookups compare against
+# left($1, 63)::name (a bind parameter cast to name raises 42622 instead of
+# clipping). The exact SQL is pinned by test_existing_graph_is_not_recreated
+# and test_initialize_label_lookup_is_scoped_to_this_graph; long-workspace
+# resolution by test_postgres_workspace_graph_name.py.
 # ---------------------------------------------------------------------------
-
-# A workspace long enough that "<workspace>_chunk_entity_relation" exceeds 63 bytes.
-LONG_GRAPH_NAME = (
-    "verylongworkspacename_that_exceeds_the_limit_abcdefghij_chunk_entity_relation"
-)
-
-
-def test_long_graph_name_is_actually_over_the_identifier_limit():
-    """Guard the premise of the tests below."""
-    assert len(LONG_GRAPH_NAME.encode("utf-8")) > 63
-
-
-@pytest.mark.asyncio
-async def test_graph_lookup_casts_the_parameter_not_the_column():
-    db = _make_db()
-    conn = FakeConnection(graph_exists=True)
-
-    await db.configure_age(conn, LONG_GRAPH_NAME)
-
-    ((sql, args),) = conn.fetched
-    # left($1, 63), not $1::name: PostgreSQL raises 42622 "identifier too long"
-    # when a *bind parameter* is cast to name, while the literal AGE was given
-    # is clipped silently. The comparison has to clip the same way.
-    assert "name = left($1, 63)::name" in sql
-    assert "$1::name" not in sql
-    assert "name::text" not in sql
-    assert args == (LONG_GRAPH_NAME,)
-
-
-@pytest.mark.asyncio
-async def test_existing_long_named_graph_is_not_recreated():
-    """The truncation bug's user-visible symptom: one create_graph per process."""
-    db = _make_db()
-    conn = FakeConnection(graph_exists=True)
-
-    await db.configure_age(conn, LONG_GRAPH_NAME)
-
-    assert conn.create_graph_statements == []
-
-
-@pytest.mark.asyncio
-async def test_initialize_label_lookup_casts_the_parameter(monkeypatch):
-    monkeypatch.setattr(
-        "lightrag.kg.postgres_impl.get_data_init_lock", lambda: _null_lock()
-    )
-    storage, db = _make_graph_storage(["base", "DIRECTED"])
-    storage.workspace = "verylongworkspacename_that_exceeds_the_limit_abcdefghij"
-
-    await storage.initialize()
-
-    sql = db.query.await_args.args[0]
-    assert "g.name = left($1, 63)::name" in sql
-    # A workspace this long no longer passes LONG_GRAPH_NAME itself: AGE 1.6+
-    # rejects names over 63 bytes in create_vlabel(), so initialize() resolves
-    # it to an existing clipped graph or a hashed name first (see
-    # test_postgres_workspace_graph_name.py).
-    assert db.query.await_args.args[1] == [storage.graph_name]
-    assert len(storage.graph_name.encode("utf-8")) <= 63
-    # And with both labels reported present, neither is recreated.
-    statements = [call.args[0] for call in db.execute.await_args_list]
-    assert not [s for s in statements if "create_vlabel" in s or "create_elabel" in s]
-
-
-def test_name_limit_constant_matches_postgres_namedatalen():
-    """NAMEDATALEN - 1. Both catalog lookups clip to this."""
-    from lightrag.kg.postgres_impl import _PG_NAME_MAX_BYTES
-
-    assert _PG_NAME_MAX_BYTES == 63
 
 
 def test_graph_names_are_ascii_so_bytes_equal_characters():

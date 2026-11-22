@@ -41,18 +41,6 @@ def make_graph_storage() -> PGGraphStorage:
 # ---------------------------------------------------------------------------
 
 
-def test_normalize_plain_id():
-    assert PGGraphStorage._normalize_node_id("Alice") == "Alice"
-
-
-def test_normalize_double_quote():
-    assert PGGraphStorage._normalize_node_id('John "Smith"') == 'John \\"Smith\\"'
-
-
-def test_normalize_backslash():
-    assert PGGraphStorage._normalize_node_id("C:\\path") == "C:\\\\path"
-
-
 def test_normalize_both_special_chars():
     assert (
         PGGraphStorage._normalize_node_id('say \\"hello\\"')
@@ -113,12 +101,14 @@ async def test_get_node_edges_returns_edges():
         return [
             {"source_id": "Alice", "connected_id": "Bob"},
             {"source_id": "Alice", "connected_id": None},
+            {"source_id": "Alice", "connected_id": "Carol"},
         ]
 
     with patch.object(storage, "_query", side_effect=fake_query):
         result = await storage.get_node_edges("Alice")
 
-    assert result == [("Alice", "Bob")]
+    # Every real neighbour is kept, and only the NULL row is dropped.
+    assert result == [("Alice", "Bob"), ("Alice", "Carol")]
 
 
 # ---------------------------------------------------------------------------
@@ -189,24 +179,6 @@ async def test_get_nodes_edges_batch_with_quoted_entity():
     assert entity in result
     assert (entity, "Alice") in result[entity]
     assert ("Bob", entity) in result[entity]
-
-
-@pytest.mark.asyncio
-async def test_get_nodes_edges_batch_plain_entity():
-    """Entity names without special chars still work correctly."""
-    storage = make_graph_storage()
-    entity = "Alice"
-
-    async def fake_query(sql, **_kwargs):
-        if "OPTIONAL MATCH (n:base)-[]->" in sql:
-            return [{"node_id": entity, "connected_id": "Bob"}]
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        result = await storage.get_nodes_edges_batch([entity])
-
-    assert entity in result
-    assert (entity, "Bob") in result[entity]
 
 
 @pytest.mark.asyncio

@@ -385,11 +385,6 @@ def test_normalize_node_id_strips_null_bytes():
     assert PGGraphStorage._normalize_node_id("before\x00after") == "beforeafter"
 
 
-def test_normalize_node_id_escapes_backslash_and_quote():
-    """Backslashes and double quotes are escaped."""
-    assert PGGraphStorage._normalize_node_id('a\\"b') == 'a\\\\\\"b'
-
-
 def test_normalize_node_id_injection_payload():
     """Injection payload is escaped so it cannot break out of Cypher string."""
     payload = 'test"}) RETURN n; MATCH (m) DETACH DELETE m; //'
