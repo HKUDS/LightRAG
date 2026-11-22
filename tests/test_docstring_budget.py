@@ -20,8 +20,10 @@ tests rather than review habits.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
 import re
+from dataclasses import dataclass
 
 import pytest
 
@@ -91,12 +93,36 @@ _KNOWN_OVERSIZED_SIZE = 8
 _ISSUE_REF = re.compile(r"(?<![\w/])#\d{4,5}\b")
 
 
-def _python_files() -> list[pathlib.Path]:
-    return sorted(_PACKAGE.rglob("*.py"))
+@dataclass(frozen=True)
+class _Source:
+    path: pathlib.Path
+    rel: str
+    text: str
+    tree: ast.Module
 
 
-def _oversized(path: pathlib.Path) -> list[tuple[str, int, int]]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+@functools.cache
+def _sources() -> tuple[_Source, ...]:
+    """Every package file, read and parsed once per test process.
+
+    Each check below walks the whole package; parsing it again per test made
+    this the slowest scan in the suite for no difference in what it sees.
+    """
+    sources = []
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        sources.append(
+            _Source(
+                path=path,
+                rel=path.relative_to(_REPO_ROOT).as_posix(),
+                text=text,
+                tree=ast.parse(text),
+            )
+        )
+    return tuple(sources)
+
+
+def _oversized(tree: ast.Module) -> list[tuple[str, int, int]]:
     found = []
     for node in ast.walk(tree):
         if not isinstance(
@@ -117,14 +143,22 @@ def _oversized(path: pathlib.Path) -> list[tuple[str, int, int]]:
     return found
 
 
+@functools.cache
+def _package_oversized() -> tuple[tuple[str, str, int, int], ...]:
+    """``(file, name, lines, limit)`` of every oversized docstring, once."""
+    return tuple(
+        (source.rel, name, lines, limit)
+        for source in _sources()
+        for name, lines, limit in _oversized(source.tree)
+    )
+
+
 def test_no_docstring_grows_into_a_design_document():
-    offenders = []
-    for path in _python_files():
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        for name, lines, limit in _oversized(path):
-            if (rel, name) in _KNOWN_OVERSIZED:
-                continue
-            offenders.append(f"{rel}:{name} — {lines} lines (limit {limit})")
+    offenders = [
+        f"{rel}:{name} — {lines} lines (limit {limit})"
+        for rel, name, lines, limit in _package_oversized()
+        if (rel, name) not in _KNOWN_OVERSIZED
+    ]
 
     assert not offenders, (
         "These docstrings are long enough to be design documents:\n  "
@@ -141,11 +175,9 @@ def test_the_known_oversized_list_does_not_go_stale():
     A stale allowlist quietly re-permits the thing it was recording, so the
     list is only trustworthy while it is exactly the set of remaining cases.
     """
-    still_oversized = set()
-    for path in _python_files():
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        for name, _lines, _limit in _oversized(path):
-            still_oversized.add((rel, name))
+    still_oversized = {
+        (rel, name) for rel, name, _lines, _limit in _package_oversized()
+    }
 
     stale = sorted(_KNOWN_OVERSIZED - still_oversized)
     assert not stale, (
@@ -176,13 +208,10 @@ def test_the_known_oversized_list_is_a_ratchet():
 
 def test_no_source_file_cites_a_github_issue():
     offenders = []
-    for path in _python_files():
-        for lineno, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+    for source in _sources():
+        for lineno, line in enumerate(source.text.splitlines(), start=1):
             if _ISSUE_REF.search(line):
-                rel = path.relative_to(_REPO_ROOT)
-                offenders.append(f"{rel}:{lineno}: {line.strip()[:90]}")
+                offenders.append(f"{source.rel}:{lineno}: {line.strip()[:90]}")
 
     assert not offenders, (
         "These lines cite a GitHub issue number:\n  "
@@ -205,8 +234,10 @@ def test_every_documentation_path_named_in_the_package_exists():
     pattern = re.compile(r"docs/[A-Za-z0-9_/\-]+\.md")
     missing = []
     setup_scripts = sorted((_REPO_ROOT / "scripts" / "setup").rglob("*.sh"))
-    for path in _python_files() + setup_scripts:
-        text = path.read_text(encoding="utf-8")
+    texts = [(source.path, source.text) for source in _sources()] + [
+        (path, path.read_text(encoding="utf-8")) for path in setup_scripts
+    ]
+    for path, text in texts:
         for match in sorted(set(pattern.findall(text))):
             if not (_REPO_ROOT / match).is_file():
                 missing.append(f"{path.relative_to(_REPO_ROOT)} -> {match}")
@@ -264,14 +295,14 @@ _CONTRACT_POINTER = re.compile(
 )
 
 
-def _flattened(path: pathlib.Path) -> str:
+def _flattened(text: str) -> str:
     """File text with wrapped comment and docstring lines joined.
 
     Pointers wrap. Five of them rotted through a rename in this series and a
     line-oriented search found none of them, because every one was split as
     ``in the class`` / ``docstring`` across two lines.
     """
-    joined = re.sub(r"\n\s*(#\s*)?", " ", path.read_text(encoding="utf-8"))
+    joined = re.sub(r"\n\s*(#\s*)?", " ", text)
     return re.sub(r"\s+", " ", joined)
 
 
@@ -306,8 +337,9 @@ def test_every_contract_section_pointer_resolves():
 
     dangling = []
     unnamed = []
-    for path in _python_files():
-        flat = _flattened(path)
+    for source in _sources():
+        path = source.path
+        flat = _flattened(source.text)
         named = re.findall(r"docs/design/(\w+\.md)", flat)
         # A file that names NO contract path is the defect itself, not a case to
         # wave through. "The contract doc" is shorthand for a path the file is
@@ -350,16 +382,15 @@ def test_every_contract_section_pointer_resolves():
 _GUTTED_PARENTHETICAL = re.compile(r"\(\s+[^()]{0,60}?\)")
 
 
-def _prose(path: pathlib.Path) -> list[str]:
+def _prose(source: _Source) -> list[str]:
     """Comment blocks and docstrings, each flattened; no code.
 
     Code is excluded deliberately -- ``foo( x )`` is a formatting question ruff
     already owns, and mentions like ``vars()`` would otherwise dominate.
     """
-    source = path.read_text(encoding="utf-8")
     blocks: list[str] = []
     run: list[str] = []
-    for line in source.split("\n"):
+    for line in source.text.split("\n"):
         stripped = line.strip()
         if stripped.startswith("#"):
             run.append(stripped.lstrip("#").strip())
@@ -369,7 +400,7 @@ def _prose(path: pathlib.Path) -> list[str]:
     if run:
         blocks.append(" ".join(run))
 
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(source.tree):
         if isinstance(
             node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         ):
@@ -389,10 +420,10 @@ def test_no_prose_parenthetical_opens_with_whitespace():
     than the count, is what catches it.
     """
     gutted = []
-    for path in _python_files():
-        for block in _prose(path):
+    for source in _sources():
+        for block in _prose(source):
             for match in _GUTTED_PARENTHETICAL.finditer(block):
-                gutted.append(f"{path.relative_to(_REPO_ROOT)}: {match.group(0)!r}")
+                gutted.append(f"{source.rel}: {match.group(0)!r}")
 
     assert not gutted, (
         "These parentheticals open with whitespace, which in prose means the "
