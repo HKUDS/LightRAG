@@ -20,19 +20,8 @@ from lightrag.utils import logger
 
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.settings import Settings as LlamaIndexSettings
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
-)
-from lightrag.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    APITimeoutError,
 )
 import numpy as np
 
@@ -92,17 +81,6 @@ def format_chat_messages(messages):
     return formatted_messages
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
-    # Surface the last attempt's own exception rather than tenacity.RetryError,
-    # so callers can catch the real exception type and see its message (same
-    # convention as openai.py / ollama.py / voyageai.py, etc.).
-    reraise=True,
-)
 async def llama_index_complete_if_cache(
     model: str,
     prompt: str,
@@ -111,7 +89,13 @@ async def llama_index_complete_if_cache(
     enable_cot: bool = False,
     chat_kwargs={},
 ) -> str:
-    """Complete the prompt using LlamaIndex."""
+    """Complete the prompt using LlamaIndex.
+
+    Retries belong to the llama_index model: this function adds none and
+    lets the provider's exception propagate unchanged. Tune them on the model
+    (for example ``OpenAI(max_retries=...)``); an extra retry layer here would
+    multiply the provider's own attempts.
+    """
     if enable_cot:
         logger.debug(
             "enable_cot=True is not supported for LlamaIndex implementation and will be ignored."
@@ -237,17 +221,6 @@ async def llama_index_complete(
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
-    # Surface the last attempt's own exception rather than tenacity.RetryError,
-    # so callers can catch the real exception type and see its message (same
-    # convention as openai.py / ollama.py / voyageai.py, etc.).
-    reraise=True,
-)
 async def llama_index_embed(
     texts: list[str],
     embed_model: BaseEmbedding = None,
@@ -262,6 +235,11 @@ async def llama_index_embed(
     concurrent requests. Set ``embed_batch_size >= embedding_batch_num`` to
     keep one request per call. See "Embedding batch sizes" in
     docs/ProgramingWithCore.md.
+
+    Retries belong to the llama_index model: this function adds none and
+    lets the provider's exception propagate unchanged. Tune them on the model
+    (for example ``OpenAIEmbedding(max_retries=...)``); an extra retry layer
+    here would multiply the provider's own attempts.
 
     Args:
         texts: List of texts to embed
