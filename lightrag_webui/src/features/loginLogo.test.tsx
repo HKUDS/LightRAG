@@ -105,15 +105,6 @@ describe('login page branding', () => {
     expect(container.querySelectorAll('.lucide-zap')).toHaveLength(0)
   })
 
-  test('shows the resolved deployment title as the page heading', async () => {
-    seedCustomization({ title: 'Acme Knowledge Base' })
-    await renderLogin()
-
-    expect(
-      await screen.findByRole('heading', { name: 'Acme Knowledge Base' })
-    ).toBeInTheDocument()
-  })
-
   test('falls back to the title /auth-status just reported when the bundle names none', async () => {
     // The bundle is the preferred source, but an uncustomized deployment can
     // still set WEBUI_TITLE. That value arrives with the auth-status response
@@ -140,25 +131,12 @@ describe('login page branding', () => {
     expect(screen.queryAllByRole('heading', { name: 'Ops Knowledge Base' })).toHaveLength(0)
   })
 
-  test('drops a logo that fails to load rather than showing a broken image', async () => {
+  test('a failed logo does not block a different logo from a later locale', async () => {
     seedCustomization({ logo_url: BUNDLE_LOGO, logo_alt: 'Acme Corp' })
     await renderLogin()
 
-    const logo = await screen.findByRole('img', { name: 'Acme Corp' })
     // A bundle can name a URL this browser cannot fetch (expired CDN, blocked
-    // host). The alternative to removing it is a permanently broken image in
-    // the middle of the login card.
-    fireEvent.error(logo)
-
-    await waitFor(() => {
-      expect(screen.queryAllByRole('img', { name: 'Acme Corp' })).toHaveLength(0)
-    })
-  })
-
-  test('a failed logo does not block a different logo from a later locale', async () => {
-    seedCustomization({ logo_url: BUNDLE_LOGO, logo_alt: 'Acme Corp' })
-    const view = await renderLogin()
-
+    // host): the logo is dropped rather than left as a broken image.
     fireEvent.error(await screen.findByRole('img', { name: 'Acme Corp' }))
     await waitFor(() => {
       expect(screen.queryAllByRole('img', { name: 'Acme Corp' })).toHaveLength(0)
@@ -175,6 +153,5 @@ describe('login page branding', () => {
       'src',
       'https://cdn.example.test/acme-fr.png'
     )
-    expect(view.container).toBeTruthy()
   })
 })

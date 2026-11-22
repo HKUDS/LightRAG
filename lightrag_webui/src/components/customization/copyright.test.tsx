@@ -94,36 +94,21 @@ const renderPage = async (page: 'login' | 'welcome') => {
 }
 
 describe.each(['login', 'welcome'] as const)('%s page copyright', (page) => {
-  test('shows the deployment copyright at the foot of the page', async () => {
-    seedCustomization({ title: 'Acme KB', copyright: COPYRIGHT })
-    await renderPage(page)
-
-    expect(await screen.findByText(COPYRIGHT)).toBeInTheDocument()
-  })
-
-  test('keeps it outside the card, not inside the scrolling panel', async () => {
+  test('keeps it at the FOOT of the page, outside and after the card', async () => {
     seedCustomization({ title: 'Acme KB', copyright: COPYRIGHT })
     const { container } = await renderPage(page)
 
     const footer = await screen.findByText(COPYRIGHT)
+    const card = container.querySelector('[class*="max-w-[480px]"], [class*="max-w-[520px]"]')
+    expect(card === null).toBe(false)
+
     // The card owns its own max width and can scroll its own content; a
     // footer inside it would scroll away with the form instead of holding
     // the page's bottom edge.
-    const card = container.querySelector('[class*="max-w-[480px]"], [class*="max-w-[520px]"]')
-    expect(card === null).toBe(false)
     expect(card!.contains(footer)).toBe(false)
-  })
 
-  test('keeps it at the FOOT of the page, after the card', async () => {
-    seedCustomization({ title: 'Acme KB', copyright: COPYRIGHT })
-    const { container } = await renderPage(page)
-
-    const footer = await screen.findByText(COPYRIGHT)
-    const card = container.querySelector('[class*="max-w-[480px]"], [class*="max-w-[520px]"]')
-    expect(card === null).toBe(false)
-
-    // Two things put it at the bottom edge, and being outside the card is
-    // only one of them. Order: the footer follows the card in the document,
+    // Being outside the card is only one of the two things that put it at
+    // the bottom edge. Order: the footer follows the card in the document,
     // so it renders below and not above it.
     const follows =
       (card!.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0

@@ -79,6 +79,8 @@ const backend = {
   /** Status filters requested while `recordFilters` is on. */
   requestedFilters: [] as (string | null)[],
   recordFilters: false,
+  /** `hang` never answers (until aborted); `reject` answers with an HTTP 500. */
+  paginatedMode: 'ok' as 'ok' | 'hang' | 'reject',
   paginatedCalls: 0,
   healthCalls: 0,
   deleteCalls: 0
@@ -94,6 +96,7 @@ const resetBackend = () => {
   backend.requestedFilters = []
   backend.recordFilters = false
   backend.scanInFlight = false
+  backend.paginatedMode = 'ok'
   backend.paginatedCalls = 0
   backend.healthCalls = 0
   backend.deleteCalls = 0
@@ -136,6 +139,18 @@ const backendAdapter = async (config: any) => {
     const body = JSON.parse(config.data ?? '{}')
     const statusFilter = body.status_filter ?? null
     if (backend.recordFilters) backend.requestedFilters.push(statusFilter)
+    if (backend.paginatedMode === 'hang') {
+      // Settles only when the request is aborted (the afterEach reset does).
+      return new Promise((_resolve, reject) => {
+        config.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+      })
+    }
+    if (backend.paginatedMode === 'reject') {
+      const error: any = new Error('Request failed with status code 500')
+      error.response = { ...respond(config, { detail: 'boom' }), status: 500 }
+      error.isAxiosError = true
+      throw error
+    }
     return respond(config, paginate(statusFilter))
   }
 
@@ -192,30 +207,85 @@ const rowFor = (docId: string) => {
   return cell?.closest('tr') ?? null
 }
 
-describe('DocumentManager post-action refreshes', () => {
-  beforeEach(() => {
-    resetBackend()
-    __setAxiosAdapterForTests(backendAdapter)
-    useSettingsStore.getState().setCurrentTab('documents')
-    useBackendState.setState({
-      health: true,
-      pipelineBusy: false,
-      pipelineActive: false
+beforeEach(() => {
+  resetBackend()
+  __setAxiosAdapterForTests(backendAdapter)
+  useSettingsStore.getState().setCurrentTab('documents')
+  useBackendState.setState({
+    health: true,
+    pipelineBusy: false,
+    pipelineActive: false
+  })
+})
+
+afterEach(() => {
+  // Before any store reset: a file-local afterEach runs BEFORE the preload's
+  // cleanup(), so resetting first would land on a still-mounted component.
+  cleanup()
+  useBackendState.getState().clearHealthCheckTimer()
+  __resetPaginatedDocumentRequestsForTests()
+})
+
+afterAll(() => {
+  __setAxiosAdapterForTests(undefined)
+})
+
+describe('DocumentManager initial list state', () => {
+  const loadingCount = () => screen.queryAllByRole('status', { name: 'Loading documents...' }).length
+  const emptyCount = () => screen.queryAllByText('No Documents').length
+
+  test('before the first response it shows loading, not an empty corpus', async () => {
+    backend.paginatedMode = 'hang'
+    renderWithProviders(<DocumentManager />)
+    await waitFor(() => {
+      expect(backend.paginatedCalls).toBe(1)
+    })
+    expect({ loading: loadingCount(), empty: emptyCount() }).toEqual({ loading: 1, empty: 0 })
+  })
+
+  test('a failed first load shows the error and Retry, not an empty corpus', async () => {
+    backend.paginatedMode = 'reject'
+    renderWithProviders(<DocumentManager />)
+    await waitFor(() => {
+      expect(screen.queryAllByText('Could not load documents')).toHaveLength(1)
+    })
+    expect(screen.queryAllByRole('button', { name: 'Retry' })).toHaveLength(1)
+    expect({ loading: loadingCount(), empty: emptyCount() }).toEqual({ loading: 0, empty: 0 })
+  })
+
+  test('a confirmed empty response shows the empty corpus and stops loading', async () => {
+    backend.docs = []
+    backend.failedDocs = []
+    renderWithProviders(<DocumentManager />)
+    await waitFor(() => {
+      expect(emptyCount()).toBe(1)
+    })
+    expect(loadingCount()).toBe(0)
+  })
+})
+
+describe('DocumentManager BFCache restore', () => {
+  test('a restore after beforeunload refetches the list', async () => {
+    renderWithProviders(<DocumentManager />)
+    await waitFor(() => {
+      expect(rowFor(DOC_ID) === null).toBe(false)
+    })
+    const callsBeforeRestore = backend.paginatedCalls
+
+    // Leaving through BFCache fires beforeunload, and the same mounted tree is
+    // resumed: nothing on beforeunload may stop the restore's refetch.
+    window.dispatchEvent(new Event('beforeunload'))
+    const pageShow = new Event('pageshow')
+    Object.defineProperty(pageShow, 'persisted', { value: true })
+    window.dispatchEvent(pageShow)
+
+    await waitFor(() => {
+      expect(backend.paginatedCalls > callsBeforeRestore).toBe(true)
     })
   })
+})
 
-  afterEach(() => {
-    // Before any store reset: a file-local afterEach runs BEFORE the preload's
-    // cleanup(), so resetting first would land on a still-mounted component.
-    cleanup()
-    useBackendState.getState().clearHealthCheckTimer()
-    __resetPaginatedDocumentRequestsForTests()
-  })
-
-  afterAll(() => {
-    __setAxiosAdapterForTests(undefined)
-  })
-
+describe('DocumentManager post-action refreshes', () => {
   test('partially deleted documents have a badge, filter and retry selection', async () => {
     backend.docs = [{ ...makeDoc(DOC_ID), status: 'deleting' }]
     backend.recordFilters = true

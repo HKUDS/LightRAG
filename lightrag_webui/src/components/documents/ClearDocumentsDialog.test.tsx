@@ -87,13 +87,17 @@ const openAndConfirm = async (options: { checkCache: boolean }) => {
 }
 
 describe('ClearDocumentsDialog', () => {
-  test('clears without the cache by default', async () => {
+  test('clears without the cache by default, and closes on an unqualified success', async () => {
     await openAndConfirm({ checkCache: false })
 
     await waitFor(() => expect(clearRequests.length).toBe(1))
     expect(clearRequests[0].url).toBe('/documents')
     expect(clearRequests[0].method?.toLowerCase()).toBe('delete')
     expect(clearRequests[0].clearLlmCache).toBe(false)
+
+    await waitFor(() =>
+      expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(0)
+    )
   })
 
   test('folds the opted-in cache drop into the single clear request', async () => {
@@ -110,42 +114,14 @@ describe('ClearDocumentsDialog', () => {
   })
 
   // At least one storage was dropped, so the list on screen is stale
-  // whatever else failed. Not refreshing would leave the user looking at
-  // documents the server no longer has.
-  test('refreshes on partial_success', async () => {
-    nextResult = {
-      status: 'partial_success',
-      message: 'Cleared documents with some errors. Deleted 0 files.'
-    }
-
-    await openAndConfirm({ checkCache: true })
-
-    await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
-  })
-
-  // ...but partial_success does NOT prove the documents are gone: the server
-  // returns it whenever one drop failed and another succeeded, so a failed
-  // `doc_status` or `full_docs` drop lands here with rows still in place.
-  // Closing over that would present an unfinished destructive operation as
-  // finished.
-  // The toast must not assert the documents were cleared -- on a failed
-  // `doc_status` or `full_docs` drop they are still there.
-  test('does not claim the documents were cleared on partial_success', async () => {
-    nextResult = {
-      status: 'partial_success',
-      message: 'Cleared documents with some errors. Deleted 0 files.'
-    }
-
-    await openAndConfirm({ checkCache: true })
-
-    await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
-    const partial = testI18n.t('documentPanel.clearDocuments.partialSuccess', {
-      message: ''
-    })
-    expect(/cleared|deleted|removed/i.test(partial)).toBe(false)
-  })
-
-  test('keeps the dialog open on partial_success so a retry is one step', async () => {
+  // whatever else failed: not refreshing would leave the user looking at
+  // documents the server no longer has. But partial_success does NOT prove the
+  // documents are gone either: the server returns it whenever one drop failed
+  // and another succeeded, so a failed `doc_status` or `full_docs` drop lands
+  // here with rows still in place. So it refreshes, keeps the dialog open (a
+  // retry is one step), and the toast must not claim the documents were
+  // cleared.
+  test('partial_success refreshes, stays open and does not claim the clear', async () => {
     nextResult = {
       status: 'partial_success',
       message: 'Cleared documents with some errors. Deleted 0 files.'
@@ -155,28 +131,22 @@ describe('ClearDocumentsDialog', () => {
 
     await waitFor(() => expect(onDocumentsCleared).toHaveBeenCalledTimes(1))
     expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(1)
+    const partial = testI18n.t('documentPanel.clearDocuments.partialSuccess', {
+      message: ''
+    })
+    expect(/cleared|deleted|removed/i.test(partial)).toBe(false)
   })
 
-  test('closes only on an unqualified success', async () => {
+  // `fail` (every storage drop failed) and `busy` (nothing ran) are the cases
+  // where the documents really do survive. They share one branch (anything
+  // that is neither success nor partial_success), so `fail` stands for both.
+  test('keeps the dialog open and does not refresh on fail', async () => {
+    nextResult = { status: 'fail', message: 'nothing was cleared' }
+
     await openAndConfirm({ checkCache: false })
 
-    await waitFor(() =>
-      expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(0)
-    )
+    await waitFor(() => expect(clearRequests.length).toBe(1))
+    expect(onDocumentsCleared).toHaveBeenCalledTimes(0)
+    expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(1)
   })
-
-  // `busy` (nothing ran) and `fail` (every storage drop failed) are the cases
-  // where the documents really do survive.
-  test.each(['fail', 'busy'] as const)(
-    'keeps the dialog open and does not refresh on %s',
-    async (status) => {
-      nextResult = { status, message: 'nothing was cleared' }
-
-      await openAndConfirm({ checkCache: false })
-
-      await waitFor(() => expect(clearRequests.length).toBe(1))
-      expect(onDocumentsCleared).toHaveBeenCalledTimes(0)
-      expect(screen.queryAllByPlaceholderText(/type yes to confirm/i).length).toBe(1)
-    }
-  )
 })
