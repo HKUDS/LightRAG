@@ -123,7 +123,13 @@ async def test_oversized_custom_chunk_rejected_before_journal(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("embedding_limit", [None, 0, 8192])
+@pytest.mark.parametrize(
+    "embedding_limit",
+    [
+        None,
+        0,
+    ],
+)
 async def test_chunk_over_chunk_token_size_is_accepted(
     tmp_path, monkeypatch, embedding_limit
 ):

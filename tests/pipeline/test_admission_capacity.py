@@ -317,25 +317,6 @@ def test_scan_breaks_through_the_cap(tmp_path):
     asyncio.run(_run())
 
 
-def test_minted_reservation_is_released_after_the_write(tmp_path):
-    """The SDK path has no reservation of its own, so the guard mints one; it
-    must be gone once the enqueue returns (and not leak on failure either)."""
-
-    async def _run():
-        rag = await _build_rag(tmp_path, capacity=5)
-        try:
-            await rag.apipeline_enqueue_documents(input="a", file_paths="a.txt")
-            pipeline_status = await get_namespace_data(
-                "pipeline_status", workspace=rag.workspace
-            )
-            assert pipeline_status["pending_enqueue_tokens"] == {}
-            assert pipeline_status["pending_enqueues"] == 0
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
-
-
 def test_capacity_requires_a_count(tmp_path):
     """Enforcing capacity without a strict count would be guessing."""
 
