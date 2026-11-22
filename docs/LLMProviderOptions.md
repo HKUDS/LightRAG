@@ -378,8 +378,8 @@ KEYWORD_OLLAMA_LLM_THINK=false
 # Gemini
 EXTRACT_GEMINI_LLM_THINKING_CONFIG='{"thinking_budget": 0, "include_thoughts": false}'
 
-# OpenAI reasoning-capable models
-EXTRACT_OPENAI_LLM_REASONING_EFFORT=minimal
+# OpenAI models that support none (e.g. GPT-6.1 Terra or GPT-6 Luna)
+EXTRACT_OPENAI_LLM_REASONING_EFFORT=none
 
 # OpenRouter (one EXTRA_BODY per role — choose one of the two forms below)
 EXTRACT_OPENAI_LLM_EXTRA_BODY='{"reasoning": {"enabled": false}}'
@@ -400,7 +400,7 @@ start instead of setting it globally. A local OpenAI-compatible endpoint sharing
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 # Do NOT set OPENAI_LLM_REASONING_EFFORT globally here — the local server rejects it.
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 KEYWORD_OPENAI_LLM_MAX_TOKENS=2048

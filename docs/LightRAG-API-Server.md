@@ -310,10 +310,10 @@ VLM_PROCESS_ENABLE=false
 LLM_BINDING=openai
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
 
 #######################################################################################
 ### Embedding Configuration (do not change after the first file is processed)
@@ -381,7 +381,7 @@ Use this after the basic document flow works. The MinerU official API avoids run
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 
 VLM_PROCESS_ENABLE=true
-VLM_LLM_MODEL=gpt-5-mini
+VLM_LLM_MODEL=gpt-6.1-terra
 
 MINERU_API_MODE=official
 MINERU_API_TOKEN=your_mineru_api_token
@@ -861,14 +861,14 @@ If a role is not configured, it inherits the base `LLM_*` settings. Minimal same
 
 ```bash
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
-EXTRACT_LLM_MODEL=gpt-5-mini
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
-VLM_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
+VLM_LLM_MODEL=gpt-6.1-terra
 ```
 
 **Recommended models by role:**

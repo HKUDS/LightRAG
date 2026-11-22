@@ -15,13 +15,15 @@ LightRAG 支持为不同处理阶段配置不同的 LLM 或 VLM。这个机制�
 
 如果某个角色没有专门配置，LightRAG 会使用基础 `LLM_*` 配置。
 
+直接使用 OpenAI API 时，如配置仍固定在 GPT-5、GPT-5 mini 或 GPT-5 nano，请在 [2026 年 12 月 11 日停用](https://developers.openai.com/api/docs/deprecations)前更新模型。后续模型不接受 `minimal`；请仅在支持的模型上使用 `none`，例如 GPT-6.1 Terra 或 GPT-6 Luna。
+
 ## 基础 LLM 配置
 
 基础配置定义默认 LLM provider、模型、服务地址、认证信息和并发控制：
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -55,7 +57,7 @@ Extract 角色既处理文本块抽取，也在图合并时生成描述摘要。
 
 ```env
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
 QUERY_MAX_ASYNC_LLM=2
@@ -128,13 +130,14 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-# QUERY 继承 host、API key、timeout、并发和 OPENAI_LLM_REASONING_EFFORT
-QUERY_LLM_MODEL=gpt-5
+# QUERY 继承 host、API key、timeout 和并发
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 ```
 
 ### 跨 provider 覆盖
@@ -155,10 +158,10 @@ LLM_BINDING_HOST=http://localhost:11434
 OLLAMA_LLM_NUM_CTX=32768
 
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5-mini
+QUERY_LLM_MODEL=gpt-6.1-terra
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_openai_api_key
-QUERY_OPENAI_LLM_REASONING_EFFORT=minimal
+QUERY_OPENAI_LLM_REASONING_EFFORT=none
 ```
 
 跨 provider 时建议显式设置 `{ROLE}_LLM_BINDING_HOST`，避免默认 host 与基础 provider 的 endpoint 混淆。
@@ -175,7 +178,7 @@ Bedrock 不使用 `LLM_BINDING_API_KEY`，也不支持 `{ROLE}_LLM_BINDING_API_K
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 
@@ -210,16 +213,17 @@ EXTRACT_BEDROCK_LLM_MAX_TOKENS=2048
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 QUERY_MAX_ASYNC_LLM=2
 ```
 
-`QUERY` 会继承基础 host、API key 和 `OPENAI_LLM_REASONING_EFFORT`。
+`QUERY` 会继承基础 host 和 API key，但将推理强度覆盖为 `low`，因为 GPT-6.1 Sol 不接受 `none`。
 
 ### 2. 同 provider 更换模型并调整参数
 
@@ -227,13 +231,13 @@ QUERY_MAX_ASYNC_LLM=2
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 QUERY_LLM_TIMEOUT=240
@@ -243,7 +247,7 @@ QUERY_LLM_TIMEOUT=240
 
 适合所有角色都走 `openai` binding，但其中一些角色访问 OpenAI 官方接口，另一些角色访问本地 vLLM、SGLang 或 OpenRouter 等 OpenAI-compatible endpoint。下面的例子中：
 
-- `EXTRACT` 使用 OpenAI 官方 `gpt-5-mini`。
+- `EXTRACT` 使用 OpenAI 官方 `gpt-6.1-terra`。
 - `QUERY` 使用 OpenAI 官方 `gpt-5.4`，并使用单独的 OpenAI key。
 - `KEYWORD` 使用本地 vLLM 部署的 `Qwen3.5-35B-A3B`。
 
@@ -253,7 +257,7 @@ QUERY_LLM_TIMEOUT=240
 # have a valid OpenAI configuration.
 ###########################################################################
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
 LLM_TIMEOUT=240
@@ -268,10 +272,10 @@ MAX_ASYNC_LLM=4
 # OPENAI_LLM_REASONING_EFFORT=none
 
 ###########################################################################
-# EXTRACT: OpenAI official API, gpt-5-mini
+# EXTRACT: OpenAI official API, gpt-6.1-terra
 ###########################################################################
 EXTRACT_LLM_BINDING=openai
-EXTRACT_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
 EXTRACT_LLM_BINDING_HOST=https://api.openai.com/v1
 EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
@@ -318,7 +322,7 @@ KEYWORD_LLM_TIMEOUT=60
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 OPENAI_LLM_REASONING_EFFORT=medium
@@ -340,7 +344,7 @@ KEYWORD_OLLAMA_LLM_NUM_CTX=32768
 VLM_PROCESS_ENABLE=true
 
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -361,7 +365,7 @@ VLM_LLM_TIMEOUT=240
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 
