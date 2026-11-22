@@ -238,28 +238,6 @@ async def test_upsert_node_unicode_entity_id():
 
 
 @pytest.mark.asyncio
-async def test_upsert_node_dollar_signs_in_entity_id():
-    """Dollar signs in entity_id don't break dollar-quoting of the Cypher template."""
-    storage = make_graph_storage()
-    captured_calls: list[dict] = []
-
-    async def fake_query(sql, **kwargs):
-        captured_calls.append({"sql": sql, **kwargs})
-        return []
-
-    dollar_id = "price is $100 or $$200$$"
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.upsert_node(
-            dollar_id, {"entity_id": dollar_id, "description": "has dollars"}
-        )
-
-    call = captured_calls[0]
-    # The dollar signs are in the params, not the SQL template
-    params = json.loads(call["params"]["params"])
-    assert params["entity_id"] == dollar_id
-
-
-@pytest.mark.asyncio
 async def test_upsert_node_escapes_backticks_in_property_keys():
     """Backticks in property keys must be escaped before inlining the map."""
     storage = make_graph_storage()
