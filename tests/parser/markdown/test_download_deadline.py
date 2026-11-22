@@ -42,8 +42,9 @@ pytestmark = pytest.mark.offline
 # The listener emits a byte every _TRICKLE_INTERVAL, comfortably inside the
 # socket timeout, so a per-socket-operation timeout never fires.
 _TRICKLE_INTERVAL = 0.25
-_DEADLINE_SECONDS = 2
-_DEADLINE_PLUS_SLACK = 8.0
+# The smallest deadline the integer env var allows; four trickle intervals.
+_DEADLINE_SECONDS = 1
+_DEADLINE_PLUS_SLACK = _DEADLINE_SECONDS + 6.0
 
 
 # --------------------------------------------------------------------------
@@ -372,6 +373,9 @@ class _StalledListener:
         self.sock.listen(8)
         self.port = self.sock.getsockname()[1]
         self._stop = threading.Event()
+        # Set once a connection has received its first trickled byte, i.e. the
+        # client is inside the phase the mode stalls.
+        self.trickling = threading.Event()
         self._conns: list[socket.socket] = []
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -398,6 +402,7 @@ class _StalledListener:
                 # Never terminates the header block.
                 while not self._stop.wait(_TRICKLE_INTERVAL):
                     conn.sendall(b"X")
+                    self.trickling.set()
             elif self.mode == "trickle_tls":
                 # A handshake record announcing a 16383-byte payload, then one
                 # payload byte per interval: the client keeps waiting for a
@@ -409,12 +414,14 @@ class _StalledListener:
                 conn.sendall(b"\x16\x03\x03\x3f\xff")
                 while not self._stop.wait(_TRICKLE_INTERVAL):
                     conn.sendall(b"\x00")
+                    self.trickling.set()
             elif self.mode == "trickle_body":
                 conn.recv(4096)
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n")
                 conn.sendall(_PNG_BYTES[:8])
                 while not self._stop.wait(_TRICKLE_INTERVAL):
                     conn.sendall(b"\x00")
+                    self.trickling.set()
         except OSError:
             pass
 
@@ -639,7 +646,8 @@ def test_pipeline_cancel_event_aborts_a_native_md_parse(
 
     async def _drive():
         task = asyncio.create_task(get_parser("native").parse(ctx))
-        await asyncio.sleep(1.0)  # let the fetch get into the trickled body
+        # Let the fetch get into the trickled body.
+        assert await asyncio.to_thread(stalled_listener.trickling.wait, 10.0)
         cancel_event.set()
         return await asyncio.wait_for(task, timeout=10.0)
 
