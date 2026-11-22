@@ -561,10 +561,27 @@ def test_japanese_counting_renders_chinese_numerals() -> None:
     assert r.unsupported_formats == set()
 
 
-@pytest.mark.parametrize("num_fmt", _COUNTING_FORMATS)
+# All four families convert through the same ``_to_chinese``, so the values
+# are swept on japaneseCounting (the regression's format) and each other family
+# keeps 10, the value that tells positional counting from digit-by-digit.
 @pytest.mark.parametrize(
-    ("count", "expected"),
-    [(1, "一"), (2, "二"), (10, "十"), (11, "十一"), (20, "二十"), (99, "九十九")],
+    ("num_fmt", "count", "expected"),
+    [
+        ("japaneseCounting", count, expected)
+        for count, expected in (
+            (1, "一"),
+            (2, "二"),
+            (10, "十"),
+            (11, "十一"),
+            (20, "二十"),
+            (99, "九十九"),
+        )
+    ]
+    + [
+        (num_fmt, 10, "十")
+        for num_fmt in _COUNTING_FORMATS
+        if num_fmt != "japaneseCounting"
+    ],
 )
 def test_counting_families_are_positional(num_fmt, count, expected) -> None:
     """10 must render 十, not 一〇: only values past 9 tell a positional counting
@@ -718,8 +735,13 @@ def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
     assert warnings == {"numbering_out_of_range_formats": 1}
 
 
-@pytest.mark.parametrize("num_fmt", sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS))
-@pytest.mark.parametrize("count", [0, -1])
+# The out-of-range check is one ``count < 1`` test shared by every format, so
+# every format is checked at 0 and the first one also at -1.
+@pytest.mark.parametrize(
+    ("num_fmt", "count"),
+    [(num_fmt, 0) for num_fmt in sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS)]
+    + [(sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS)[0], -1)],
+)
 def test_non_positive_counts_are_recorded_for_every_positive_domain_format(
     num_fmt, count
 ) -> None:
