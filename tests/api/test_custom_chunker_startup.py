@@ -202,14 +202,10 @@ def test_invalid_selection_prints_a_boxed_notice_and_still_aborts(startup, monke
     assert captured == []
 
 
-@pytest.mark.parametrize(
-    "name,match",
-    [
-        ("missing-chunker", "unknown chunker"),
-        ("pkg:func", "import paths are not supported"),
-    ],
-)
-def test_invalid_cli_selection_exits_nonzero(monkeypatch, name, match):
+def test_invalid_cli_selection_exits_nonzero(monkeypatch):
+    # One real process for the exit code; which message each kind of invalid
+    # name produces is pinned in-process by
+    # test_invalid_selection_fails_before_constructor.
     monkeypatch.setenv("AUTH_ACCOUNTS", "")
     monkeypatch.setenv("LLM_BINDING", "openai")
     monkeypatch.setenv("EMBEDDING_BINDING", "openai")
@@ -220,7 +216,7 @@ def test_invalid_cli_selection_exits_nonzero(monkeypatch, name, match):
             "-c",
             "from lightrag.api.config import parse_args; from lightrag.api.lightrag_server import create_app; create_app(parse_args())",
             "--custom-chunker",
-            name,
+            "missing-chunker",
         ],
         cwd=Path(__file__).resolve().parents[2],
         capture_output=True,
@@ -228,4 +224,4 @@ def test_invalid_cli_selection_exits_nonzero(monkeypatch, name, match):
         timeout=30,
     )
     assert result.returncode != 0
-    assert match in result.stderr
+    assert "unknown chunker" in result.stderr
