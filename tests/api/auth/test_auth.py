@@ -10,9 +10,11 @@ from starlette.status import HTTP_403_FORBIDDEN
 from lightrag.api.passwords import BCRYPT_PASSWORD_PREFIX, hash_password
 from lightrag.tools.hash_password import main as hash_password_main
 from lightrag.utils import logger as lightrag_logger
+from tests.api._cheap_bcrypt import CHEAP_DUMMY_SPEC, cheap_bcrypt_salts
 
-
-pytestmark = pytest.mark.offline
+# Every test here checks which verification ran and its result, never its
+# cost, so hashes and the dummy spec use bcrypt's minimum cost.
+pytestmark = [pytest.mark.offline, pytest.mark.usefixtures(cheap_bcrypt_salts.__name__)]
 
 
 def import_real_api_module(module_name: str):
@@ -42,6 +44,7 @@ def auth_module(monkeypatch):
 
     module = import_real_api_module("lightrag.api.auth")
     module = importlib.reload(module)
+    monkeypatch.setattr(module, "_DUMMY_VERIFY_SPEC", CHEAP_DUMMY_SPEC)
     yield module
     sys.modules.pop("lightrag.api.auth", None)
 
@@ -210,7 +213,9 @@ def load_auth_handler(monkeypatch, auth_accounts: str):
     monkeypatch.setattr(config, "global_args", mock_global_args)
 
     try:
-        return import_real_api_module("lightrag.api.auth").auth_handler
+        module = import_real_api_module("lightrag.api.auth")
+        monkeypatch.setattr(module, "_DUMMY_VERIFY_SPEC", CHEAP_DUMMY_SPEC)
+        return module.auth_handler
     finally:
         sys.modules.pop("lightrag.api.auth", None)
 
