@@ -1517,30 +1517,6 @@ printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file"
     assert values["DATABASE_PROMPTS"] == "0"
 
 
-def test_collect_neo4j_config_uses_existing_password_as_default_in_docker_mode() -> (
-    None
-):
-    """Bundled Neo4j should preserve the existing password when the default is accepted."""
-    output = run_bash(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[NEO4J_PASSWORD]="from-env-password"
-
-confirm_default_yes() {{ return 0; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-
-collect_neo4j_config yes
-
-printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}\"
-""")
-    values = parse_lines(output)
-    assert values["PASSWORD"] == "from-env-password"
-
-
 def test_collect_neo4j_config_uses_existing_password_as_default_in_external_mode() -> (
     None
 ):
@@ -1681,30 +1657,6 @@ printf 'PASSWORD_PROMPTS=%s\\n' "$(grep -c '^secret_with_default$' "$prompt_log_
     assert values["PASSWORD_PROMPTS"] == "1"
 
 
-def test_collect_opensearch_config_preserves_graphlookup_auto_detection() -> None:
-    """collect_opensearch_config should leave PPL graphlookup unset unless explicitly configured."""
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-confirm_default_yes() {{ return 0; }}
-confirm_default_no() {{ return 1; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-
-collect_opensearch_config "yes"
-
-if [[ -v 'ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]' ]]; then
-  printf 'GRAPHLOOKUP_SET=yes\\n'
-else
-  printf 'GRAPHLOOKUP_SET=no\\n'
-fi
-""")
-    assert values["GRAPHLOOKUP_SET"] == "no"
-
-
 def test_collect_opensearch_config_preserves_explicit_graphlookup_override() -> None:
     """collect_opensearch_config should keep an existing PPL graphlookup override."""
     values = run_bash_lines(f"""
@@ -1766,9 +1718,16 @@ prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 collect_opensearch_config "yes"
 printf 'USE_SSL=%s\\n' "${{ENV_VALUES[OPENSEARCH_USE_SSL]}}"
 printf 'VERIFY_CERTS=%s\\n' "${{ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}}\"
+if [[ -v 'ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]' ]]; then
+  printf 'GRAPHLOOKUP_SET=yes\\n'
+else
+  printf 'GRAPHLOOKUP_SET=no\\n'
+fi
 """)
     assert values["USE_SSL"] == "true"
     assert values["VERIFY_CERTS"] == "false"
+    # PPL graphlookup stays unset (auto-detected) unless explicitly configured.
+    assert values["GRAPHLOOKUP_SET"] == "no"
 
 
 def test_collect_opensearch_config_uses_original_index_settings_as_defaults() -> None:

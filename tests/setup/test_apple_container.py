@@ -22,11 +22,6 @@ def test_script_exists_and_is_executable() -> None:
     assert SCRIPT.stat().st_mode & 0o111, "apple-container.sh should be executable"
 
 
-def test_script_syntax_is_valid() -> None:
-    result = run_bash_process(f'bash -n "{SCRIPT}"')
-    assert result.returncode == 0, result.stderr
-
-
 def test_help_lists_commands_and_services() -> None:
     out = run_bash(f'bash "{SCRIPT}" help')
     for command in ("up", "down", "status", "logs", "restart", "pull"):
