@@ -21,7 +21,6 @@ from tenacity import wait_none
 
 from lightrag.llm.bedrock import (
     BedrockConnectionError,
-    _handle_bedrock_exception,
     bedrock_complete_if_cache,
     bedrock_embed,
 )
@@ -29,17 +28,6 @@ from lightrag.llm.bedrock import (
 pytestmark = pytest.mark.offline
 
 _ENDPOINT = "https://bedrock-runtime.example.com"
-
-
-def test_connection_closed_error_is_classified_as_retryable():
-    """A mid-request server disconnect must map to BedrockConnectionError.
-
-    Not to the generic, non-retryable BedrockError.
-    """
-    error = ConnectionClosedError(endpoint_url=_ENDPOINT)
-
-    with pytest.raises(BedrockConnectionError):
-        _handle_bedrock_exception(error, "Bedrock converse")
 
 
 class _FlakyConnectionClient:

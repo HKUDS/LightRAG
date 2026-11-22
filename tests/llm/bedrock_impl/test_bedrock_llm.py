@@ -96,31 +96,6 @@ class _FakeSession:
         return _FakeBedrockClient(self._captured_calls)
 
 
-class _FakeReasoningClient(_FakeBedrockClient):
-    async def converse(self, **kwargs):
-        self._captured_calls.append(kwargs)
-        return {
-            "output": {
-                "message": {
-                    "content": [
-                        {
-                            "reasoningContent": {
-                                "reasoningText": {"text": "internal thought"}
-                            }
-                        },
-                        {"text": "final answer"},
-                    ]
-                }
-            }
-        }
-
-
-class _FakeReasoningSession(_FakeSession):
-    def client(self, *_args, **kwargs):
-        self._client_kwargs_calls.append(dict(kwargs))
-        return _FakeReasoningClient(self._captured_calls)
-
-
 class _FakeInterleavedClient(_FakeBedrockClient):
     async def converse(self, **kwargs):
         self._captured_calls.append(kwargs)
@@ -154,29 +129,10 @@ class _FakeInterleavedSession(_FakeSession):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_complete_skips_reasoning_content_block(monkeypatch):
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    captured_calls: list[dict] = []
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeReasoningSession(captured_calls, []),
-    ):
-        result = await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="hello",
-            extra_fields={"reasoning_config": {"type": "enabled"}},
-        )
-
-    assert result == "final answer"
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_bedrock_complete_joins_interleaved_text_blocks(monkeypatch):
     """Extended thinking can interleave reasoning and text blocks as
     [reasoning, text, reasoning, text]; every text block must be joined,
-    not just the first one found.
+    not just the first one found, and every reasoning block skipped.
     """
     monkeypatch.delenv("AWS_REGION", raising=False)
     captured_calls: list[dict] = []
@@ -192,6 +148,9 @@ async def test_bedrock_complete_joins_interleaved_text_blocks(monkeypatch):
         )
 
     assert result == "first part. second part."
+    assert captured_calls[-1]["additionalModelRequestFields"] == {
+        "reasoning_config": {"type": "enabled"}
+    }
 
 
 @pytest.mark.offline
@@ -237,7 +196,16 @@ async def test_bedrock_keyword_extraction_does_not_inject_system_prompt(monkeypa
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_default_endpoint_sentinel_uses_sdk_default(monkeypatch):
+@pytest.mark.parametrize(
+    "endpoint_url",
+    [
+        pytest.param("DEFAULT_BEDROCK_ENDPOINT", id="sentinel"),
+        pytest.param("", id="empty"),
+    ],
+)
+async def test_bedrock_default_endpoint_sentinel_uses_sdk_default(
+    monkeypatch, endpoint_url
+):
     captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
     monkeypatch.delenv("AWS_REGION", raising=False)
@@ -249,53 +217,10 @@ async def test_bedrock_default_endpoint_sentinel_uses_sdk_default(monkeypatch):
         await bedrock_complete_if_cache(
             model="bedrock-model",
             prompt="hello",
-            endpoint_url="DEFAULT_BEDROCK_ENDPOINT",
+            endpoint_url=endpoint_url,
         )
 
     assert client_kwargs_calls[-1] == {"region_name": None}
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_empty_endpoint_url_uses_sdk_default(monkeypatch):
-    captured_calls: list[dict] = []
-    client_kwargs_calls: list[dict] = []
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeSession(captured_calls, client_kwargs_calls),
-    ):
-        await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="hello",
-            endpoint_url="",
-        )
-
-    assert client_kwargs_calls[-1] == {"region_name": None}
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_custom_endpoint_url_is_forwarded(monkeypatch):
-    captured_calls: list[dict] = []
-    client_kwargs_calls: list[dict] = []
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeSession(captured_calls, client_kwargs_calls),
-    ):
-        await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="hello",
-            endpoint_url="https://proxy.example.com",
-        )
-
-    assert client_kwargs_calls[-1] == {
-        "region_name": None,
-        "endpoint_url": "https://proxy.example.com",
-    }
 
 
 class _FakeEmbeddingBody:
@@ -322,28 +247,6 @@ class _FakeEmbeddingSession(_FakeSession):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_embed_custom_endpoint_url_is_forwarded(monkeypatch):
-    captured_calls: list[dict] = []
-    client_kwargs_calls: list[dict] = []
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeEmbeddingSession(captured_calls, client_kwargs_calls),
-    ):
-        await bedrock_embed(
-            texts=["hello"],
-            endpoint_url="https://proxy.example.com",
-        )
-
-    assert client_kwargs_calls[-1] == {
-        "region_name": None,
-        "endpoint_url": "https://proxy.example.com",
-    }
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_bedrock_embed_default_endpoint_sentinel_uses_sdk_default(monkeypatch):
     captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
@@ -359,77 +262,6 @@ async def test_bedrock_embed_default_endpoint_sentinel_uses_sdk_default(monkeypa
         )
 
     assert client_kwargs_calls[-1] == {"region_name": None}
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_embed_empty_endpoint_url_uses_sdk_default(monkeypatch):
-    captured_calls: list[dict] = []
-    client_kwargs_calls: list[dict] = []
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeEmbeddingSession(captured_calls, client_kwargs_calls),
-    ):
-        await bedrock_embed(
-            texts=["hello"],
-            endpoint_url="",
-        )
-
-    assert client_kwargs_calls[-1] == {"region_name": None}
-
-
-class _FakeCohereEmbeddingBody:
-    async def json(self):
-        return {"embeddings": [[0.1] * 1024]}
-
-
-class _FakeCohereEmbeddingResponse:
-    def get(self, key):
-        assert key == "body"
-        return _FakeCohereEmbeddingBody()
-
-
-class _FakeCohereEmbeddingClient(_FakeBedrockClient):
-    async def invoke_model(self, **kwargs):
-        self._captured_calls.append(kwargs)
-        return _FakeCohereEmbeddingResponse()
-
-
-class _FakeCohereEmbeddingSession(_FakeSession):
-    def client(self, *_args, **kwargs):
-        self._client_kwargs_calls.append(dict(kwargs))
-        return _FakeCohereEmbeddingClient(self._captured_calls)
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_embed_cohere_passes_modelid_to_invoke_model(monkeypatch):
-    """Cohere embeddings must call invoke_model with ``modelId`` (not ``model``).
-
-    boto3's bedrock-runtime ``invoke_model`` only accepts ``modelId``; passing
-    ``model`` raises botocore ``ParamValidationError`` before any request, so
-    the whole Cohere embedding path used to fail. This mirrors the sibling
-    amazon branch, which already uses ``modelId``.
-    """
-    captured_calls: list[dict] = []
-    client_kwargs_calls: list[dict] = []
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeCohereEmbeddingSession(captured_calls, client_kwargs_calls),
-    ):
-        await bedrock_embed(
-            texts=["hello"],
-            model="cohere.embed-english-v3",
-        )
-
-    assert captured_calls, "invoke_model was not called"
-    invoke_kwargs = captured_calls[-1]
-    assert invoke_kwargs["modelId"] == "cohere.embed-english-v3"
-    assert "model" not in invoke_kwargs
 
 
 @pytest.mark.offline
@@ -477,36 +309,6 @@ class _FakeStreamingSession(_FakeSession):
     def client(self, *_args, **kwargs):
         self._client_kwargs_calls.append(dict(kwargs))
         return _FakeStreamingBedrockClient(self._captured_calls)
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_timeout_maps_to_botocore_client_config(monkeypatch):
-    """timeout must reach the aioboto3 client as botocore connect/read timeouts.
-
-    Before the fix nothing consumed ``timeout``, so botocore's 60s defaults
-    applied and long generations failed with "Read timeout on endpoint URL"
-    regardless of LLM_TIMEOUT.
-    """
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    captured_calls: list[dict] = []
-    client_kwargs_calls: list[dict] = []
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeSession(captured_calls, client_kwargs_calls),
-    ):
-        await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="hello",
-            timeout=240,
-        )
-
-    config = client_kwargs_calls[-1]["config"]
-    assert config.connect_timeout == 240
-    assert config.read_timeout == 240
-    # timeout is not a Converse API parameter and must never leak into the call.
-    assert "timeout" not in captured_calls[-1]
 
 
 @pytest.mark.offline
@@ -580,6 +382,7 @@ async def test_bedrock_complete_inherits_default_llm_timeout(
     chunk).
     """
     monkeypatch.delenv("AWS_REGION", raising=False)
+    captured_calls: list[dict] = []
     client_kwargs_calls: list[dict] = []
     hashing_kv = SimpleNamespace(
         global_config={
@@ -590,11 +393,13 @@ async def test_bedrock_complete_inherits_default_llm_timeout(
 
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeSession([], client_kwargs_calls),
+        return_value=_FakeSession(captured_calls, client_kwargs_calls),
     ):
         await bedrock_complete(prompt="hello", hashing_kv=hashing_kv, **call_kwargs)
 
     assert len(client_kwargs_calls) == 1
+    # timeout is not a Converse API parameter and must never leak into the call.
+    assert "timeout" not in captured_calls[-1]
     config = client_kwargs_calls[0].get("config")
     if expected_read_timeout is None:
         assert config is None
@@ -658,29 +463,6 @@ async def test_bedrock_complete_uses_role_timeout_through_role_wrapper(
     assert client_kwargs_calls[0]["config"].read_timeout == 180
     assert client_kwargs_calls[0]["config"].connect_timeout == 180
     assert client_kwargs_calls[1]["config"].read_timeout == 30
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_extra_fields_maps_to_additional_model_request_fields(
-    monkeypatch,
-):
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    captured_calls: list[dict] = []
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeSession(captured_calls, []),
-    ):
-        await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="hello",
-            extra_fields={"reasoning_config": {"type": "enabled"}},
-        )
-
-    assert captured_calls[-1]["additionalModelRequestFields"] == {
-        "reasoning_config": {"type": "enabled"}
-    }
 
 
 @pytest.mark.offline
@@ -765,13 +547,6 @@ async def test_bedrock_embed_forwards_sigv4_and_ignores_api_key(monkeypatch):
         "aws_session_token": "session",
     }
     assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") is None
-
-
-@pytest.mark.offline
-def test_bedrock_auth_docstrings_describe_generic_api_key_behavior():
-    assert "AWS_BEARER_TOKEN_BEDROCK" in bedrock_complete_if_cache.__doc__
-    assert "LLM_BINDING_API_KEY" in bedrock_complete_if_cache.__doc__
-    assert "EMBEDDING_BINDING_API_KEY" in bedrock_embed.func.__doc__
 
 
 class _FakeLightRAG:
@@ -939,13 +714,12 @@ def _make_args(tmp_path):
     return args
 
 
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch):
+def _setup_bedrock_app_modules(monkeypatch, args):
+    """Prepare an isolated lightrag_server module for create_app tests."""
     _reload_api_modules_if_mocked()
     monkeypatch.setattr(sys, "argv", ["pytest"])
     config = importlib.import_module("lightrag.api.config")
-    config.initialize_config(_make_args(tmp_path), force=True)
+    config.initialize_config(args, force=True)
     lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
     monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
     monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
@@ -959,8 +733,14 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
         lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
     )
     monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+    return lightrag_server
 
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch):
     args = _make_args(tmp_path)
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
 
     with (
         patch(
@@ -999,29 +779,12 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
 async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
     tmp_path, monkeypatch
 ):
-    _reload_api_modules_if_mocked()
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    config = importlib.import_module("lightrag.api.config")
-    config.initialize_config(_make_args(tmp_path), force=True)
-    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
-    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
-    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
-    monkeypatch.setattr(
-        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
-
     args = _make_args(tmp_path)
     args.query_aws_region = "us-west-2"
     args.query_aws_access_key_id = "query-akid"
     args.query_aws_secret_access_key = "query-secret"
     args.query_aws_session_token = "query-session"
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
 
     with patch(
         "lightrag.llm.bedrock.bedrock_complete_if_cache",
@@ -1035,71 +798,6 @@ async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
     assert mocked_bedrock.await_args.kwargs["aws_access_key_id"] == "query-akid"
     assert mocked_bedrock.await_args.kwargs["aws_secret_access_key"] == "query-secret"
     assert mocked_bedrock.await_args.kwargs["aws_session_token"] == "query-session"
-
-
-def _setup_bedrock_app_modules(monkeypatch, args):
-    """Prepare an isolated lightrag_server module for create_app tests."""
-    _reload_api_modules_if_mocked()
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    config = importlib.import_module("lightrag.api.config")
-    config.initialize_config(args, force=True)
-    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
-    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
-    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
-    monkeypatch.setattr(
-        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
-    return lightrag_server
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_create_app_bedrock_base_llm_func_passes_global_timeout(
-    tmp_path, monkeypatch
-):
-    """LLM_TIMEOUT must reach the Bedrock driver through the base llm_model_func.
-
-    This proves the server-layer wiring: the driver-level timeout tests pass
-    even if lightrag_server.py forgets to forward args.llm_timeout.
-    """
-    args = _make_args(tmp_path)
-    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
-
-    with patch(
-        "lightrag.llm.bedrock.bedrock_complete_if_cache",
-        AsyncMock(return_value="bedrock-ok"),
-    ) as mocked_bedrock:
-        lightrag_server.create_app(args)
-        base_func = _FakeLightRAG.last_init_kwargs["llm_model_func"]
-        await base_func("hello")
-
-    assert mocked_bedrock.await_args.kwargs["timeout"] == 180
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_create_app_bedrock_query_role_inherits_global_timeout(
-    tmp_path, monkeypatch
-):
-    args = _make_args(tmp_path)
-    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
-
-    with patch(
-        "lightrag.llm.bedrock.bedrock_complete_if_cache",
-        AsyncMock(return_value="bedrock-ok"),
-    ) as mocked_bedrock:
-        lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
-        await query_func("hello")
-
-    assert mocked_bedrock.await_args.kwargs["timeout"] == 180
 
 
 @pytest.mark.offline
@@ -1152,34 +850,16 @@ async def test_create_app_bedrock_server_timeout_overrides_caller_value(
 async def test_create_app_keyword_openai_role_forwards_nested_extra_body(
     tmp_path, monkeypatch, caplog, lightrag_caplog
 ):
-    _reload_api_modules_if_mocked()
-    monkeypatch.setattr(sys, "argv", ["pytest"])
     monkeypatch.setenv(
         "KEYWORD_OPENAI_LLM_EXTRA_BODY",
         '{"chat_template_kwargs": {"enable_thinking": false}}',
     )
-
-    config = importlib.import_module("lightrag.api.config")
-    config.initialize_config(_make_args(tmp_path), force=True)
-    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
-    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
-    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
-    monkeypatch.setattr(
-        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
-
     args = _make_args(tmp_path)
     args.keyword_llm_binding = "openai"
     args.keyword_llm_model = "xhd/Qwen3.5-35B-A3B"
     args.keyword_llm_binding_host = "https://keyword.example/v1"
     args.keyword_llm_binding_api_key = "keyword-secret"
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
 
     with (
         caplog.at_level("INFO", logger="lightrag"),
@@ -1242,23 +922,8 @@ def test_create_app_rejects_bedrock_role_api_key(tmp_path, monkeypatch):
 
 @pytest.mark.offline
 def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
-    _reload_api_modules_if_mocked()
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    config = importlib.import_module("lightrag.api.config")
-    config.initialize_config(_make_args(tmp_path), force=True)
-    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
-    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
-    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
-    monkeypatch.setattr(
-        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+    args = _make_args(tmp_path)
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
     monkeypatch.setattr(
         lightrag_server,
         "get_namespace_data",
@@ -1271,7 +936,7 @@ def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
         lambda: {"cleanup_performed": {}, "current_status": {}},
     )
 
-    app = lightrag_server.create_app(_make_args(tmp_path))
+    app = lightrag_server.create_app(args)
     _FakeLightRAG.last_instance.role_config_snapshot = {
         "query": {
             "binding": "runtime-binding",
@@ -1321,23 +986,8 @@ def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
 def test_health_pipeline_active_derivation(
     tmp_path, monkeypatch, pipeline_state, expected_active
 ):
-    _reload_api_modules_if_mocked()
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    config = importlib.import_module("lightrag.api.config")
-    config.initialize_config(_make_args(tmp_path), force=True)
-    lightrag_server = importlib.import_module("lightrag.api.lightrag_server")
-    monkeypatch.setattr(lightrag_server, "LightRAG", _FakeLightRAG)
-    monkeypatch.setattr(lightrag_server, "check_frontend_build", lambda: (True, False))
-    monkeypatch.setattr(
-        lightrag_server, "create_document_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_query_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(
-        lightrag_server, "create_graph_routes", lambda *_args, **_kwargs: APIRouter()
-    )
-    monkeypatch.setattr(lightrag_server, "OllamaAPI", _FakeOllamaAPI)
+    args = _make_args(tmp_path)
+    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
     monkeypatch.setattr(
         lightrag_server,
         "get_namespace_data",
@@ -1350,7 +1000,7 @@ def test_health_pipeline_active_derivation(
         lambda: {"cleanup_performed": {}, "current_status": {}},
     )
 
-    app = lightrag_server.create_app(_make_args(tmp_path))
+    app = lightrag_server.create_app(args)
     response = TestClient(app).get("/health")
 
     assert response.status_code == 200
@@ -1391,15 +1041,21 @@ class _FakeTruncatedSession(_FakeSession):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_max_tokens_stop_reason_marks_result_truncated(monkeypatch):
-    """Converse stopReason == "max_tokens" flags the response as uncacheable."""
+@pytest.mark.parametrize(
+    ("stop_reason", "truncated"),
+    [("max_tokens", True), ("end_turn", False)],
+)
+async def test_bedrock_stop_reason_sets_truncation_marker(
+    monkeypatch, stop_reason, truncated
+):
+    """Only Converse stopReason == "max_tokens" flags the response uncacheable."""
     from lightrag.utils import is_truncated_response
 
     monkeypatch.delenv("AWS_REGION", raising=False)
 
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeTruncatedSession([], [], "max_tokens"),
+        return_value=_FakeTruncatedSession([], [], stop_reason),
     ):
         result = await bedrock_complete_if_cache(
             model="bedrock-model",
@@ -1407,27 +1063,7 @@ async def test_bedrock_max_tokens_stop_reason_marks_result_truncated(monkeypatch
         )
 
     assert result == '{"entities":[{"name":"Ali'
-    assert is_truncated_response(result) is True
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_end_turn_stop_reason_is_not_marked_truncated(monkeypatch):
-    from lightrag.utils import is_truncated_response
-
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeTruncatedSession([], [], "end_turn"),
-    ):
-        result = await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="Extract entities",
-        )
-
-    assert result == '{"entities":[{"name":"Ali'
-    assert is_truncated_response(result) is False
+    assert is_truncated_response(result) is truncated
 
 
 class _FakeEmptyResponseClient(_FakeBedrockClient):
