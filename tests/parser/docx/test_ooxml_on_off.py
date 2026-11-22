@@ -35,6 +35,14 @@ ON_OFF_VALUES = [
     ("off", False),
 ]
 
+# Every reader delegates to ``is_on``, whose full table is above. A reader keeps
+# the bare element (on) and every off spelling: the drift was in the off list.
+READER_VALUES = [
+    (value, expected)
+    for value, expected in ON_OFF_VALUES
+    if value is None or not expected
+]
+
 
 def _flag(tag: str, value: str | None):
     elem = OxmlElement(tag)
@@ -48,7 +56,7 @@ def test_is_on(value, expected) -> None:
     assert is_on(_flag("w:b", value)) is expected
 
 
-@pytest.mark.parametrize(("value", "expected"), ON_OFF_VALUES)
+@pytest.mark.parametrize(("value", "expected"), READER_VALUES)
 def test_smart_heading_reads_bold_and_page_break_before(
     tmp_path: Path, value, expected
 ) -> None:
@@ -68,7 +76,7 @@ def test_smart_heading_reads_bold_and_page_break_before(
     assert feats.page_break_before is expected
 
 
-@pytest.mark.parametrize(("value", "expected"), ON_OFF_VALUES)
+@pytest.mark.parametrize(("value", "expected"), READER_VALUES)
 def test_empty_paragraph_record_reads_page_break_before(
     tmp_path: Path, value, expected
 ) -> None:
@@ -96,7 +104,7 @@ def test_empty_paragraph_record_reads_page_break_before(
     assert empty.page_break_before is expected
 
 
-@pytest.mark.parametrize(("value", "expected"), ON_OFF_VALUES)
+@pytest.mark.parametrize(("value", "expected"), READER_VALUES)
 def test_numbering_reads_is_lgl(tmp_path: Path, value, expected) -> None:
     val = "" if value is None else f' w:val="{value}"'
     numbering = (

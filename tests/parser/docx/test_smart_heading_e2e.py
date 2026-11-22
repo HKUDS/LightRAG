@@ -417,6 +417,8 @@ def test_redhead_document_structure(monkeypatch) -> None:
 
     Red-header masthead → publisher; the block heading is the plain main title
     (doc-number / publisher ride the composed heading, not the block heading).
+    The same run also pins I1 (no baseline body text is lost) and G12-3 (the
+    audit payload is byte-identical across repeated parses).
     """
     blocks, warnings, metadata = _extract(
         "redhead", _make_llm(_REDHEAD_TITLE), monkeypatch
@@ -433,6 +435,28 @@ def test_redhead_document_structure(monkeypatch) -> None:
     assert sub["parent_headings"] == ["关于加强某某管理的通知", "一、总体要求"]
     assert metadata["first_heading"] == "关于加强某某管理的通知"
     assert metadata["doc_title"] == "关于加强某某管理的通知"
+
+    # I1: every baseline character sequence survives (no TOC in this fixture).
+    from lightrag.parser.docx.smart_heading.guardrails import (
+        canonicalize_paragraph_text,
+    )
+
+    def _canon_all(blocks) -> str:
+        return "".join(
+            canonicalize_paragraph_text(line)
+            for b in blocks
+            for line in b["content"].split("\n")
+        )
+
+    base_blocks, _w, _m = _baseline("redhead")
+    assert len(_canon_all(blocks)) >= len(_canon_all(base_blocks)) * 0.99
+    assert "smart_fallback_baseline" not in warnings
+
+    # G12-3: a second parse produces a byte-identical audit payload.
+    _b2, _w2, metadata2 = _extract("redhead", _make_llm(_REDHEAD_TITLE), monkeypatch)
+    assert json.dumps(
+        metadata["smart_audit"], ensure_ascii=False, sort_keys=True
+    ) == json.dumps(metadata2["smart_audit"], ensure_ascii=False, sort_keys=True)
 
 
 _DEMOTED_PARENT_TITLE = {
@@ -687,53 +711,38 @@ def test_citation_line_does_not_swallow_an_outline_heading(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_short_document_skips_smart_with_zero_llm_calls(monkeypatch) -> None:
-    """G12-2: below the whole-doc token gate smart never runs."""
+def test_short_document_skips_smart_with_zero_llm_calls(
+    monkeypatch, lightrag_caplog
+) -> None:
+    """G12-2: below the whole-doc token gate smart never runs.
+
+    The skip must also be visible in the server log, not only in the
+    smart_audit.json sidecar: the output is otherwise identical to
+    smart_heading being off, which reads as "the switch does nothing".
+    ``lightrag_caplog``, not bare ``caplog``: the ``lightrag`` logger does not
+    propagate, and pytest < 9.1 would capture nothing (tests/_log_capture.py).
+    """
+    import logging
+
     calls: list = []
-    blocks, warnings, metadata = _extract(
-        "redhead",
-        _make_llm(_REDHEAD_TITLE, counter=calls),
-        monkeypatch,
-        min_tokens=100000,
-    )
+    with lightrag_caplog.at_level(logging.INFO, logger="lightrag"):
+        blocks, warnings, metadata = _extract(
+            "redhead",
+            _make_llm(_REDHEAD_TITLE, counter=calls),
+            monkeypatch,
+            min_tokens=100000,
+        )
+    skipped = [
+        r.getMessage() for r in lightrag_caplog.records if "skipped" in r.getMessage()
+    ]
+    assert len(skipped) == 1
+    assert "DOCX_SMART_MIN_TOKENS=100000" in skipped[0]
     assert warnings.get("smart_skipped_short_document") == 1
     assert calls == []  # zero LLM calls
     # CB4 skip ships baseline output — baseline doc_title semantics with it.
     assert "doc_title" not in metadata
     base_blocks, _w, _m = _baseline("redhead")
     assert _summary(blocks) == _summary(base_blocks)
-
-
-def test_short_document_skip_is_logged(monkeypatch, lightrag_caplog) -> None:
-    """The gate skip must be visible in the server log, not only in the
-    smart_audit.json sidecar: the output is otherwise identical to
-    smart_heading being off, which reads as "the switch does nothing".
-
-    ``lightrag_caplog``, not bare ``caplog``: the ``lightrag`` logger does not
-    propagate, and pytest < 9.1 would capture nothing (tests/_log_capture.py).
-    """
-    import logging
-
-    caplog = lightrag_caplog
-    with caplog.at_level(logging.INFO, logger="lightrag"):
-        _extract(
-            "redhead",
-            _make_llm(_REDHEAD_TITLE, counter=[]),
-            monkeypatch,
-            min_tokens=100000,
-        )
-    skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
-    assert len(skipped) == 1
-    assert "DOCX_SMART_MIN_TOKENS=100000" in skipped[0]
-
-
-def test_audit_artifact_deterministic_across_runs(monkeypatch) -> None:
-    """G12-3: the audit payload is byte-identical across repeated parses."""
-    _b1, _w1, meta1 = _extract("redhead", _make_llm(_REDHEAD_TITLE), monkeypatch)
-    _b2, _w2, meta2 = _extract("redhead", _make_llm(_REDHEAD_TITLE), monkeypatch)
-    dump1 = json.dumps(meta1["smart_audit"], ensure_ascii=False, sort_keys=True)
-    dump2 = json.dumps(meta2["smart_audit"], ensure_ascii=False, sort_keys=True)
-    assert dump1 == dump2
 
 
 def test_oversize_outline_paragraphs_never_crash(monkeypatch) -> None:
@@ -746,30 +755,6 @@ def test_oversize_outline_paragraphs_never_crash(monkeypatch) -> None:
     joined = "\n".join(b["content"] for b in blocks)
     assert "无软回车的超长大纲标题" in joined  # preserved as body (I1)
     assert "余部内容" in joined
-
-
-def test_content_preservation_end_to_end(monkeypatch) -> None:
-    """I1 sanity on a real fixture: nothing from the baseline body is lost."""
-    base_blocks, _w, _m = _baseline("redhead")
-    smart_blocks, warnings, _m2 = _extract(
-        "redhead", _make_llm(_REDHEAD_TITLE), monkeypatch
-    )
-    from lightrag.parser.docx.smart_heading.guardrails import (
-        canonicalize_paragraph_text,
-    )
-
-    def _canon_all(blocks) -> str:
-        return "".join(
-            canonicalize_paragraph_text(line)
-            for b in blocks
-            for line in b["content"].split("\n")
-        )
-
-    base_text = _canon_all(base_blocks)
-    smart_text = _canon_all(smart_blocks)
-    # every baseline character sequence survives (no TOC in this fixture)
-    assert len(smart_text) >= len(base_text) * 0.99
-    assert "smart_fallback_baseline" not in warnings
 
 
 if __name__ == "__main__":

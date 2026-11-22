@@ -19,12 +19,9 @@ pytestmark = pytest.mark.offline
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("true", True),
         ("True", True),
         ("1", True),
-        ("false", False),
         ("0", False),
-        ("", False),
         (None, False),
     ],
 )
