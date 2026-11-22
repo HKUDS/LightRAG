@@ -10,12 +10,18 @@ These tests cover cross-process exclusion, release on process death,
 reference counting, and path normalization. Every other process is a real
 subprocess running ``_working_dir_lock_probe.py`` in a fresh interpreter,
 so it cannot inherit this process's claim bookkeeping or lock descriptor.
+Foreign claim attempts go to one such interpreter per module, which releases
+every claim it is granted before the next attempt; only the death test
+needs an interpreter of its own.
 """
 
 from __future__ import annotations
 
+import os
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -45,6 +51,16 @@ def _no_claims_leak():
 
 
 _PROBE = Path(__file__).with_name("_working_dir_lock_probe.py")
+# The probe runs as a script, so its sys.path starts at its own directory:
+# without the root on PYTHONPATH it imports whichever lightrag is installed,
+# which in a second checkout is not the code under test.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+_PROBE_ENV = {
+    **os.environ,
+    "PYTHONPATH": os.pathsep.join(
+        p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p
+    ),
+}
 
 
 def _probe(command: str, path) -> subprocess.CompletedProcess:
@@ -55,6 +71,7 @@ def _probe(command: str, path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=60,
+        env=_PROBE_ENV,
     )
     assert result.returncode == 0, (
         f"probe '{command}' failed (rc={result.returncode})\n"
@@ -63,8 +80,54 @@ def _probe(command: str, path) -> subprocess.CompletedProcess:
     return result
 
 
-def _foreign_attempt(path) -> str:
-    return _probe("foreign", path).stdout.strip()
+class _ForeignTree:
+    """The ``serve`` probe: another process tree that answers claim attempts."""
+
+    def __init__(self) -> None:
+        self._proc = subprocess.Popen(
+            [sys.executable, str(_PROBE), "serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_PROBE_ENV,
+        )
+        self._answers: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        for line in self._proc.stdout:
+            self._answers.put(line.strip())
+        self._answers.put("")  # the probe exited
+
+    def attempt(self, path) -> str:
+        self._proc.stdin.write(f"{path}\n")
+        self._proc.stdin.flush()
+        try:
+            answer = self._answers.get(timeout=60)
+        except queue.Empty:
+            pytest.fail("the foreign probe did not answer within 60s")
+        if not answer:
+            self._proc.wait(timeout=10)
+            pytest.fail(f"the foreign probe exited: {self._proc.stderr.read()}")
+        return answer
+
+    def close(self) -> None:
+        self._proc.stdin.close()
+        rc = self._proc.wait(timeout=30)
+        assert rc == 0, self._proc.stderr.read()
+
+
+@pytest.fixture(scope="module")
+def foreign_tree():
+    tree = _ForeignTree()
+    yield tree
+    tree.close()
+
+
+@pytest.fixture
+def _foreign_attempt(foreign_tree):
+    return foreign_tree.attempt
 
 
 def test_only_a_file_backed_configuration_storage_claims_the_directory():
@@ -76,12 +139,12 @@ def test_only_a_file_backed_configuration_storage_claims_the_directory():
     assert uses_working_dir(None) is False
 
 
-def test_a_second_process_tree_is_refused(tmp_path):
+def test_a_second_process_tree_is_refused(tmp_path, _foreign_attempt):
     acquire_working_dir_lock(str(tmp_path))
     assert _foreign_attempt(tmp_path) == "REFUSED"
 
 
-def test_the_directory_is_free_once_the_holder_releases(tmp_path):
+def test_the_directory_is_free_once_the_holder_releases(tmp_path, _foreign_attempt):
     acquire_working_dir_lock(str(tmp_path))
     release_working_dir_lock(str(tmp_path))
 
@@ -100,7 +163,7 @@ def test_a_holder_that_dies_leaves_nothing_to_reap(tmp_path):
     assert holds_working_dir_lock(str(tmp_path)) is True
 
 
-def test_a_second_instance_in_one_tree_counts_itself_in(tmp_path):
+def test_a_second_instance_in_one_tree_counts_itself_in(tmp_path, _foreign_attempt):
     """Several LightRAG instances in one process are legal, so the claim is
     counted and released only by the last one."""
     acquire_working_dir_lock(str(tmp_path))
@@ -161,7 +224,7 @@ def test_releasing_without_a_claim_is_a_no_op(tmp_path):
     assert holds_working_dir_lock(str(tmp_path)) is False
 
 
-def test_two_spellings_of_one_directory_are_one_claim(tmp_path):
+def test_two_spellings_of_one_directory_are_one_claim(tmp_path, _foreign_attempt):
     """``_lock_path`` resolves symlinks, and that is load bearing rather than
     tidiness: a relative path and its absolute form, or a symlink and its
     target, must produce ONE key. Two keys mean this tree opens a second
