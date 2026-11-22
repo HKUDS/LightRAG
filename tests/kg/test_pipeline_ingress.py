@@ -12,6 +12,7 @@ death, observe-only waiting), and the shared_storage registry lifecycle.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import multiprocessing as mp
 import os
 import signal
@@ -560,20 +561,25 @@ async def test_multiprocess_wait_isolation_and_cancelled_waiter_steals_nothing(
     ingress = await get_pipeline_ingress("wsM")
 
     # Predicate isolation: pending manual/auto must not satisfy a document wait.
+    # Pending items satisfy a wait at once, so a short window suffices.
     ingress.request_auto_rescan()
     ingress.request_manual_retry("r1", _manual("r1"))
-    assert await asyncio.to_thread(ingress.wait_for_documents, 0.3) is False
-    assert await asyncio.to_thread(ingress.wait_for_items, 0.3) is True
+    assert await asyncio.to_thread(ingress.wait_for_documents, 0.1) is False
+    assert await asyncio.to_thread(ingress.wait_for_items, 0.1) is True
 
     # A cancelled waiter's orphaned thread only OBSERVES — it can never take
-    # a message with it (wait_for_documents has no dequeue path).
-    waiter = asyncio.create_task(asyncio.to_thread(ingress.wait_for_documents, 5.0))
-    await asyncio.sleep(0.2)
+    # a message with it (wait_for_documents has no dequeue path). Its own
+    # pool, so the test can wait for the orphan to have woken and returned.
+    pool = ThreadPoolExecutor(max_workers=1)
+    waiter = asyncio.get_running_loop().run_in_executor(
+        pool, ingress.wait_for_documents, 5.0
+    )
+    await asyncio.sleep(0.1)
     waiter.cancel()
     with pytest.raises(asyncio.CancelledError):
         await waiter
     ingress.put_document(_doc("kept"))
-    await asyncio.sleep(0.3)  # give the orphaned thread time to wake and exit
+    await asyncio.to_thread(pool.shutdown, True)  # the orphan woke and exited
     assert [m.doc_id for m in ingress.drain_documents()] == ["kept"]
 
     # clear() tombstones the pending manual id server-side as well.

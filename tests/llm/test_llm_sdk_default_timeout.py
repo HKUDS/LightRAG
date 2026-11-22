@@ -19,7 +19,10 @@ from lightrag.utils import provider_timeout
 
 pytestmark = pytest.mark.offline
 
-_DELAY = 0.3
+# The stub answers after a pause, so a client handed a literal 0 (which
+# httpx-based SDKs treat as "time out at once") fails instead of racing the
+# reply. Any pause does that; a longer one only makes every case wait.
+_DELAY = 0.05
 _CHAT = {
     "id": "x",
     "object": "chat.completion",
