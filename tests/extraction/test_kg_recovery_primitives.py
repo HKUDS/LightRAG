@@ -314,9 +314,11 @@ async def test_cancel_and_drain_retrieves_failures_and_never_raises():
 
         assert running.done() and not running.cancelled()
         del failed, running
+        # Let the loop drop its references, then collect once (a full
+        # collection costs ~0.15 s here).
         for _ in range(3):
             await asyncio.sleep(0)
-            gc.collect()
+        gc.collect()
         assert [m for m in reported if "never retrieved" in m] == []
     finally:
         loop.set_exception_handler(previous)
