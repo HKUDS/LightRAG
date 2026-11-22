@@ -1060,29 +1060,39 @@ async def test_absent_age_is_reported_at_info_or_above(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_each_version_query_reads_only_its_own_catalog():
-    """TEXT-ONLY: reads both queries as strings; neither executes here.
+@pytest.mark.parametrize(
+    ("sql", "own", "column", "other"),
+    [
+        pytest.param(
+            AGE_INSTALLED_SQL,
+            "pg_extension",
+            "extversion",
+            "pg_available_extensions",
+            id="installed",
+        ),
+        pytest.param(
+            AGE_AVAILABLE_SQL,
+            "pg_available_extensions",
+            "default_version",
+            "pg_extension",
+            id="available",
+        ),
+    ],
+)
+def test_each_version_query_reads_only_its_own_catalog(sql, own, column, other):
+    """TEXT-ONLY: reads the query as a string; it never executes here.
 
     The split into two queries exists because ``pg_available_extensions`` parses every
     control file in the sharedir and raises for the whole view if any one of them is
     malformed. That isolation is lost the moment either query joins the other catalog
     back in, so each text must name its own catalog and not the other one.
     """
-    for sql, own, column, other in (
-        (AGE_INSTALLED_SQL, "pg_extension", "extversion", "pg_available_extensions"),
-        (
-            AGE_AVAILABLE_SQL,
-            "pg_available_extensions",
-            "default_version",
-            "pg_extension",
-        ),
-    ):
-        normalized = " ".join(sql.lower().split())
-        assert own in normalized, sql
-        assert column in normalized, sql
-        assert other not in normalized, sql
-        assert "join" not in normalized, sql
-        assert "'age'" in normalized, sql
+    normalized = " ".join(sql.lower().split())
+    assert own in normalized, sql
+    assert column in normalized, sql
+    assert other not in normalized, sql
+    assert "join" not in normalized, sql
+    assert "'age'" in normalized, sql
 
 
 # ---------------------------------------------------------------------------
