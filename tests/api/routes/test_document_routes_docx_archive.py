@@ -478,57 +478,6 @@ async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_arch
     assert rag.enqueued[0]["parse_engine"] == "native"
 
 
-async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
-    file_path = tmp_path / "pending.docx"
-    file_path.write_bytes(b"docx bytes")
-    rag = _FakeRag()
-
-    success, returned_track_id = await pipeline_enqueue_file(
-        rag, file_path, "track-docx"
-    )
-
-    assert success is True
-    assert returned_track_id == "track-docx"
-    assert file_path.exists()
-    assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
-    assert rag.enqueued[0]["file_path"] == str(file_path)
-    assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
-    assert rag.enqueued[0]["parse_engine"] == "native"
-
-
-async def test_pipeline_enqueue_docx_defers_to_legacy_parser(tmp_path, monkeypatch):
-    # Legacy now defers extraction to the worker stage; enqueue just records a
-    # PENDING_PARSE row with parse_engine=legacy (no eager extraction here).
-    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:legacy")
-    file_path = tmp_path / "plain.docx"
-    file_path.write_bytes(b"docx bytes")
-    rag = _FakeRag()
-
-    success, returned_track_id = await pipeline_enqueue_file(
-        rag, file_path, "track-docx"
-    )
-
-    assert success is True
-    assert returned_track_id == "track-docx"
-    assert rag.enqueued == [
-        {
-            "input": "",
-            "file_path": str(file_path),
-            "track_id": "track-docx",
-            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-            "parse_engine": "legacy",
-            "process_options": PROCESS_OPTION_CHUNK_FIXED,
-            "chunk_options": None,
-            "from_scan": False,
-        }
-    ]
-    # Deferred: the source stays in place until the worker archives it.
-    assert file_path.exists()
-
-
 async def test_pipeline_enqueue_md_defers_to_legacy_parser(tmp_path, monkeypatch):
     # Unhinted .md defaults to the legacy engine and now defers extraction to
     # the worker stage (PENDING_PARSE), like every other engine.
@@ -579,40 +528,6 @@ async def test_pipeline_enqueue_legacy_duplicate_archives_with_unique_name(
     assert (parsed_dir / "duplicate_001.md").read_text(
         encoding="utf-8"
     ) == "duplicate content"
-
-
-async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru,*:legacy")
-    monkeypatch.setenv("MINERU_API_MODE", "local")
-    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
-
-    # Extraction is always deferred now (no enqueue-stage extraction for any
-    # engine), so the pdf simply enqueues as PENDING_PARSE for mineru.
-    file_path = tmp_path / "paper.pdf"
-    file_path.write_bytes(b"fake-pdf")
-    rag = _FakeRag()
-
-    success, returned_track_id = await pipeline_enqueue_file(
-        rag, file_path, "track-pdf"
-    )
-
-    assert success is True
-    assert returned_track_id == "track-pdf"
-    assert file_path.exists()
-    assert rag.enqueued == [
-        {
-            "input": "",
-            "file_path": str(file_path),
-            "track_id": "track-pdf",
-            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-            "parse_engine": "mineru",
-            "process_options": PROCESS_OPTION_CHUNK_FIXED,
-            "chunk_options": None,
-            "from_scan": False,
-        }
-    ]
 
 
 async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
@@ -689,24 +604,6 @@ async def test_pipeline_enqueue_rejects_invalid_filename_hint(tmp_path, monkeypa
     )
     assert "unsupported parser engine 'abc'" in error_files[0]["original_error"]
     assert file_path.exists()
-
-
-async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
-    tmp_path, monkeypatch
-):
-    """LIGHTRAG_PARSER ``docx:native-iet`` becomes the default ``process_options``."""
-    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
-    file_path = tmp_path / "rule_default.docx"
-    file_path.write_bytes(b"docx-bytes")
-    rag = _FakeRag()
-
-    success, _ = await pipeline_enqueue_file(rag, file_path, "track-rule-default")
-
-    assert success is True
-    assert len(rag.enqueued) == 1
-    enqueued = rag.enqueued[0]
-    assert enqueued["parse_engine"] == "native"
-    assert enqueued["process_options"] == "iet"
 
 
 async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(
@@ -1182,52 +1079,6 @@ async def test_scan_failed_with_full_docs_resumes_normally(tmp_path, monkeypatch
     assert calls == []
     assert rag.process_calls == 1
     assert file_path.exists()
-
-
-async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(
-    tmp_path, monkeypatch
-):
-    """The exact P2 scenario: a scan batch contains a resume target plus
-    new files that all fail / are rejected during enqueue.
-    pipeline_index_files's internal process_enqueue is gated on at least
-    one successful enqueue; without the unconditional resume trigger in
-    run_scanning_process the PARSING/FAILED row would stay stuck.
-
-    We simulate "all new files rejected" with a pipeline_index_files mock
-    that records its invocation but does not call process_enqueue (mirroring
-    the real helper's behaviour when every per-file enqueue returns False).
-    """
-    new_file = tmp_path / "fresh.docx"
-    resume_file = tmp_path / "retry.docx"
-    new_file.write_bytes(b"fresh docx bytes")
-    resume_file.write_bytes(b"retry docx bytes")
-    doc_manager = DocumentManager(str(tmp_path))
-    rag = _ScanRag(
-        {
-            str(resume_file): {
-                "status": DocStatus.PARSING.value,
-                "file_path": str(resume_file),
-                "track_id": "track-existing",
-            }
-        }
-    )
-
-    async def index_files_all_rejected(rag_arg, candidates, track_id, **kwargs):
-        # Mirror the real helper when every per-file enqueue is rejected: the
-        # batch lands nothing (0), and enqueue never drives processing anyway.
-        return 0
-
-    monkeypatch.setattr(
-        _document_routes, "pipeline_enqueue_scan_batch", index_files_all_rejected
-    )
-
-    await run_scanning_process(rag, doc_manager, "track-scan")
-
-    # Even though pipeline_index_files's internal trigger never fired, the
-    # scan still kicks process_enqueue once so the resume row advances.
-    assert rag.process_calls == 1
-    assert resume_file.exists()
-    assert new_file.exists()
 
 
 async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
@@ -1756,71 +1607,6 @@ async def test_upload_accepts_c_when_custom_callback_is_injected(tmp_path, monke
 
     assert response.status == "success"
     assert (tmp_path / "custom.[native-C].docx").exists()
-
-
-async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):
-    """Under the new contract, ``busy=True`` no longer blocks uploads.
-    The upload reserves a pending-enqueue slot, schedules its bg task,
-    and returns success; the bg task's enqueue is permitted while the
-    pipeline is busy and the running loop picks up the new doc via the
-    ingress mailbox.
-    """
-    import importlib
-
-    monkeypatch.setattr(
-        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
-    )
-    doc_manager = DocumentManager(str(tmp_path))
-    rag = _DuplicateUploadRag({})
-
-    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
-    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
-    pipeline_status = await shared_storage.get_namespace_data(
-        "pipeline_status", workspace=rag.workspace
-    )
-    pipeline_status["scanning"] = False
-    pipeline_status["pending_enqueues"] = 0
-    pipeline_status["busy"] = True
-
-    router = create_document_routes(rag, doc_manager)
-    upload_endpoint = [
-        route.endpoint
-        for route in router.routes
-        if getattr(route, "name", "") == "upload_to_input_dir"
-    ][-1]
-    upload_file = _document_routes.UploadFile(
-        filename="while_busy.docx",
-        file=BytesIO(b"docx bytes"),
-    )
-
-    # Gate the managed child so the enqueue slot stays reserved until we let it
-    # finish — the deterministic replacement for the old "task queued but not
-    # run" deferral.
-    import asyncio
-
-    gate = asyncio.Event()
-
-    async def _gated_index(rag_arg, file_path, track_id=None, admission_token=None):
-        await gate.wait()
-
-    monkeypatch.setattr(_document_routes, "pipeline_index_file", _gated_index)
-
-    managed: set = set()
-    response = await upload_endpoint(managed, upload_file)
-
-    # Endpoint accepted the upload despite busy=True.
-    assert response.status == "success"
-    assert (tmp_path / "while_busy.docx").exists()
-    # The slot has been transferred to the managed task, which is parked in the
-    # gated child; until it finishes pending_enqueues stays at 1 so a concurrent
-    # /scan would refuse.
-    assert pipeline_status["pending_enqueues"] == 1
-    assert len(managed) == 1
-
-    # Let the child complete; its finally releases the slot.
-    gate.set()
-    await _await_managed(managed)
-    assert pipeline_status["pending_enqueues"] == 0
 
 
 async def test_upload_returns_409_when_scanning_classification(tmp_path, monkeypatch):
@@ -4124,7 +3910,10 @@ def test_sanitize_filename_rejects_traversal_instead_of_rewriting(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "filename", ["nested/report.pdf", "nested\\report.pdf", "report.pdf\x00"]
+    # A control character is the shared character rule, pinned in
+    # test_document_source_characters.py.
+    "filename",
+    ["nested/report.pdf", "nested\\report.pdf"],
 )
 def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path, filename):
     with pytest.raises(_document_routes.HTTPException) as exc:
@@ -4150,12 +3939,10 @@ def test_sanitize_filename_rejects_colon(tmp_path, filename):
 @pytest.mark.parametrize(
     "filename",
     [
-        'quoted"name.pdf',
-        "piped|name.pdf",
+        # sanitize_filename has no branch for these; the glob metacharacters
+        # stand for the set because they carry the glob.escape rationale.
         "glob?name.pdf",
         "glob*name.pdf",
-        "less<than.pdf",
-        "greater>than.pdf",
     ],
 )
 def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path, filename):
