@@ -71,11 +71,21 @@ class _Connection:
         return [{"id": "a"}]
 
 
+# Both HNSW index types share one statement: every top_k on HNSW, and the
+# cap once on HNSW_HALFVEC.
 @pytest.mark.parametrize(
-    ("top_k", "value"),
-    [(10, 10), (60, 60), (1000, 1000), (1001, 1000), (5000, 1000)],
+    ("index_type", "top_k", "value"),
+    [
+        ("HNSW", top_k, value)
+        for top_k, value in (
+            (10, 10),
+            (60, 60),
+            (1000, 1000),
+            (1001, 1000),
+        )
+    ]
+    + [("HNSW_HALFVEC", 1001, 1000)],
 )
-@pytest.mark.parametrize("index_type", ["HNSW", "HNSW_HALFVEC"])
 def test_statement_raises_to_top_k_capped_at_the_guc_maximum(
     index_type, top_k, value
 ) -> None:

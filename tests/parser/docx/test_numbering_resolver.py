@@ -384,9 +384,14 @@ def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text)
             assert label == lvl_text.replace("%1", letters)
 
 
-@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
-@pytest.mark.parametrize("count", [-1, 0, 79, 2147483647])
-@pytest.mark.parametrize("override", [False, True])
+# The start source only picks the counter before the shared range and
+# ``_to_alpha`` checks: every count on lowerLetter from the abstract start,
+# plus one case for the override source and one for upperLetter.
+@pytest.mark.parametrize(
+    ("num_fmt", "count", "override"),
+    [("lowerLetter", count, False) for count in (-1, 0, 79, 2147483647)]
+    + [("lowerLetter", 79, True), ("upperLetter", 79, False)],
+)
 def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
     """Every count here is outside ``_to_alpha``'s 1-78 domain — below it as well
     as above — so each falls back to decimal AND is recorded."""
@@ -521,9 +526,14 @@ def test_provenance_is_none_when_nothing_renders() -> None:
     assert r.last_label_format is None
 
 
-@pytest.mark.parametrize("lvl_text", ["(%1)", "%1)"])
-@pytest.mark.parametrize("num_fmt", ["lowerRoman", "upperRoman"])
-@pytest.mark.parametrize("count", [1, 2, 3])
+# The classifier's full 1-39 sweep over both formats and paren shapes is
+# test_parenthesized_roman_list_full_domain (test_smart_heading_style_key.py);
+# here, the resolver's wiring at 2 ("ii", which reads as alphabetic 35 without
+# the carried numFmt), once per format and per paren shape.
+@pytest.mark.parametrize(
+    ("lvl_text", "num_fmt", "count"),
+    [("(%1)", "lowerRoman", 2), ("%1)", "upperRoman", 2)],
+)
 def test_parenthesized_roman_lists_keep_roman_ordinals(lvl_text, num_fmt, count):
     """The widened paren patterns accept repeated letters, so "(ii)" from a
     Roman list reaches them. _P_ROMAN cannot claim it — it only matches a

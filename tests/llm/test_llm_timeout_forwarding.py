@@ -134,16 +134,24 @@ async def test_wrapper_uses_role_timeout_inside_role_call(monkeypatch, case):
     assert forwarded["timeout"] == 77
 
 
+# Every wrapper calls ``apply_llm_timeout(kwargs)`` before touching its
+# kwargs, so the role test above is each wrapper's wiring, and the helper's
+# other rows (fallback, explicit argument) run on one wrapper.
+_ONE_WRAPPER = [_WRAPPERS[0]]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", _WRAPPERS, ids=_param_id)
+@pytest.mark.parametrize("case", _ONE_WRAPPER, ids=_param_id)
 async def test_wrapper_falls_back_to_default_llm_timeout(monkeypatch, case):
-    forwarded = await _call_wrapper(monkeypatch, case)
+    # A client configuration that is not a mapping carries no timeout of its
+    # own, so the fallback still applies.
+    forwarded = await _call_wrapper(monkeypatch, case, openai_client_configs=None)
 
     assert forwarded["timeout"] == 240
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", _WRAPPERS, ids=_param_id)
+@pytest.mark.parametrize("case", _ONE_WRAPPER, ids=_param_id)
 async def test_wrapper_keeps_explicit_timeout(monkeypatch, case):
     forwarded = await _call_wrapper(monkeypatch, case, role_timeout=77, timeout=5)
 
@@ -184,11 +192,3 @@ def test_apply_llm_timeout_outside_role_without_config_sets_nothing(kwargs):
     apply_llm_timeout(kwargs)
 
     assert "timeout" not in kwargs
-
-
-def test_apply_llm_timeout_ignores_non_mapping_client_config():
-    kwargs = {"hashing_kv": _hashing_kv(), "openai_client_configs": None}
-
-    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
-
-    assert kwargs["timeout"] == 240
