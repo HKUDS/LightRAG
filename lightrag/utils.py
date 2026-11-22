@@ -5082,6 +5082,20 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     return new_loop
 
 
+def _markdown_table_cell(value: Any) -> str:
+    """Render ``value`` as one cell of a Markdown table row.
+
+    A literal ``|`` ends a cell, so a value holding one (common in text
+    extracted from tables) would spill into the next column, and a line break
+    would end the row. Escape the pipe, doubling any backslashes right before
+    it so a stored ``\\|`` cannot cancel the escape, and turn line breaks into
+    ``<br>``. A value with neither is written unchanged, so any other Markdown
+    it holds renders as it always did.
+    """
+    text = re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", str(value))
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
+
+
 async def aexport_data(
     chunk_entity_relation_graph,
     entities_vdb,
@@ -5320,7 +5334,9 @@ async def aexport_data(
                 # Write rows
                 for entity in entities_data:
                     mdfile.write(
-                        "| " + " | ".join(str(v) for v in entity.values()) + " |\n"
+                        "| "
+                        + " | ".join(_markdown_table_cell(v) for v in entity.values())
+                        + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -5338,7 +5354,9 @@ async def aexport_data(
                 # Write rows
                 for relation in relations_data:
                     mdfile.write(
-                        "| " + " | ".join(str(v) for v in relation.values()) + " |\n"
+                        "| "
+                        + " | ".join(_markdown_table_cell(v) for v in relation.values())
+                        + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -5359,7 +5377,9 @@ async def aexport_data(
                 for relationship in relationships_data:
                     mdfile.write(
                         "| "
-                        + " | ".join(str(v) for v in relationship.values())
+                        + " | ".join(
+                            _markdown_table_cell(v) for v in relationship.values()
+                        )
                         + " |\n"
                     )
             else:

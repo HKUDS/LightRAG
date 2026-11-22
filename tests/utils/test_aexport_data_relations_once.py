@@ -14,27 +14,10 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.utils import aexport_data
+from tests.utils._export_fakes import NullVdb, make_networkx_storage
 
 pytestmark = pytest.mark.offline
-
-
-def _make_storage(graph: nx.Graph) -> NetworkXStorage:
-    storage = NetworkXStorage.__new__(NetworkXStorage)
-    storage.workspace = "test"
-    storage.namespace = "chunk_entity_relation"
-
-    async def _get_graph():
-        return graph
-
-    storage._get_graph = _get_graph
-    return storage
-
-
-class _Vdb:
-    async def get_by_id(self, _id: str) -> None:
-        return None
 
 
 def _relation_rows(path: Path) -> list[dict[str, str]]:
@@ -53,7 +36,11 @@ async def test_undirected_relation_is_exported_once(tmp_path: Path) -> None:
     output = tmp_path / "export.csv"
 
     await aexport_data(
-        _make_storage(graph), _Vdb(), _Vdb(), str(output), file_format="csv"
+        make_networkx_storage(graph),
+        NullVdb(),
+        NullVdb(),
+        str(output),
+        file_format="csv",
     )
 
     rows = _relation_rows(output)
