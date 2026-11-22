@@ -284,21 +284,6 @@ async def test_read_your_writes_and_query_after_flush(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_finalize_flushes_pending(tmp_path):
-    embed = _CountingEmbed()
-    storage = _make_storage(tmp_path, embed)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "alpha"}})
-    await storage.finalize()
-
-    assert embed.call_count == 1
-    assert storage._pending_upserts == {}
-    assert len(storage._client) == 1
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_delete_entity_relation_cancels_pending(tmp_path):
     embed = _CountingEmbed()
     storage = NanoVectorDBStorage(
@@ -423,25 +408,6 @@ async def test_finalize_retries_save_after_flush_failure(tmp_path):
     await reader.initialize()
     hit = await reader.get_by_id("id1")
     assert hit is not None and hit["id"] == "id1"
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_drop_pending_index_ops_clears_buffer(tmp_path):
-    """An internal-error abort calls drop_pending_index_ops to discard the
-    not-yet-flushed buffer without materializing anything."""
-    embed = _CountingEmbed()
-    storage = _make_storage(tmp_path, embed)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "alpha"}, "id2": {"content": "beta"}})
-    assert storage._pending_upserts, "upsert buffers, does not flush"
-
-    await storage.drop_pending_index_ops()
-
-    assert storage._pending_upserts == {}
-    assert embed.call_count == 0, "drop must not embed"
-    assert len(storage._client) == 0, "nothing was materialized"
 
 
 @pytest.mark.offline

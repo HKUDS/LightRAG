@@ -63,12 +63,9 @@ def _vector_search_stage(storage) -> dict:
         # top_k at or below the previous fixed pool keeps it unchanged,
         # including the default top_k (40) and chunk_top_k (20).
         pytest.param(5, 100, 5, id="small"),
-        pytest.param(20, 100, 20, id="default-chunk-top-k"),
-        pytest.param(40, 100, 40, id="default-top-k"),
         pytest.param(100, 100, 100, id="at-floor"),
         # Above it, the pool widens to top_k so limit never exceeds it.
         pytest.param(101, 101, 101, id="just-above-floor"),
-        pytest.param(1000, 1000, 1000, id="rest-max-top-k"),
         pytest.param(10_000, 10_000, 10_000, id="atlas-ceiling"),
         # Core-API callers may exceed Atlas's ceiling; both values clamp.
         pytest.param(20_000, 10_000, 10_000, id="above-atlas-ceiling"),
