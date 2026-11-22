@@ -25,9 +25,10 @@ def _make_client(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_max_tokens_stop_reason_marks_result_truncated():
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "model_context_window_exceeded"])
+async def test_anthropic_truncation_stop_reason_marks_result_truncated(stop_reason):
     partial = '{"entities":[{"name":"Ali'
-    client = _make_client(text=partial, stop_reason="max_tokens")
+    client = _make_client(text=partial, stop_reason=stop_reason)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
         result = await anthropic_complete_if_cache(
@@ -105,4 +106,28 @@ async def test_anthropic_thinking_only_max_tokens_raises_empty_truncated(
     message = str(excinfo.value)
     assert "budget consumed by reasoning" in message
     assert "max_tokens" in message and "thinking.budget_tokens" in message
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [[], [SimpleNamespace(type="text", text=" ")]],
+    ids=["no-text-block", "blank-text-block"],
+)
+async def test_anthropic_empty_context_limited_response_recommends_shorter_input(
+    content,
+):
+    client = _make_client(content=content, stop_reason="model_context_window_exceeded")
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
+        with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+            await anthropic_complete_if_cache(
+                model="claude-test", prompt="Extract", api_key="test-key"
+            )
+
+    message = str(excinfo.value)
+    assert "model_context_window_exceeded" in message
+    assert "shorten the input" in message
+    assert "raising max_tokens" not in message
     client.close.assert_awaited_once()
