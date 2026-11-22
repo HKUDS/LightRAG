@@ -321,9 +321,28 @@ async def _run(probe, bind, monkeypatch, configured, extra):
         return await call()
 
 
+# Every binding resolves its timeout through the shared ``embedding_timeout``
+# helper, so the whole table runs through one binding, and every other
+# binding keeps the cases that exercise its own wiring: the resolved value
+# reaching its client, its omission, and the explicit argument handed to the
+# helper. The other rows only differ inside the helper.
+_WIRING_CASE_IDS = (
+    "configured-positive",
+    "configured-zero-sdk-default",
+    "explicit-argument-wins",
+)
+_EMBEDDING_MATRIX = [
+    pytest.param(probe.values[0], *case.values, id=f"{case.id}-{probe.id}")
+    for probe in _EMBEDDING_PROBES
+    for case in _CASES
+    if probe.id == "openai_embed" or case.id in _WIRING_CASE_IDS
+]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("probe", _EMBEDDING_PROBES)
-@pytest.mark.parametrize(("configured", "extra", "expected"), _CASES)
+@pytest.mark.parametrize(
+    ("probe", "configured", "extra", "expected"), _EMBEDDING_MATRIX
+)
 async def test_embedding_binding_hands_timeout_to_client(
     monkeypatch, probe, configured, extra, expected
 ):
