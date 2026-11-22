@@ -5083,23 +5083,16 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
 
 
 def _markdown_table_cell(value: Any) -> str:
-    """Render ``value`` as one cell of a Markdown table row, as literal text.
+    """Render ``value`` as one cell of a Markdown table row.
 
     A literal ``|`` ends a cell, so a value holding one (common in text
     extracted from tables) would spill into the next column, and a line break
-    would end the row. A ``<`` opens raw HTML, so the ``<SEP>`` that joins
-    merged source IDs and descriptions would render as an unknown tag and
-    disappear. Backslashes are escaped first, so a stored ``\\|`` cannot cancel
-    the pipe's escape, and backticks too, so no code span forms in which the
-    ``&lt;`` entity would show verbatim. Line breaks become ``<br>``.
+    would end the row. Escape the pipe, doubling any backslashes right before
+    it so a stored ``\\|`` cannot cancel the escape, and turn line breaks into
+    ``<br>``. A value with neither is written unchanged, so any other Markdown
+    it holds renders as it always did.
     """
-    text = (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("<", "&lt;")
-        .replace("|", "\\|")
-    )
+    text = re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", str(value))
     return re.sub(r"\r\n|\r|\n", "<br>", text)
 
 

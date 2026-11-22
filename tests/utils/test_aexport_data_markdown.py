@@ -3,9 +3,7 @@
 Descriptions extracted from tables often hold a literal ``|``. Written into a
 Markdown table row unescaped, it ends the cell early, so the rest of the value
 spills into an extra column that renderers drop. A line break ends the row,
-the ``<SEP>`` joining merged source IDs renders as an unknown HTML tag, a
-stored backslash can cancel a pipe's escape, and a backtick opens a code span
-in which the escaped ``<`` would show as ``&lt;``.
+and a stored backslash right before a pipe can cancel the pipe's escape.
 """
 
 from __future__ import annotations
@@ -36,11 +34,10 @@ class _VdbWithClientStorage(NullVdb):
 def _cells(row: str) -> list[str]:
     """Split a row the way a backslash-parity renderer does, then decode.
 
-    A pipe ends a cell unless an odd number of backslashes precedes it. An
-    unescaped backtick (it would open a code span, inside which nothing is
-    decoded) and a raw ``<`` other than ``<br>`` (it would open an HTML tag)
-    fail the test. Each cell is decoded back to plain text: ``\\x`` is ``x``,
-    ``&lt;`` is ``<`` and ``<br>`` is a line break.
+    A pipe ends a cell unless an odd number of backslashes precedes it. Each
+    cell is decoded by inverting the export's two rewrites only: ``<br>`` is a
+    line break, and ``2n`` backslashes plus ``\\|`` are ``n`` backslashes
+    plus ``|``. Every other byte must come back as written.
     """
     cells, current, i = [], "", 0
     body = row.strip()[1:]
@@ -50,7 +47,6 @@ def _cells(row: str) -> list[str]:
             current += char + body[i + 1]
             i += 2
             continue
-        assert char != "`", f"unescaped backtick opens a code span: {row!r}"
         if char == "|":
             cells.append(current)
             current = ""
@@ -58,12 +54,14 @@ def _cells(row: str) -> list[str]:
             current += char
         i += 1
     assert current.strip() == "", f"row does not end with a pipe: {row!r}"
-    decoded = []
-    for cell in cells:
-        assert "<" not in cell.replace("<br>", ""), f"raw HTML in cell: {row!r}"
-        text = cell.strip().replace("<br>", "\n").replace("&lt;", "<")
-        decoded.append(re.sub(r"\\(.)", r"\1", text))
-    return decoded
+    return [
+        re.sub(
+            r"(\\*)\\\|",
+            lambda m: m.group(1)[: len(m.group(1)) // 2] + "|",
+            cell.strip().replace("<br>", "\n"),
+        )
+        for cell in cells
+    ]
 
 
 @pytest.mark.asyncio
@@ -73,7 +71,7 @@ async def test_values_stay_in_their_cells_and_read_back_unchanged(
     graph = nx.Graph()
     graph.add_node(
         "REVENUE",
-        description="Q1 | Q2 totals for `List<T>`",
+        description="Q1 | Q2 totals for `List<T>` *net*",
         source_id="chunk-1<SEP>chunk-2",
     )
     graph.add_node("ACME\nCORP", description="vendor", source_id="chunk-3")
