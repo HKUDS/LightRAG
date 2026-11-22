@@ -3,15 +3,34 @@ name: PostgreSQL Smoke Tests
 on:
   push:
     branches: [ main, dev, 'dev-*' ]
-    # Keep both event filters aligned: PG code, shared dependencies, and CI inputs.
-    paths:
+    # One list for both events (the pull_request filter aliases it). It names
+    # every lightrag module the smoke tests run against a real PostgreSQL:
+    # the PG backends, the shared storage layer, the configuration storage
+    # that initialize_storages binds on PG, and the startup migration,
+    # deletion purge and rebuild flows the anchor smoke drives end to end.
+    # Modules the tests only import, or run on a non-PG backend, are left out.
+    paths: &pg_smoke_paths
+      # PG backends and the startup migration they serve
       - 'lightrag/kg/pgtable_impl.py'
       - 'lightrag/kg/postgres_impl.py'
       - 'lightrag/storage_migrations.py'
+      # Shared storage layer
       - 'lightrag/kg/__init__.py'
       - 'lightrag/kg/shared_storage.py'
       - 'lightrag/kg/pipeline_ingress.py'
       - 'lightrag/kg/scan_job_store.py'
+      # Configuration storage bound on PG by initialize_storages
+      - 'lightrag/config_store.py'
+      - 'lightrag/config_anchor.py'
+      - 'lightrag/config_shards.py'
+      - 'lightrag/kg/anchor_lock.py'
+      # Startup, deletion purge and rebuild flows
+      - 'lightrag/lightrag.py'
+      - 'lightrag/operate.py'
+      - 'lightrag/utils_pipeline.py'
+      - 'lightrag/vector_space_gate.py'
+      - 'lightrag/kg/vector_space.py'
+      # Core definitions every module above depends on
       - 'lightrag/base.py'
       - 'lightrag/utils.py'
       - 'lightrag/types.py'
@@ -20,11 +39,14 @@ on:
       - 'lightrag/namespace.py'
       - 'lightrag/pipeline_metrics.py'
       - 'lightrag/__init__.py'
+      # Tests and their fixtures
       - 'tests/kg/pgtable_impl/**'
       - 'tests/kg/postgres_impl/**'
       - 'conftest.py'
       - 'tests/conftest.py'
+      - 'tests/_log_capture.py'
       - 'tests/kg/conftest.py'
+      # Packaging and CI inputs
       - 'pyproject.toml'
       - 'setup.py'
       - 'MANIFEST.in'
@@ -32,31 +54,7 @@ on:
   pull_request:
     branches: [ main, dev, 'dev-*' ]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - 'lightrag/kg/pgtable_impl.py'
-      - 'lightrag/kg/postgres_impl.py'
-      - 'lightrag/storage_migrations.py'
-      - 'lightrag/kg/__init__.py'
-      - 'lightrag/kg/shared_storage.py'
-      - 'lightrag/kg/pipeline_ingress.py'
-      - 'lightrag/kg/scan_job_store.py'
-      - 'lightrag/base.py'
-      - 'lightrag/utils.py'
-      - 'lightrag/types.py'
-      - 'lightrag/constants.py'
-      - 'lightrag/exceptions.py'
-      - 'lightrag/namespace.py'
-      - 'lightrag/pipeline_metrics.py'
-      - 'lightrag/__init__.py'
-      - 'tests/kg/pgtable_impl/**'
-      - 'tests/kg/postgres_impl/**'
-      - 'conftest.py'
-      - 'tests/conftest.py'
-      - 'tests/kg/conftest.py'
-      - 'pyproject.toml'
-      - 'setup.py'
-      - 'MANIFEST.in'
-      - '.github/workflows/pg-smoke.yml'
+    paths: *pg_smoke_paths
   workflow_dispatch:
 
 # A new push to a pull request cancels that PR's runs still in progress, so
