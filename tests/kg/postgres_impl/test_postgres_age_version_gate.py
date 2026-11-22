@@ -1294,10 +1294,11 @@ _NON_TABLE_STATES = [
 # Under the override there are six branches: installed lookup failed; absent
 # installed with an unreadable or NULL available; nothing to gate; the
 # unsupported warning (the stale-catalog cell takes it too); the undeterminable
-# warning; and the plain start. One state per branch.
+# warning; and the plain start. One state per branch. The failed installed
+# lookup and the absent-installed / unreadable-available state are run with the
+# same inputs, CREATE included, by test_override_on_unreadable_installed_lookup_
+# names_the_install and test_override_install_of_an_unchecked_age_says_so.
 _OVERRIDE_STATES = [
-    (_UNREADABLE, _SAFE),
-    (_ABSENT, _UNREADABLE),
     (_ABSENT, _NULL_DEFAULT_VERSION),
     (_ABSENT, _ABSENT),
     (_UNSAFE, _SAFE),
