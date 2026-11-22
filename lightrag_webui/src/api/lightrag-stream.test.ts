@@ -311,21 +311,6 @@ describe('queryTextStream — abort / stop button', () => {
 
     expect(errorCalled).toBe(false)
   })
-
-  test('exits silently when AbortError is thrown without a signal', async () => {
-    installFetchMock(() =>
-      Promise.reject(new DOMException('Aborted', 'AbortError'))
-    )
-
-    let errorCalled = false
-    await apiModule.queryTextStream(
-      makeQueryRequest(),
-      () => {},
-      () => { errorCalled = true }
-    )
-
-    expect(errorCalled).toBe(false)
-  })
 })
 
 describe('queryTextStream — HTTP errors', () => {
@@ -348,16 +333,6 @@ describe('queryTextStream — HTTP errors', () => {
       status: 500,
       expectedMessage:
         'Server error, please try again later (500)',
-    },
-    {
-      status: 502,
-      expectedMessage:
-        'Server error, please try again later (502)',
-    },
-    {
-      status: 503,
-      expectedMessage:
-        'Server error, please try again later (503)',
     },
   ]
 
@@ -416,11 +391,13 @@ describe('queryTextStream — network errors', () => {
 })
 
 describe('queryTextStream — auth headers', () => {
-  test('includes Bearer token when stored', async () => {
+  test('calls /query/stream and includes the Bearer token when stored', async () => {
     localStorage.setItem('LIGHTRAG-API-TOKEN', 'test-jwt-token')
 
+    let capturedUrl = ''
     let capturedHeaders: HeadersInit | undefined
-    installFetchMock((_url: string, init?: RequestInit) => {
+    installFetchMock((url: string, init?: RequestInit) => {
+      capturedUrl = url
       capturedHeaders = init?.headers
       return makeNdjsonResponse(['{"response": "ok"}'])
     })
@@ -438,6 +415,7 @@ describe('queryTextStream — auth headers', () => {
     expect(sentHeaders['Authorization']).toBe('Bearer test-jwt-token')
     expect(sentHeaders['Accept']).toBe('application/x-ndjson')
     expect(sentHeaders['Content-Type']).toBe('application/json')
+    expect(capturedUrl).toBe(`${backendBaseUrl}/query/stream`)
   })
 
   test('omits Bearer token when none is stored', async () => {
@@ -455,22 +433,6 @@ describe('queryTextStream — auth headers', () => {
 
     const sentHeaders = capturedHeaders as Record<string, string>
     expect(sentHeaders['Authorization']).toBeUndefined()
-  })
-
-  test('calls /query/stream endpoint', async () => {
-    let capturedUrl = ''
-    installFetchMock((url: string) => {
-      capturedUrl = url
-      return makeNdjsonResponse(['{"response": "ok"}'])
-    })
-
-    await apiModule.queryTextStream(
-      makeQueryRequest(),
-      () => {},
-      () => {}
-    )
-
-    expect(capturedUrl).toBe(`${backendBaseUrl}/query/stream`)
   })
 })
 

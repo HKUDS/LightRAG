@@ -38,33 +38,14 @@ describe('subscribeToPageRestore', () => {
 })
 
 describe('BFCache consumers', () => {
-  test('admin health and document polling restart without beforeunload poisoning', async () => {
+  // DocumentManager's half is rendered in features/DocumentManager.test.tsx
+  // ("DocumentManager BFCache restore"). App stays a source read: rendering it
+  // pulls in the whole admin shell for one dependency list.
+  test('admin health polling restarts without beforeunload poisoning', async () => {
     const appSource = (await Bun.file(new URL('../App.tsx', import.meta.url)).text()).replace(/\r\n/g, '\n')
-    const documentManagerSource = (await Bun.file(
-      new URL('../features/DocumentManager.tsx', import.meta.url)
-    ).text()).replace(/\r\n/g, '\n')
 
-    for (const source of [appSource, documentManagerSource]) {
-      expect(source).toContain('const pageRestoreGeneration = usePageRestoreGeneration()')
-      expect(source).not.toContain('addEventListener(\'beforeunload\'')
-    }
-
+    expect(appSource).toContain('const pageRestoreGeneration = usePageRestoreGeneration()')
+    expect(appSource).not.toContain('addEventListener(\'beforeunload\'')
     expect(appSource).toContain('[enableHealthCheck, pageRestoreGeneration]')
-    expect(documentManagerSource).toContain(
-      'pipelineActive, pageRestoreGeneration, startPollingInterval'
-    )
-    expect(documentManagerSource).toContain('pageRestoreGeneration,\n    fetchPaginatedDocuments')
-  })
-
-  test('the initial document state is distinct from a confirmed empty response', async () => {
-    const source = (await Bun.file(
-      new URL('../features/DocumentManager.tsx', import.meta.url)
-    ).text()).replace(/\r\n/g, '\n')
-
-    expect(source).toContain('!hasLoadedDocuments && initialLoadError === null')
-    expect(source).toContain('!hasLoadedDocuments && initialLoadError !== null')
-    // A loaded-but-empty corpus is told apart from the pre-load state by the
-    // pagination total, not by a separate grouped-documents state.
-    expect(source).toContain('hasLoadedDocuments && pagination.total_count === 0')
   })
 })

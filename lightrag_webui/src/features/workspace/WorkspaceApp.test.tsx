@@ -203,9 +203,16 @@ describe('workspace header deployment description', () => {
     expect(screen.getByRole('tooltip').textContent).toContain(DESCRIPTION)
   })
 
-  test('no tooltip is attached when the deployment declares no description', async () => {
+  test('no tooltip or touch control is attached when the deployment declares no description', async () => {
     const user = userEvent.setup()
     await renderShell(TITLE, '')
+
+    // No touch control either: a button that opens nothing is a dead end.
+    expect(
+      within(screen.getByRole('banner')).queryAllByRole('button', {
+        name: 'Deployment information'
+      })
+    ).toHaveLength(0)
 
     await user.hover(brandLink())
     // Longer than Radix's open delay on purpose: a shorter wait would report
@@ -234,15 +241,5 @@ describe('workspace header deployment description', () => {
     await user.click(trigger)
 
     expect(await screen.findByText(DESCRIPTION)).toBeVisible()
-  })
-
-  test('no touch control is offered when there is nothing to show', async () => {
-    await renderShell(TITLE, '')
-
-    expect(
-      within(screen.getByRole('banner')).queryAllByRole('button', {
-        name: 'Deployment information'
-      })
-    ).toHaveLength(0)
   })
 })
