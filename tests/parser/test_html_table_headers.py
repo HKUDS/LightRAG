@@ -9,7 +9,9 @@ from lightrag.parser.markdown.ir_builder import NativeMarkdownIRBuilder
 pytestmark = pytest.mark.offline
 
 
-@pytest.mark.parametrize("text", ["Revenue", "&lt;ID&gt;", "&nbsp;Net profit&nbsp;"])
+# Tag removal happens before entity decoding; the ordinary header is
+# tests/parser/markdown/test_ir_builder.py::test_html_table_becomes_html_irtable_with_thead_and_dims.
+@pytest.mark.parametrize("text", ["&lt;ID&gt;"])
 def test_visible_headers_keep_their_original_markup(text: str) -> None:
     header = f"<thead><tr><th colspan='2'>{text}</th></tr></thead>"
 

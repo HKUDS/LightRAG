@@ -4,6 +4,7 @@ import codecs
 
 import pytest
 
+from lightrag.parser.legacy.extractors import extract_text
 from lightrag.parser.text_decoding import TextDecodeError, decode_text_bytes
 
 pytestmark = pytest.mark.offline
@@ -54,3 +55,10 @@ def test_bomless_non_utf8_mentions_the_bom_requirement():
     assert "not valid UTF-8 encoded text" in message
     assert "only with a byte order mark" in message
     assert "Please convert it to UTF-8" in message
+
+
+def test_legacy_extract_text_accepts_a_bom_encoding():
+    # The codec sweep is test_bom_selects_codec_and_is_dropped, on the shared
+    # decode_text_bytes; this is the legacy extractor's wiring to it, and the
+    # only legacy-entry case beyond UTF-8.
+    assert extract_text(BOM_ENCODED["utf-16-le"], "txt") == TEXT

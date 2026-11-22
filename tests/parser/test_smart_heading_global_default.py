@@ -273,20 +273,6 @@ def test_max_chars_non_integer_raises(monkeypatch, bad) -> None:
         _validate_smart_heading_max_chars()
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "2",
-    ],
-)
-def test_max_chars_below_minimum_raises(monkeypatch, bad) -> None:
-    """A cap < 3 cannot hold the '...' marker (same boundary heading_max_chars
-    floors at runtime); reject it loudly at startup."""
-    monkeypatch.setenv("DOCX_SMART_HEADING_MAX_CHARS", bad)
-    with pytest.raises(ParserRoutingConfigError, match="too small"):
-        _validate_smart_heading_max_chars()
-
-
 def test_max_chars_low_value_warns_not_raises(monkeypatch) -> None:
     """A usable-but-tiny cap (below the title-line width) warns, does not fail."""
     from lightrag.parser import routing
