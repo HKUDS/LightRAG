@@ -84,16 +84,11 @@ async def test_aquery_data_reports_failure_when_no_keywords_are_extracted(
     _query_routes.QueryDataResponse(**result)
 
 
-# Every graph mode takes the same no-keywords exit: the modes run with the
-# first reply unstreamed, and reply x stream run on mix.
+# Every graph mode and both replies take the same no-keywords exit, which
+# test_aquery_data_reports_failure_when_no_keywords_are_extracted sweeps; the
+# LLM entry point keeps the streamed case, its own regression.
 @pytest.mark.parametrize(
-    ("mode", "keyword_reply", "stream"),
-    [(mode, _KEYWORD_REPLIES[0], False) for mode in ("local", "global", "hybrid")]
-    + [
-        ("mix", keyword_reply, stream)
-        for keyword_reply in _KEYWORD_REPLIES
-        for stream in (False, True)
-    ],
+    ("mode", "keyword_reply", "stream"), [("mix", _KEYWORD_REPLIES[1], True)]
 )
 async def test_aquery_llm_reports_failure_when_no_keywords_are_extracted(
     monkeypatch, mode, keyword_reply, stream
