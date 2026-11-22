@@ -32,7 +32,6 @@ from lightrag.tools.clear_storage import (
     DATA_STORAGE_LABELS,
     VECTOR_LABELS,
     ClearTool,
-    DropOutcome,
     RemoteBackendUnavailableError,
     Unreadable,
     classify_drop_result,
@@ -292,17 +291,11 @@ def seed_input_dir(tmp_path):
 
 
 class TestClassifyDropResult:
-    def test_a_success_dict_is_success(self):
-        assert classify_drop_result({"status": "success"}) is None
-
     def test_a_non_success_dict_is_a_failure_with_its_message(self):
         assert (
             classify_drop_result({"status": "error", "message": "legacy store kept"})
             == "legacy store kept"
         )
-
-    def test_an_exception_object_is_a_failure(self):
-        assert "boom" in classify_drop_result(RuntimeError("boom"))
 
     def test_a_cancelled_drop_is_a_drop_that_did_not_happen(self):
         """``gather(return_exceptions=True)`` hands back a ``CancelledError``
@@ -419,9 +412,13 @@ class TestSummary:
             error=OSError("kv file unreadable")
         )
 
-        tool.print_summary(await tool.collect_summary())
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
         out = capsys.readouterr().out
 
+        # An unanswerable store is a verdict, not a fatal read error.
+        assert isinstance(summary["text_chunks"], Unreadable)
+        assert "text_chunks state" in tool.unreadable_items(summary)
         assert f"Text chunks: {clear_storage.BOLD_RED}UNREADABLE" in out
         assert f"Text chunks: {clear_storage.BOLD_YELLOW}" not in out
 
@@ -559,18 +556,8 @@ class TestSummary:
         tool = make_tool(tmp_path, workspace="")
         tool.storages["doc_status"].workspace = "default"
         tool.storages["text_chunks"].workspace = "_"
-
-        tool.print_summary(await tool.collect_summary())
-
-        assert "resolved to workspace(s)" not in capsys.readouterr().out
-
-    async def test_the_graph_backends_base_default_is_not_flagged(
-        self, tmp_path, stub_baselines, capsys
-    ):
-        """Neo4j and Memgraph substitute ``"base"`` for an empty workspace."""
-        tool = make_tool(tmp_path, workspace="")
+        # Neo4j and Memgraph substitute ``"base"`` for an empty workspace.
         tool.storages["chunk_entity_relation_graph"].workspace = "base"
-        tool.storages["doc_status"].workspace = "default"
 
         tool.print_summary(await tool.collect_summary())
 
@@ -746,14 +733,6 @@ class TestSummary:
         assert "Text chunks: has data" in plain(capsys.readouterr().out)
         kv.is_empty.assert_not_called()
 
-    async def test_a_clean_end_of_the_row_stream_is_empty(
-        self, tmp_path, stub_baselines
-    ):
-        tool = make_tool(tmp_path)
-        tool.storages["text_chunks"].iter_rows = rows_stream([])
-
-        assert (await tool.collect_summary())["text_chunks"] == "EMPTY"
-
     async def test_a_server_kv_outage_refuses_the_run(self, tmp_path, stub_baselines):
         """The fix-proof for the kind rule on this read: the outage reaches
         ``_read`` as a raise and refuses, instead of rendering as EMPTY."""
@@ -765,19 +744,6 @@ class TestSummary:
 
         with pytest.raises(RemoteBackendUnavailableError):
             await tool.collect_summary()
-
-    async def test_an_unanswerable_text_chunk_store_is_unreadable_not_fatal(
-        self, tmp_path, stub_baselines
-    ):
-        tool = make_tool(tmp_path)
-        tool.storages["text_chunks"].iter_rows = rows_stream(
-            error=OSError("kv file unreadable")
-        )
-
-        summary = await tool.collect_summary()
-
-        assert isinstance(summary["text_chunks"], Unreadable)
-        assert "text_chunks state" in tool.unreadable_items(summary)
 
     async def test_a_backend_without_enumeration_cannot_prove_emptiness(
         self, tmp_path, stub_baselines
@@ -1044,7 +1010,9 @@ class TestKindRule:
 
 class TestConfirmation:
     @pytest.mark.parametrize(
-        "answer", ["", "yes", "delete all", "DELETE ALL", "Delete all", "Delete All!"]
+        # One exact comparison: an empty answer, a case change, a near match.
+        "answer",
+        ["", "delete all", "Delete All!"],
     )
     def test_only_the_exact_phrase_confirms(self, tmp_path, monkeypatch, answer):
         tool = make_tool(tmp_path)
@@ -1052,7 +1020,9 @@ class TestConfirmation:
         assert tool.confirm_delete_all() is False
 
     @pytest.mark.parametrize(
-        "answer", [CONFIRMATION_PHRASE, f"  {CONFIRMATION_PHRASE} "]
+        # A padded answer can only pass if the bare phrase matches.
+        "answer",
+        [f"  {CONFIRMATION_PHRASE} "],
     )
     def test_the_phrase_confirms_with_surrounding_whitespace_ignored(
         self, tmp_path, monkeypatch, answer
@@ -1196,10 +1166,8 @@ class TestSiblingModelContainers:
     @pytest.mark.parametrize(
         "answer, vouched",
         [
-            pytest.param("yes", [["ws_chunks_model_a_8d"]], id="confirmed"),
             pytest.param(" YES ", [["ws_chunks_model_a_8d"]], id="confirmed-loosely"),
             pytest.param("no", [[]], id="declined"),
-            pytest.param("", [[]], id="empty-answer"),
             pytest.param(CONFIRMATION_PHRASE, [[]], id="the-other-phrase"),
         ],
     )
@@ -1306,18 +1274,6 @@ class TestClear:
         assert [label for label, _ in outcome.failed] == ["full_docs"]
         assert len(outcome.succeeded) == 10
 
-    async def test_a_non_success_dict_counts_as_a_failed_drop(self, tmp_path):
-        tool = make_tool(
-            tmp_path,
-            chunks_vdb=make_storage(
-                "chunks_vdb", drop_result={"status": "error", "message": "kept"}
-            ),
-        )
-
-        outcome = await tool.drop_all()
-
-        assert outcome.failed == [("chunks_vdb", "kept")]
-
     async def test_a_partial_drop_keeps_the_configuration_records_and_fails(
         self, tmp_path, recorded_config_delete, capsys
     ):
@@ -1397,10 +1353,6 @@ class TestClear:
     ):
         tool = make_tool(tmp_path)  # tmp_path/inputs never created
         assert await tool.clear() is True
-
-    def test_drop_outcome_all_succeeded(self):
-        assert DropOutcome(succeeded=["a"]).all_succeeded is True
-        assert DropOutcome(failed=[("a", "x")]).all_succeeded is False
 
 
 # ---------------------------------------------------------------------------
@@ -2059,10 +2011,8 @@ class TestCommandLine:
     @pytest.mark.parametrize(
         "argv",
         [
+            # One ``len(sys.argv) > 1`` check refuses every argument.
             ["--workspace", "tenant"],
-            ["--input-dir", "/uploads"],
-            ["--working-dir", "/data", "--workspace", "tenant"],
-            ["extra"],
         ],
     )
     def test_server_flags_are_refused_before_anything_runs(

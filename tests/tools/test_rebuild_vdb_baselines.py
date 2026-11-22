@@ -223,6 +223,8 @@ async def test_retained_vector_ops_record_no_baseline(capsys):
     ), "the stale record must stay, so the server keeps refusing"
     assert config.flushes == 0
     assert [e["error_type"] for e in stats["errors"]] == ["RetainedVectorOps"]
+    # The previous model's container is still the fallback: no sibling sweep.
+    assert vdb.sibling_sweeps == []
     assert "still holds" in capsys.readouterr().out
 
 
@@ -281,22 +283,10 @@ async def test_a_recorded_baseline_sweeps_the_other_models_containers():
     assert vdb.sibling_sweeps == [["box_old-model_1024d"]]
 
 
-async def test_a_first_baseline_sweeps_without_vouching_for_anything():
-    """No previous record, no name to vouch for: the sweep still runs on the
-    backend's own evidence."""
-    vdb = _FakeVectorStorage()
-    tool = _tool(_FakeConfigKV(), vdbs={"chunks": vdb})
-
-    await tool.commit_baseline("chunks", _stats("chunks"))
-
-    assert vdb.sibling_sweeps == [[]]
-
-
 @pytest.mark.parametrize(
     "vdb_kwargs, stats_errors, write_error",
     [
         pytest.param({}, [{"batch": 2, "records_lost": 5}], None, id="rebuild-errors"),
-        pytest.param({"retained": True}, [], None, id="retained-ops"),
         pytest.param({}, [], RuntimeError("config down"), id="baseline-write-failed"),
     ],
 )

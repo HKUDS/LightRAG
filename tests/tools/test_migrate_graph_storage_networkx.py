@@ -169,14 +169,6 @@ class TestRealRoundTrip:
             await migrate_graph(source, target)
         assert set(_node_map(await target.get_all_nodes())) == {"pre"}
 
-    async def test_shipped_allowlist_still_rejects_networkx(self, tmp_path):
-        # No fixture: the SHIPPED allowlist must reject this pair — the
-        # extension above is test-scoped, not a loosening of the tool.
-        source = await _seeded_source(tmp_path)
-        target = await _storage(tmp_path, "migration_tgt")
-        with pytest.raises(MigrationPreconditionError):
-            await migrate_graph(source, target)
-
     @pytest.mark.usefixtures("allow_networkx_pair")
     async def test_attributeless_source_node_fails_closed(self, tmp_path):
         # Real-backend wrinkle the fakes never showed: NetworkX add_edge

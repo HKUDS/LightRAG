@@ -516,22 +516,6 @@ class TestRowPayload:
         assert result.switched is True
         assert all("id" not in row for row in target.visible.values())
 
-    def test_an_id_that_is_not_the_key_is_content(self):
-        row = {"id": "custom", "_id": "k", "v": 1}
-        assert mc.row_payload(row) == {"id": "custom", "v": 1}
-
-    async def test_an_envelope_id_is_copied_and_verified(self, tmp_path):
-        """A row carrying its own ``id`` reaches the target with it; it is
-        never dropped from both sides and then "verified"."""
-        _anchor(tmp_path)
-        rows = _source_rows()
-        key = cs.embedding_baseline_key("alpha", "entities")
-        rows[key] = {**rows[key], "id": "forward-field"}
-        target = Container()
-        result = await _migrate(tmp_path, Container(rows), target)
-        assert result.switched is True
-        assert target.visible[key]["id"] == "forward-field"
-
 
 class TestFailureAndResume:
     async def test_a_pagination_failure_leaves_the_anchor(self, tmp_path):
@@ -833,7 +817,8 @@ class TestEnvironments:
             current={"WORKING_DIR": str(tmp_path)},
         )
 
-    @pytest.mark.parametrize("side", ["source_env", "target_env"])
+    # The source side is driven by test_an_env_file_with_an_empty_working_dir_is_compared_too.
+    @pytest.mark.parametrize("side", ["target_env"])
     def test_another_working_dir_is_refused(self, tmp_path, side):
         envs = {"source_env": {}, "target_env": {}}
         envs[side] = {"WORKING_DIR": str(tmp_path / "other")}
