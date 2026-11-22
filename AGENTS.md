@@ -230,6 +230,7 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
   - When adding a new backend or LLM provider, create a new subdirectory plus an empty `__init__.py` rather than dropping the file in the parent directory root.
   - `tests/` root keeps the repository-wide checks (`test_readme_translations`, `test_docstring_budget`, `test_requirements_sync`, `test_no_return_in_finally`, `test_dotenv_isolation`), the tests of test helpers (`test_sleep_patch`, `test_log_capture`), and tests of single-file modules with no mirror directory yet (`base`, `prompt`, `query_validation`, `private_file`, `table_markup`, `tiktoken_cache`, `storage_migrations`, and `LightRAG` / `QueryParam` configuration). A module that gains a mirror directory takes its root tests with it.
 - Markers (registered in `[tool.pytest.ini_options]` in `pyproject.toml`): `offline`, `integration`, `requires_db`, `requires_api`, `pg_smoke`. Integration tests are skipped by default via `-m "not integration"`; opt in with `--run-integration`.
+- **A path-filtered workflow lists every module its tests pin**, not only the obvious one: a job whose `paths` omit a module its tests import and exercise never runs on a change to it, and if the main job skips those tests too (`tests/setup/` via `norecursedirs`) nothing does. Add the module to `paths` in the same PR that makes a filtered test depend on it.
 - **Every test must carry one of those five markers**, usually a module-level `pytestmark = pytest.mark.offline`. CI selects with `-m offline`, so an unmarked test is deselected without a trace; `tests/conftest.py` therefore fails any unmarked test at setup with the fix in the message. In a file mixing offline and service-backed cases, mark per test or per `pytest.param` instead of per module.
 - Integration env vars: `LIGHTRAG_RUN_INTEGRATION=true`, `LIGHTRAG_KEEP_ARTIFACTS=true`, `LIGHTRAG_TEST_WORKERS=4`, plus storage-specific connection strings.
 
@@ -237,12 +238,14 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 
 **Full guide: [docs/design/BackendTestingGuide.md](docs/design/BackendTestingGuide.md) — read it before writing or refactoring a test under `tests/`.**
 
-- **Every test asserts an observable outcome**, including what a no-op leaves unchanged. Pin only what a docstring, contract or sibling test promises, and prove that an injected fault actually fired.
+- **Every test asserts an observable outcome**, including what a no-op leaves unchanged. Pin only what a docstring, contract or sibling test promises, and prove that the setup reaches the path under test (an injected fault actually fired, a stubbed prompt selected the branch).
+- **Inputs must tell the right answer from the wrong one**: expect a value no default, preset or stub produces, and give sibling fields different values, so a restore-vs-default or copy-vs-swap regression goes red. Import-time behavior needs a fresh import; a subprocess needs `PYTHONPATH` set to the checkout under test.
 - **Expected exceptions go through `pytest.raises`**, never `try/except`. Never wrap the call under test in `except Exception: pass`.
 - **A fake that must never be called records the call as well as raising**: a broad `except Exception` in the code under test swallows `AssertionError`.
 - **Concurrent workers must surface their exceptions** (`ThreadPoolExecutor.map`, `future.result()`, `asyncio.gather`/`TaskGroup`), with `max_workers` at least the `Barrier` parties and a `Barrier` timeout.
 - **Cases are `@pytest.mark.parametrize`, not a `for` loop**, unless the repetition is the behavior. An exhaustive value sweep qualifies only under the three conditions in [Failures name the case](docs/design/BackendTestingGuide.md#failures-name-the-case) (independent oracle, millisecond loop, collected mismatch list), and branch-selecting dimensions stay parametrized. Reduce large values before comparing them so the failure names the case.
 - **Every test must earn its place** in a ~13000-test suite: it pins a behavior no existing test pins, tests that share a scenario and differ only in what they assert are one test, and nothing waits on real time, spawns processes or builds a full `LightRAG` where a stub does. See [Every test must earn its place](docs/design/BackendTestingGuide.md#every-test-must-earn-its-place).
+- **Removing or merging a test** must leave a kept test that goes red on the same break, named in the PR's inventory. Each data-table entry (allow-list member, regex alternative) is its own branch; a trimmed sweep keeps its strongest assertion; a merge keeps the more discriminating input; what nothing pins any more is stated in the PR. See [Removing or merging a test](docs/design/BackendTestingGuide.md#removing-or-merging-a-test).
 
 #### React component tests
 
@@ -254,7 +257,8 @@ bunx tsc --noEmit                  # Typecheck (`bun run build` does NOT typeche
 - **Never assert `toBeNull()` / `not.toBeInTheDocument()` / `toBe(element)` on a DOM node** — Bun serialises the whole happy-dom element and the run appears to HANG instead of failing. Assert a count or an extracted boolean/string instead.
 - **The DOM is process-wide**: never leave a bare `delete` of the `window` / `document` global behind; use `withoutDomGlobals()` from `src/test/domGlobals.ts`.
 - **Never import the test harness from production code** — one import from `src/` ships happy-dom to the browser.
-- **Prove the test can fail**: break the behavior it pins, see it go red, then restore.
+- **Prove the test can fail**: break the behavior it pins, see it go red, then restore. Seed non-default and unequal values so the break is visible, and import a module under test for import-time behavior as a fresh instance.
+- **The backend's *earn its place* and *removing or merging* rules apply** to WebUI tests too: one rendered scenario per test, one case per branch, the smallest tree that shows the behavior.
 
 ### Linting
 ```bash

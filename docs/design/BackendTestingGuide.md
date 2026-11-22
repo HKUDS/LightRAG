@@ -6,8 +6,9 @@ markers, which subset to run and how to capture `lightrag` logs are in AGENTS.md
 *Testing*. This guide covers what goes inside a test so that it fails when the
 behavior breaks, and says what broke when it does.
 
-These rules come from a pass over the suite that removed 25 such defects. Every
-rule below names the defect it prevents.
+These rules come from two passes over the suite: one removed 25 tests that
+could not fail, and one trimmed about 1,700 redundant or slow tests without
+losing what they pinned. Every rule below names the defect it prevents.
 
 ## A test must be able to fail
 
@@ -20,10 +21,27 @@ rule below names the defect it prevents.
   the docstring, the `docs/design/` contract or a sibling test that already
   states it. An assertion on an incidental detail turns the next legitimate
   refactor into a red build.
-- **Prove that an injected fault actually fired.** A fake that fails "the next
-  N calls" counts them, so assert that the counter was consumed
+- **Prove that the setup reaches the path under test.** A fake that fails
+  "the next N calls" counts them, so assert that the counter was consumed
   (`assert status.fail_next_gets == 0`). Without that check, a refactor that
-  stops reaching the faulty call passes silently.
+  stops reaching the faulty call passes silently. The same holds for a stubbed
+  prompt or flag that selects a branch: assert something only that branch
+  produces. Three setup-wizard tests once stubbed "Enable reranking?" to *no*,
+  never ran the rerank branch, and passed only because the loaded `.env`
+  already held the values they asserted.
+- **Inputs must tell the right answer from the wrong one.** An expectation
+  equal to the default, the preset or the stub's return value cannot tell
+  "the saved value was restored" from "the default was used": seed a value no
+  default produces (a saved `EMBEDDING_DIM=768`, not the 1024 preset). Give
+  sibling fields DIFFERENT values, so copying one into the other or swapping
+  them is caught; two switches that always take the same value pin neither.
+  A stub that answers the same whatever the code asks (a GPU probe that
+  always reports cuda) proves nothing about the decision it feeds.
+- **Import-time behavior needs a fresh import.** In a full run the module is
+  already in `sys.modules`, so a test that imports it and then checks "the
+  import did not touch X" evaluates nothing and cannot fail. Run the import in
+  a subprocess or remove the module from `sys.modules` first, and assert that
+  it really was evaluated.
 - **Break the guarded line once and watch the test go red**, then restore it.
   This is the only way to tell a test that pins a guard from one that passes
   because the setup never reaches it.
@@ -125,6 +143,12 @@ safety margin. Reviews apply these rules to each test a PR adds or changes
   (monkeypatch `time.monotonic` / the module's sleep), shrink the configured
   interval to milliseconds, or synchronize on an event. A deliberate real
   wait needs a comment saying why nothing shorter proves the behavior.
+- **A subprocess imports the checkout under test only if told to.** A script
+  run by path puts its own directory first on `sys.path`, so from a worktree
+  it silently imports the editable install of the primary checkout. Pass
+  `env={**os.environ, "PYTHONPATH": str(REPO_ROOT)}` (or run `-m` from the
+  repository root), and when in doubt assert the child's
+  `lightrag.__file__`.
 - **The cheapest fixture that reaches the behavior.** A stub storage or a
   `MagicMock` instead of a full `LightRAG` with `initialize_storages()`; an
   in-process call instead of a subprocess or `multiprocessing.Manager()`; a
@@ -135,6 +159,34 @@ safety margin. Reviews apply these rules to each test a PR adds or changes
 - **Measure, do not guess.** Run the changed tests with `--durations=20`. A new
   test that takes more than about a second serially needs a reason in its
   docstring, or one of the remedies above.
+
+## Removing or merging a test
+
+Trimming has its own failure mode: the suite stays green while a regression it
+used to catch no longer is. Every removal therefore names where its
+protection went.
+
+- **A removed case leaves a kept case that goes red on the same break.** Name
+  that test in the PR's inventory, and mutation-check at least one removal per
+  batch: break what the removed case pinned and watch the kept one fail.
+- **Each entry of a data table is its own branch.** Members of an allow-list,
+  alternatives of a regex, keys of a mapping and entries of a `frozenset` look
+  like "the same branch with another value", but deleting the only case for
+  one entry lets that entry be dropped or widened unnoticed. Keep one case
+  per entry, and mutation-check a character class before dropping its cases.
+- **When cutting a sweep down, keep its strongest assertion.** If the removed
+  cases asserted `RuntimeError` and the kept ones only "no write happened",
+  move the stronger assertion onto the surviving states.
+- **When merging, keep the more discriminating input.** If the removed test
+  seeded a non-default value and the kept one seeds the preset, the merged
+  test takes the non-default value (see *Inputs must tell the right answer
+  from the wrong one*).
+- **A merged loop is a `parametrize`** (see *Failures name the case*), and a
+  separate `ids=[...]` list is updated together with the cases.
+- **What nothing pins any more is written down** in the PR description:
+  silence about a lost guarantee is how it disappears.
+- **Keep regardless of overlap**: the regression pin of a fixed defect, a
+  contract or security-limit check, and a test that a workflow names by path.
 
 ## Small things
 
