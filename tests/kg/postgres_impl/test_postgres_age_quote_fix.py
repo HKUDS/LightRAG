@@ -101,12 +101,14 @@ async def test_get_node_edges_returns_edges():
         return [
             {"source_id": "Alice", "connected_id": "Bob"},
             {"source_id": "Alice", "connected_id": None},
+            {"source_id": "Alice", "connected_id": "Carol"},
         ]
 
     with patch.object(storage, "_query", side_effect=fake_query):
         result = await storage.get_node_edges("Alice")
 
-    assert result == [("Alice", "Bob")]
+    # Every real neighbour is kept, and only the NULL row is dropped.
+    assert result == [("Alice", "Bob"), ("Alice", "Carol")]
 
 
 # ---------------------------------------------------------------------------

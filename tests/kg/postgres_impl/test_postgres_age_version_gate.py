@@ -1283,12 +1283,28 @@ _ALL_SOURCE_STATES = [
 # asserts its own CREATE / no-CREATE outcome there. Each of these states was a
 # fail-open until the sweep reached it. An unreadable installed lookup refuses
 # before the available lookup runs, so every such state is one path, pinned by
-# test_raising_installed_lookup_fails_closed instead.
+# test_raising_installed_lookup_fails_closed instead. Five more states have a
+# named test that builds the same inputs and asserts no CREATE along with its
+# message, so the sweep skips them too:
+# test_unreadable_available_lookup_does_not_let_a_stale_installed_decide,
+# test_broken_available_lookup_does_not_rescue_an_unsafe_installed,
+# test_unreadable_available_lookup_does_not_install_an_unchecked_age,
+# test_null_default_version_does_not_let_a_stale_installed_decide and
+# test_null_default_version_with_no_installed_row_skips_the_create.
 _TABLE_CELLS = {(i, a) for i, a, _ in _DECISION_TABLE}
+_NAMED_TEST_STATES = {
+    (_SAFE, _UNREADABLE),
+    (_UNSAFE, _UNREADABLE),
+    (_ABSENT, _UNREADABLE),
+    (_SAFE, _NULL_DEFAULT_VERSION),
+    (_ABSENT, _NULL_DEFAULT_VERSION),
+}
 _NON_TABLE_STATES = [
     (installed, available)
     for installed, available in _ALL_SOURCE_STATES
-    if (installed, available) not in _TABLE_CELLS and installed is not _UNREADABLE
+    if (installed, available) not in _TABLE_CELLS
+    and (installed, available) not in _NAMED_TEST_STATES
+    and installed is not _UNREADABLE
 ]
 
 # Under the override there are six branches: installed lookup failed; absent
