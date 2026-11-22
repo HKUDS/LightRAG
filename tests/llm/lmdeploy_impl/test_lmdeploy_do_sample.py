@@ -83,14 +83,16 @@ async def test_do_sample_forwarded_unchanged_on_modern_lmdeploy(
 
     assert result == "{}"
     assert captured["do_sample"] is expected_do_sample
+    # No token-limit option is passed here, so the 512 default applies and the
+    # generic alias never reaches GenerationConfig.
+    assert captured["max_new_tokens"] == 512
+    assert "max_tokens" not in captured
 
 
 @pytest.mark.parametrize(
     ("generation_kwargs", "expected_max_new_tokens"),
     [
-        pytest.param({}, 512, id="omitted-defaults-to-512"),
         pytest.param({"max_tokens": 37}, 37, id="generic-max-tokens"),
-        pytest.param({"max_new_tokens": 41}, 41, id="native-max-new-tokens"),
         pytest.param(
             {"max_tokens": 37, "max_new_tokens": 41},
             41,

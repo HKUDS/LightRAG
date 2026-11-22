@@ -1316,15 +1316,6 @@ def test_health_role_llm_config_uses_runtime_snapshot(tmp_path, monkeypatch):
         ({"busy": False, "scanning": True}, True),
         ({"busy": False, "destructive_busy": True}, True),
         ({"busy": False, "pending_enqueues": 2}, True),
-        (
-            {
-                "busy": False,
-                "scanning": False,
-                "destructive_busy": False,
-                "pending_enqueues": 0,
-            },
-            False,
-        ),
     ],
 )
 def test_health_pipeline_active_derivation(

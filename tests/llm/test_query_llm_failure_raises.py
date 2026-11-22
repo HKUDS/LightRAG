@@ -96,8 +96,11 @@ async def test_aquery_llm_raises_when_the_answering_llm_fails(
     model.assert_awaited_once()
 
 
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("mode", ["naive", "mix", "bypass"])
+# ``aquery`` awaits ``aquery_llm`` before it branches on streaming, so the
+# exception leaves the same way in every mode; the mode x stream behaviour is
+# pinned on ``aquery_llm`` by test_aquery_llm_raises_when_the_answering_llm_fails.
+@pytest.mark.parametrize("stream", [False])
+@pytest.mark.parametrize("mode", ["mix"])
 async def test_aquery_raises_instead_of_returning_none(failing_rag, mode, stream):
     rag, model = failing_rag
 

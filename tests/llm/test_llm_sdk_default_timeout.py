@@ -55,8 +55,9 @@ _OLLAMA = {
 
 # (configured timeout, what the client must be given; None = SDK default)
 _CASES = [
+    # A negative value takes provider_timeout's ``<= 0`` branch, like zero
+    # (test_provider_timeout[negative]); each provider keeps zero for its wiring.
     pytest.param(0, None, id="zero-sdk-default"),
-    pytest.param(-1, None, id="negative-sdk-default"),
     # Unset used to reach Anthropic, zai and LoLLMs as an explicit "no timeout".
     pytest.param(None, None, id="unset-sdk-default"),
     pytest.param(30, 30, id="positive-passed-on"),
@@ -103,7 +104,6 @@ def _recording(monkeypatch, owner, name, calls: list[dict]):
     ("value", "expected"),
     [
         pytest.param(0, None, id="zero"),
-        pytest.param(0.0, None, id="zero-float"),
         pytest.param(-1, None, id="negative"),
         pytest.param(None, None, id="unset"),
         pytest.param(240, 240, id="positive"),

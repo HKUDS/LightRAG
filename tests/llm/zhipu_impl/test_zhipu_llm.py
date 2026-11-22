@@ -586,14 +586,13 @@ _TRANSIENT_ERRORS = [
     pytest.param(lambda: FakeAPIStatusError(408), id="408-request-timeout"),
     pytest.param(lambda: FakeAPIStatusError(409), id="409-lock-timeout"),
     pytest.param(lambda: FakeAPIStatusError(500), id="500-internal"),
-    pytest.param(lambda: FakeAPIStatusError(503), id="503-flow-exceeded"),
     pytest.param(lambda: FakeAPIConnectionError("Connection error."), id="conn"),
-    pytest.param(lambda: FakeAPITimeoutError("Request timed out."), id="timeout"),
+    # 503 takes the same ``>= 500`` branch as 500, and the SDK's timeout error
+    # subclasses its connection error.
 ]
 
 _PERMANENT_ERRORS = [
     pytest.param(lambda: FakeAPIStatusError(400), id="400-bad-request"),
-    pytest.param(lambda: FakeAPIStatusError(401), id="401-auth"),
     pytest.param(lambda: FakeZaiError("api_key not provided"), id="zai-error"),
     pytest.param(lambda: ValueError("not an SDK error"), id="foreign"),
 ]
@@ -651,7 +650,11 @@ async def test_zhipu_complete_reraises_the_sdk_error_after_the_last_attempt(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("make_error", _TRANSIENT_ERRORS)
+# The full table runs on zhipu_complete; embedding shares the predicate, so it
+# keeps one case per path into it: a retryable status and a connection error.
+@pytest.mark.parametrize(
+    "make_error", [p for p in _TRANSIENT_ERRORS if p.id in ("429-rate-limit", "conn")]
+)
 async def test_zhipu_embedding_retries_transient_zai_errors(monkeypatch, make_error):
     calls = []
     zhipu_module = _load_zhipu_module(

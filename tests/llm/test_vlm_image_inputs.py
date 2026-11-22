@@ -109,8 +109,12 @@ def test_normalize_empty_returns_empty_list():
     assert normalize_image_inputs([]) == []
 
 
-@pytest.mark.parametrize("metadata_segments", [0, 1, 2])
-@pytest.mark.parametrize("frame_marker", [b"\xff\xc0", b"\xff\xc2"])
+# The segment count and the buffer crossing are swept on the baseline marker;
+# the progressive SOF marker only needs to be recognised once.
+@pytest.mark.parametrize(
+    ("metadata_segments", "frame_marker"),
+    [(0, b"\xff\xc0"), (1, b"\xff\xc0"), (2, b"\xff\xc0"), (0, b"\xff\xc2")],
+)
 def test_jpeg_dimensions_after_metadata(tmp_path, metadata_segments, frame_marker):
     comment = b"\xff\xfe\xff\xff" + b"x" * 65533
     frame = frame_marker + b"\x00\x0b\x08\x00\x10\x00\x20\x01\x01\x11\x00"

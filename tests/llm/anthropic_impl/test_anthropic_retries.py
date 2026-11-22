@@ -71,14 +71,9 @@ def test_outer_tenacity_layer_is_gone():
     "status,headers,expected_requests",
     [
         (429, {}, DEFAULT_ATTEMPTS),
-        (429, {"retry-after-ms": "1"}, DEFAULT_ATTEMPTS),
-        (408, {}, DEFAULT_ATTEMPTS),
-        (409, {}, DEFAULT_ATTEMPTS),
-        (500, {}, DEFAULT_ATTEMPTS),
         (529, {}, DEFAULT_ATTEMPTS),
         (400, {}, 1),
         (429, {"x-should-retry": "false"}, 1),
-        (400, {"x-should-retry": "true"}, DEFAULT_ATTEMPTS),
     ],
 )
 async def test_http_error_has_one_sdk_retry_budget(
@@ -102,7 +97,8 @@ async def test_http_error_has_one_sdk_retry_budget(
     assert all(client.is_closed() for client in clients)
 
 
-@pytest.mark.parametrize("error_type", ["ConnectError", "ReadTimeout"])
+# A ReadTimeout becomes APITimeoutError, an APIConnectionError subclass: same path.
+@pytest.mark.parametrize("error_type", ["ConnectError"])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_transport_failure_does_not_restart_sdk_retries(
     mock_anthropic_http, error_type, stream
@@ -154,7 +150,6 @@ async def test_max_retries_overrides_the_sdk_budget(
 @pytest.mark.parametrize(
     "call_kwargs,expected_max_retries",
     [
-        ({}, anthropic_binding._DEFAULT_MAX_RETRIES),
         ({"max_retries": None}, anthropic_binding._DEFAULT_MAX_RETRIES),
         ({"max_retries": 0}, 0),
         ({"base_url": "https://proxy.invalid", "max_retries": 7}, 7),

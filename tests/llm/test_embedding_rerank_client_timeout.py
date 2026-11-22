@@ -512,7 +512,7 @@ async def test_rerank_attempt_that_exceeds_the_timeout_is_retried(monkeypatch):
     monkeypatch.setattr(module.generic_rerank_api.retry, "wait", wait_none())
 
     async with _stub(first_delay=2.0) as (url, hits):
-        result = await bind_rerank_timeout(module.cohere_rerank, 0.3)(
+        result = await bind_rerank_timeout(module.cohere_rerank, 0.15)(
             query="q", documents=["a"], api_key="k", base_url=f"{url}/rerank"
         )
 
@@ -527,7 +527,7 @@ async def test_jina_attempt_that_exceeds_the_timeout_is_retried(monkeypatch):
     monkeypatch.setattr(module.jina_embed.func.retry, "wait", wait_none())
 
     async with _stub(first_delay=2.0) as (url, hits):
-        result = await bind_embedding_timeout(module.jina_embed.func, 0.3)(
+        result = await bind_embedding_timeout(module.jina_embed.func, 0.15)(
             ["a"],
             embedding_dim=len(_VECTOR),
             base_url=f"{url}/jina/embeddings",
