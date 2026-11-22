@@ -58,22 +58,27 @@ describe('serializer equivalence', () => {
   // The snapshot is an INPUT: the serializer performs no clamping, so a
   // snapshot that carries a value keeps it in every mode (the ADMIN page passes
   // its snapshot unmodified; the workspace page clamps before calling). This
-  // replaces a source scan for the substring `only_need`; a branch keyed on
-  // something other than the mode (the question, the history) would escape it.
+  // replaces a source scan for the substring `only_need`. The two switches take
+  // UNEQUAL values too, so copying one into the other is caught; a branch keyed
+  // on something other than the mode (the question, the history) would escape.
   test.each(
-    ALL_MODES.flatMap((mode) => [true, false].map((value) => [mode, String(value), value] as const))
+    ALL_MODES.flatMap((mode) =>
+      [[true, true], [true, false], [false, true], [false, false]].map(
+        ([context, prompt]) => [mode, `context=${context} prompt=${prompt}`, context, prompt] as const
+      )
+    )
   )(
-    'mode=%s: only_need_* = %s pass through unmodified',
-    (mode, _label, value) => {
+    'mode=%s: only_need_* (%s) pass through unmodified',
+    (mode, _label, context, prompt) => {
       const settings = {
         ...baseSettings(mode),
-        only_need_context: value,
-        only_need_prompt: value
+        only_need_context: context,
+        only_need_prompt: prompt
       }
       const body = serializeQueryRequest(settings, 'q', historyFixture)
       expect({ context: body.only_need_context, prompt: body.only_need_prompt }).toEqual({
-        context: value,
-        prompt: value
+        context,
+        prompt
       })
     }
   )

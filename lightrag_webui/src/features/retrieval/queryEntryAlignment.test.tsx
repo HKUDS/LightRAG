@@ -283,6 +283,9 @@ describe('query entry settings snapshot', () => {
       chunk_top_k: 3,
       user_prompt: 'be terse',
       enable_rerank: false,
+      // Non-default, so an entry that forced the prefix back on after the
+      // shared snapshot would show up as a third differing key.
+      disable_user_prompt_prefix: true,
       history_turns: 0
     })
 
@@ -315,6 +318,7 @@ describe('query entry settings snapshot', () => {
     expect(workspace.only_need_prompt).toBe(false)
     expect(admin.only_need_context).toBe(true)
     expect(admin.only_need_prompt).toBe(true)
+    expect(workspace.disable_user_prompt_prefix).toBe(true)
   })
 })
 
