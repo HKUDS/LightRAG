@@ -17,6 +17,7 @@ from openai import (
     RateLimitError,
     APITimeoutError,
 )
+from openai.types import CreateEmbeddingResponse
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -30,6 +31,18 @@ from lightrag.utils import (
 
 
 import numpy as np
+
+
+async def _create_ordered_embeddings(
+    client: AsyncOpenAI, **request
+) -> CreateEmbeddingResponse:
+    response = await client.embeddings.create(**request)
+    # The NIM response identifies each embedding by its input index.
+    if len(response.data) > 1:
+        response.data.sort(key=lambda row: row.index)
+        if any(row.index != index for index, row in enumerate(response.data)):
+            raise ValueError("NVIDIA API returned invalid embedding indices")
+    return response
 
 
 @wrap_embedding_func_with_attrs(
@@ -76,7 +89,8 @@ async def nvidia_openai_embed(
     # released on every exit path (success, error, and each @retry attempt),
     # instead of leaking one pool per call until GC. Mirrors ``openai_embed``.
     async with openai_async_client:
-        response = await openai_async_client.embeddings.create(
+        response = await _create_ordered_embeddings(
+            openai_async_client,
             model=model,
             input=texts,
             encoding_format=encode,
