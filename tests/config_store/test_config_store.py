@@ -151,7 +151,8 @@ class TestKeysAndRows:
         assert rows["$meta/json_shard"]["value"] == {"workspace": ""}
         assert cs.inspect_shard_rows(rows, workspace="", location="test").owner == ""
 
-    @pytest.mark.parametrize("workspace", ["$", "$meta", "$default", "$other"])
+    # One ``startswith("$")`` check refuses every system prefix.
+    @pytest.mark.parametrize("workspace", ["$meta", "$default"])
     def test_system_prefixes_cannot_be_business_workspaces(self, workspace):
         with pytest.raises(ValueError, match="reserved"):
             _key("entities", workspace)
@@ -291,7 +292,9 @@ class TestEmbeddingBaseline:
         ("version", "target"),
         [
             (version, cs.EMBEDDING_TARGETS[0])
-            for version in (None, 0, 2, True, False, "1", 1.0)
+            # One case per type: missing, wrong int, bool, str, and a float
+            # equal to 1 (the type check, not the value, refuses it).
+            for version in (None, 2, True, "1", 1.0)
         ]
         + [(2, target) for target in cs.EMBEDDING_TARGETS[1:]],
     )

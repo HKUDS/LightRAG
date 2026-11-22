@@ -1060,37 +1060,39 @@ async def test_absent_age_is_reported_at_info_or_above(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_installed_query_reads_pg_extension_only():
-    """TEXT-ONLY: reads ``AGE_INSTALLED_SQL`` as a string; it never executes here.
+@pytest.mark.parametrize(
+    ("sql", "own", "column", "other"),
+    [
+        pytest.param(
+            AGE_INSTALLED_SQL,
+            "pg_extension",
+            "extversion",
+            "pg_available_extensions",
+            id="installed",
+        ),
+        pytest.param(
+            AGE_AVAILABLE_SQL,
+            "pg_available_extensions",
+            "default_version",
+            "pg_extension",
+            id="available",
+        ),
+    ],
+)
+def test_each_version_query_reads_only_its_own_catalog(sql, own, column, other):
+    """TEXT-ONLY: reads the query as a string; it never executes here.
 
     The split into two queries exists because ``pg_available_extensions`` parses every
     control file in the sharedir and raises for the whole view if any one of them is
-    malformed. That isolation is lost the moment this query joins the other catalog
-    back in, so the absence of ``pg_available_extensions`` from this text is the
-    property worth pinning.
+    malformed. That isolation is lost the moment either query joins the other catalog
+    back in, so each text must name its own catalog and not the other one.
     """
-    normalized = " ".join(AGE_INSTALLED_SQL.lower().split())
-
-    assert "pg_extension" in normalized, AGE_INSTALLED_SQL
-    assert "extversion" in normalized, AGE_INSTALLED_SQL
-    assert "pg_available_extensions" not in normalized, AGE_INSTALLED_SQL
-    assert "join" not in normalized, AGE_INSTALLED_SQL
-    assert "'age'" in normalized, AGE_INSTALLED_SQL
-
-
-def test_available_query_reads_pg_available_extensions_only():
-    """TEXT-ONLY, and the mirror of the above.
-
-    If this query pulled in ``pg_extension`` as well, a failure of the fragile view
-    would once more take the robust source down with it.
-    """
-    normalized = " ".join(AGE_AVAILABLE_SQL.lower().split())
-
-    assert "pg_available_extensions" in normalized, AGE_AVAILABLE_SQL
-    assert "default_version" in normalized, AGE_AVAILABLE_SQL
-    assert "pg_extension" not in normalized, AGE_AVAILABLE_SQL
-    assert "join" not in normalized, AGE_AVAILABLE_SQL
-    assert "'age'" in normalized, AGE_AVAILABLE_SQL
+    normalized = " ".join(sql.lower().split())
+    assert own in normalized, sql
+    assert column in normalized, sql
+    assert other not in normalized, sql
+    assert "join" not in normalized, sql
+    assert "'age'" in normalized, sql
 
 
 # ---------------------------------------------------------------------------

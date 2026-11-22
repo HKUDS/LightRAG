@@ -100,10 +100,14 @@ async def test_degree_selection_sql_is_undirected_and_preserves_isolated():
     storage = make_graph_storage()
 
     with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
-        await storage.get_knowledge_graph("*", max_nodes=50)
+        await storage.get_knowledge_graph("*", max_nodes=37)
 
     sql = capture.degree_sql
     assert sql is not None, "degree selection query was never issued"
+    # max_nodes is passed via params, not interpolated into the SQL.
+    assert "LIMIT $1" in sql
+    assert "37" not in sql
+    assert capture.degree_params == {"limit": 37}
     # Undirected: both edge endpoints are counted.
     assert "start_id" in sql
     assert "end_id" in sql
@@ -152,24 +156,6 @@ async def test_degree_selection_keeps_the_index_only_vertex_scan():
     # even only to sort on it -- is what would cost the heap visit.
     assert "properties" not in sql, sql
     assert "agtype_access_operator" not in sql, sql
-
-
-@pytest.mark.asyncio
-async def test_degree_selection_limit_is_parameterized():
-    """max_nodes must be passed via params, not interpolated into the SQL."""
-    capture = _QueryCapture(
-        total_nodes=2,
-        degree_rows=[{"node_id": 1, "degree": 3}],
-        subgraph_rows=[{"a": _node(1, "Alice"), "r": None, "b": None}],
-    )
-    storage = make_graph_storage()
-
-    with patch.object(storage, "_query", side_effect=capture.as_side_effect()):
-        await storage.get_knowledge_graph("*", max_nodes=37)
-
-    assert "LIMIT $1" in capture.degree_sql
-    assert "37" not in capture.degree_sql
-    assert capture.degree_params == {"limit": 37}
 
 
 @pytest.mark.asyncio

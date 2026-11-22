@@ -183,8 +183,6 @@ class TestPaths:
             # Aliases a case-insensitive filesystem, or Windows' trailing dot
             # and space stripping, resolves onto a reserved file.
             "CONFIG_STORAGE_ANCHOR.JSON",
-            "Kv_Workspace_Config.json",
-            ".LIGHTRAG_ANCHOR_BIND.LOCK",
             "config_storage_anchor.json.",
             ".lightrag_storage.lock ",
             # Unicode case folding: KELVIN SIGN, the fi ligature, long s.

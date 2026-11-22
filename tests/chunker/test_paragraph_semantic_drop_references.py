@@ -186,7 +186,9 @@ def test_mid_document_reference_section_outside_window_kept(tmp_path):
 
 
 @pytest.mark.offline
-def test_tail_n_zero_scans_all_blocks(tmp_path, monkeypatch):
+@pytest.mark.parametrize("tail_n", [None, "0"], ids=["default", "zero"])
+def test_tail_window_scans_all_blocks(tmp_path, monkeypatch, tail_n):
+    """The default window and an explicit 0 both scan every block."""
     tokenizer = _make_tokenizer()
     rows = [
         _row("Introduction", "INTRO_MARKER intro body"),
@@ -195,29 +197,10 @@ def test_tail_n_zero_scans_all_blocks(tmp_path, monkeypatch):
     ]
     blocks_path = _write_blocks_jsonl(tmp_path, rows)
 
-    monkeypatch.setenv("CHUNK_P_REFERENCES_TAIL_N", "0")
-    body = _all_content(
-        chunking_by_paragraph_semantic(
-            tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True
-        )
-    )
-
-    assert "REF_MARKER" not in body
-    assert "INTRO_MARKER" in body
-    assert "APPENDIX_MARKER" in body
-
-
-@pytest.mark.offline
-def test_default_tail_window_scans_all_blocks(tmp_path, monkeypatch):
-    tokenizer = _make_tokenizer()
-    rows = [
-        _row("Introduction", "INTRO_MARKER intro body"),
-        _row("References", "REF_MARKER [1] Foo."),
-        _row("Appendix", "APPENDIX_MARKER appendix body"),
-    ]
-    blocks_path = _write_blocks_jsonl(tmp_path, rows)
-
-    monkeypatch.delenv("CHUNK_P_REFERENCES_TAIL_N", raising=False)
+    if tail_n is None:
+        monkeypatch.delenv("CHUNK_P_REFERENCES_TAIL_N", raising=False)
+    else:
+        monkeypatch.setenv("CHUNK_P_REFERENCES_TAIL_N", tail_n)
     body = _all_content(
         chunking_by_paragraph_semantic(
             tokenizer, "", 2000, blocks_path=blocks_path, drop_references=True

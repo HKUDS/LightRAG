@@ -59,8 +59,10 @@ async def test_get_node_edges_passes_original_id_as_parameter():
     storage = make_graph_storage()
     entity = 'John "Smith"'
     captured_params: list[dict] = []
+    captured_sql: list[str] = []
 
     async def fake_query(sql, **kwargs):
+        captured_sql.append(sql)
         if kwargs.get("params"):
             captured_params.append(json.loads(list(kwargs["params"].values())[0]))
         return []
@@ -70,25 +72,9 @@ async def test_get_node_edges_passes_original_id_as_parameter():
 
     assert len(captured_params) == 1
     assert captured_params[0]["entity_id"] == entity
-
-
-@pytest.mark.asyncio
-async def test_get_node_edges_cypher_uses_parameter_syntax():
-    """The SQL sent to _query must use $1::agtype, not a hardcoded escaped string."""
-    storage = make_graph_storage()
-    entity = 'John "Smith"'
-    captured_sql: list[str] = []
-
-    async def fake_query(sql, **kwargs):
-        captured_sql.append(sql)
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.get_node_edges(entity)
-
+    # The SQL uses $1::agtype; the name never appears in it, raw or escaped.
     assert len(captured_sql) == 1
     assert "$1::agtype" in captured_sql[0]
-    # Entity name must NOT appear literally in the SQL string
     assert entity not in captured_sql[0]
     assert '\\"' not in captured_sql[0]
 
@@ -122,8 +108,10 @@ async def test_get_nodes_edges_batch_passes_original_ids_as_parameter():
     storage = make_graph_storage()
     entities = ['John "Smith"', "Alice", "O\\Brien"]
     captured_params: list[dict] = []
+    captured_sql: list[str] = []
 
-    async def fake_query(_sql, **kwargs):
+    async def fake_query(sql, **kwargs):
+        captured_sql.append(sql)
         if kwargs.get("params"):
             captured_params.append(json.loads(list(kwargs["params"].values())[0]))
         return []
@@ -134,26 +122,11 @@ async def test_get_nodes_edges_batch_passes_original_ids_as_parameter():
     assert len(captured_params) == 2  # outgoing + incoming
     assert captured_params[0]["node_ids"] == entities
     assert captured_params[1]["node_ids"] == entities
-
-
-@pytest.mark.asyncio
-async def test_get_nodes_edges_batch_cypher_uses_parameter_syntax():
-    """The SQL must use $1::agtype, not hardcoded escaped entity names."""
-    storage = make_graph_storage()
-    entity = 'John "Smith"'
-    captured_sql: list[str] = []
-
-    async def fake_query(sql, **_kwargs):
-        captured_sql.append(sql)
-        return []
-
-    with patch.object(storage, "_query", side_effect=fake_query):
-        await storage.get_nodes_edges_batch([entity])
-
+    # Both queries use $1::agtype and carry no name, raw or escaped.
     assert len(captured_sql) == 2
     for sql in captured_sql:
         assert "$1::agtype" in sql
-        assert entity not in sql
+        assert not [e for e in entities if e in sql]
         assert '\\"' not in sql
 
 
