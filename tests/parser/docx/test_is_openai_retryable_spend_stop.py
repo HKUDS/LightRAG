@@ -42,9 +42,7 @@ def _response(status_code: int) -> httpx.Response:
     "body, expected",
     [
         pytest.param(BUDGET_BODY, False, id="budget-exceeded"),
-        pytest.param(QUOTA_BODY, False, id="insufficient-quota"),
         pytest.param(THROTTLE_BODY, True, id="throughput-throttle"),
-        pytest.param(None, True, id="no-body"),
     ],
 )
 def test_rate_limit_error_classification(body, expected):

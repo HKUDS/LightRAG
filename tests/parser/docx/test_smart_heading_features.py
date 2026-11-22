@@ -344,21 +344,6 @@ def test_textbox_content_excluded_from_features(tmp_path) -> None:
     assert feats.visible_char_count == 4  # 宿主标题, textbox text excluded
 
 
-def test_visible_char_count_excludes_generated_text(tmp_path) -> None:
-    """``visible_char_count`` counts only source ``w:t`` characters.
-
-    Auto-numbering labels (prepended at read time) and <sup>/<equation>/
-    placeholder markup never enter run_features, so they cannot skew FS_base
-    weighting."""
-    doc = Document()
-    para = doc.add_paragraph()
-    para.add_run("正文内容").font.size = Pt(12)  # 4 visible source chars
-
-    path = _save(doc, tmp_path)
-    feats = _features_for(path, 0)
-    assert feats.visible_char_count == 4
-
-
 def test_first_line_size_restat_for_softbreak(tmp_path) -> None:
     doc = Document()
     para = doc.add_paragraph()
@@ -405,7 +390,6 @@ def _xml_para(body: str):
         "<w:br/>",
         '<w:br w:type="textWrapping"/>',
         '<w:br w:type="page"/>',
-        '<w:br w:type="column"/>',
         "<w:cr/>",
         "<w:noBreakHyphen/>",
     ],

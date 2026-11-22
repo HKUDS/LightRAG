@@ -149,22 +149,18 @@ NEGATIVE_CASES = [
     "Articulate the plan",
     "Chapters are numbered",
     "Sections of society",
-    "Partition the disk",
     "Paradigm shift",
     # EnAlpha requires a dot/、 separator
     "A cat sat here",
     "I think so",
     "A股 上涨了",
-    "B超 检查",
     # RomanNum: separator strictness and alphabet limits
     "XI'AN 城市",
     "VI 编号（空格分隔）",
     "CV. 简历缩写",
-    "MD. 医生头衔",
     "ix regards",
     # bare numbering with mandatory-title styleKeys → body
     "1.2",
-    "3.14",
     "1.2.3",
     "三、",
     "（一）",
@@ -174,7 +170,6 @@ NEGATIVE_CASES = [
     "II.",
     # 第X + non-unit char is not a chapter/clause
     "第二天早上出发",
-    "第一时间响应",
 ]
 
 

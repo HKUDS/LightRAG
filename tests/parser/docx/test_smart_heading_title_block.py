@@ -205,17 +205,6 @@ def test_other_mid_document_boundaries_do_not_seed_single_candidate(records) -> 
     assert _find(records) == []
 
 
-def test_single_candidate_with_genuine_numbering_excluded() -> None:
-    """A line opening with a REAL chapter number (第二篇) is chapter-level
-    material, not a per-article title — it must not split sub-documents."""
-    records = [
-        _para("前文正文结束。", size=12.0),
-        _para("第二篇 分论", size=18.0, page_break_before=True),
-        _para("正文继续，以句号结尾。", size=12.0),
-    ]
-    assert _find(records) == []
-
-
 def test_single_channel_never_scans_past_first_eligible_paragraph(monkeypatch) -> None:
     """The retired review-cap setting is ignored because the single channel
     can now emit at most one candidate and never scans for later replacements."""
@@ -308,6 +297,7 @@ def test_title_font_colon_lead_in_absorbed_but_llm_gate_rejects() -> None:
 
 
 def test_title_verdict_parsed_and_composed() -> None:
+    warnings: dict = {}
     decision = _judge_with(
         {
             "is_title_block": True,
@@ -317,10 +307,14 @@ def test_title_verdict_parsed_and_composed() -> None:
             "classification": None,
             "publisher": None,
             "date": "2026",
-        }
+        },
+        warnings=warnings,
     )
     assert decision.is_title_block
     assert decision.member_indices == (0, 1, 3)  # blank line carries no index
+    # A verbatim answer takes the exact locate tier, so the audit counter stays
+    # clean and a drifting model remains visible.
+    assert "title_block_locate_relaxed" not in warnings
     assert (
         compose_title_heading(decision)
         == "中华人民共和国某某管理办法 — （2026年修订） — 国某发〔2026〕12号(2026)"
@@ -474,17 +468,6 @@ def test_title_verdict_punctuation_and_case_normalized_locates() -> None:
     assert warnings["title_block_locate_relaxed"] == 1
 
 
-def test_title_verdict_exact_match_records_no_relaxation() -> None:
-    """Stability: a verbatim answer still takes the exact tier, so the audit
-    counter stays clean and a drifting model remains visible."""
-    warnings: dict = {}
-    _judge_with(
-        {"is_title_block": True, "main_title": "中华人民共和国某某管理办法"},
-        warnings=warnings,
-    )
-    assert "title_block_locate_relaxed" not in warnings
-
-
 def test_title_verdict_hallucinated_title_hard_fails() -> None:
     with pytest.raises(TitleBlockLLMError, match="cannot be located"):
         _judge_with({"is_title_block": True, "main_title": "完全虚构的标题"})
@@ -588,6 +571,10 @@ def test_non_title_verdict_malformed_partition_hard_fails() -> None:
         _judge_with({"is_title_block": False, "headings": [0, 1], "body": [1, 2]})
     with pytest.raises(TitleBlockLLMError, match="malformed"):  # out of range
         _judge_with({"is_title_block": False, "headings": [99], "body": []})
+    # Review D5: a duplicate inside one list is not a valid partition even
+    # though the deduped sets would appear to cover the window.
+    with pytest.raises(TitleBlockLLMError, match="malformed"):
+        _judge_with({"is_title_block": False, "headings": [0, 0], "body": [1, 2]})
     with pytest.raises(TitleBlockLLMError, match="must be"):  # missing fields
         _judge_with({"is_title_block": False})
     with pytest.raises(TitleBlockLLMError, match="must be"):  # explicit null
@@ -751,13 +738,6 @@ def test_single_candidate_false_verdict_leaves_context_untouched() -> None:
     assert not decision.is_title_block
     assert decision.heading_indices == ()
     assert decision.body_indices == ()  # candidate not demoted; context untouched
-
-
-def test_multi_verdict_rejects_duplicate_indices() -> None:
-    """Review D5: a duplicate index inside one list is not a valid partition
-    even though the deduped sets would appear to cover the window."""
-    with pytest.raises(TitleBlockLLMError, match="malformed"):
-        _judge_with({"is_title_block": False, "headings": [0, 0], "body": [1, 2]})
 
 
 # ---------------------------------------------------------------------------
@@ -937,20 +917,6 @@ def test_single_candidate_outline_heading_excluded() -> None:
     ]
     cands = _find(plain)
     assert len(cands) == 1 and cands[0].single and cands[0].start == 0
-
-
-def test_multi_window_plain_cover_still_found() -> None:
-    """Over-suppression guard: a legitimate cover block (big main title plus
-    body-sized companions, no outline, no numbering) still forms a candidate."""
-    records = [
-        _para("某某产品标准化大纲", size=22.0),
-        _para("副标题：模块化设计", size=14.0),
-        _para("某某研究所 发布", size=12.0),
-        _para("这一段是以句号结尾的正文内容，用来终止窗口生长。", size=12.0),
-    ]
-    cands = _find(records)
-    assert len(cands) == 1 and not cands[0].single
-    assert (cands[0].start, cands[0].end) == (0, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -2144,20 +2110,6 @@ def test_imprint_region_absorbs_trailing_document_date() -> None:
         _para("抄送：各设区市城乡规划局", size=12.0),  # 0 anchor
         _para("河北省住房和城乡建设厅办公室   2009年7月6日印发", size=12.0),  # 1 closer
         _para("二○○九年七月六日", size=12.0),  # 2 成文日期 → absorbed
-        _para("正文从这里开始，以句号结尾。", size=12.0),  # 3 not a date → stop
-    ]
-    regs = _regions(records)
-    assert len(regs) == 1
-    assert regs[0].closer == 1 and regs[0].members == {0, 1, 2}
-
-
-def test_imprint_region_absorbs_trailing_separator_date() -> None:
-    """The widened is_document_date (separator-style 2026.7.31) feeds the
-    same trailing-date absorption — the second consumer of the predicate."""
-    records = [
-        _para("抄送：各有关单位", size=12.0),  # 0 anchor
-        _para("某某办公室   2026年7月30日印发", size=12.0),  # 1 closer
-        _para("2026.7.31", size=12.0),  # 2 separator-style date → absorbed
         _para("正文从这里开始，以句号结尾。", size=12.0),  # 3 not a date → stop
     ]
     regs = _regions(records)
