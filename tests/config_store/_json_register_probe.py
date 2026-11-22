@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import time
+
+from _rendezvous import arrive_and_wait
 
 from lightrag import config_store as cs
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 
 
-async def main(working_dir: str, workspace: str, start_at: float) -> None:
+async def main(working_dir: str, workspace: str, rendezvous: str) -> None:
     initialize_share_data(workers=1)
     original = cs.read_shard_rows
 
@@ -35,7 +36,7 @@ async def main(working_dir: str, workspace: str, start_at: float) -> None:
     )
     await config.initialize()
     try:
-        time.sleep(max(0.0, start_at - time.time()))
+        arrive_and_wait(rendezvous)
         binding = await cs.bind_configuration_identity(
             config,
             working_dir=working_dir,
@@ -51,4 +52,4 @@ async def main(working_dir: str, workspace: str, start_at: float) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1], sys.argv[2], float(sys.argv[3])))
+    asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3]))
