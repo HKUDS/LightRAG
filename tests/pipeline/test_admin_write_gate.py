@@ -552,7 +552,16 @@ async def test_manual_freeze_cannot_be_raised_while_an_admin_write_holds_busy(ra
 async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch):
     """A hung embedding endpoint must not fence ingestion indefinitely: past
     ``admin_write_max_hold_seconds`` the admin write fails (500 through the
-    routes), and its ``finally`` releases the reservation AND the admin lock."""
+    routes), and its ``finally`` releases the reservation AND the admin lock.
+
+    It is also the clean-suspension half of a distinction the Codex review of
+    PR #3901 asked for: a cancellation taken before the commit point must not
+    read like one re-raised after a successful commit
+    (``test_ceiling_firing_mid_commit_reports_the_commit_as_durable``), and
+    neither may claim the operation wrote nothing -- a multi-step flow
+    (``_merge_entities_impl`` commits the merged node before it removes the
+    sources) can have committed at an earlier step even when the ceiling
+    catches it at a clean await."""
     monkeypatch.setattr(rag, "admin_write_max_hold_seconds", 0.2)
     status, _lock = await _status_handles(rag)
 
@@ -569,11 +578,15 @@ async def test_hold_ceiling_releases_both_gates_and_fails_loud(rag, monkeypatch)
     finally:
         rag.entities_vdb.upsert = original
 
-    assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS" in message
     # Stopped at a suspension point: no commit was in flight, and the message
-    # says that rather than the mid-commit wording (see the two tests below).
-    assert "No commit of its own is known to have completed" in str(excinfo.value)
-    assert "IS durable" not in str(excinfo.value)
+    # says that rather than the mid-commit wording.
+    assert "No commit of its own is known to have completed" in message
+    assert "IS durable" not in message
+    # It does not tell the caller the operation is undone either.
+    assert "Re-read the entity or relation before retrying" in message
+    assert "still durable" in message
     assert status["busy"] is False and status["busy_owner"] is None
     # The admin lock is free again: the next admin write goes straight through.
     async with asyncio.timeout(5):
@@ -920,40 +933,6 @@ async def test_ceiling_firing_mid_commit_reports_the_commit_as_durable(
             ["admin"], namespace=f"{rag.workspace}:GraphAdmin"
         ):
             pass
-
-
-@pytest.mark.asyncio
-async def test_the_two_ceiling_messages_are_distinguishable(rag, monkeypatch):
-    """Codex review of PR #3901: the timeout must distinguish a cancellation
-    taken before the commit point from one re-raised after a successful commit,
-    instead of reporting both as aborted. Neither message may claim the
-    operation wrote nothing -- a multi-step flow (``_merge_entities_impl``
-    commits the merged node before it removes the sources) can have committed at
-    an earlier step even when the ceiling catches it at a clean await.
-
-    This is the clean-suspension half; the deferred, mid-commit half and its
-    "IS durable" message are
-    ``test_ceiling_firing_mid_commit_reports_the_commit_as_durable``.
-    """
-    monkeypatch.setattr(rag, "admin_write_max_hold_seconds", 0.3)
-
-    # Stopped at an ordinary suspension point: the embedding round-trip.
-    never = asyncio.Event()
-    original_upsert = rag.entities_vdb.upsert
-    rag.entities_vdb.upsert = lambda data: never.wait()
-    try:
-        with pytest.raises(AdminWriteHoldExceededError) as clean:
-            await _create_alice(rag)
-    finally:
-        rag.entities_vdb.upsert = original_upsert
-
-    clean_text = str(clean.value)
-    assert "No commit of its own is known to have completed" in clean_text
-    # The deferred message's claim, which this one must not make.
-    assert "IS durable" not in clean_text
-    # It does not tell the caller the operation is undone either.
-    assert "Re-read the entity or relation before retrying" in clean_text
-    assert "still durable" in clean_text
 
 
 # ---------------------------------------------------------------------------
