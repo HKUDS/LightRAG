@@ -12,7 +12,12 @@ import shutil
 
 import pytest
 
-from lightrag.kg.lancedb_cold_query import ColdQueryConfig, ColdQueryError, cold_search, main
+from lightrag.kg.lancedb_cold_query import (
+    ColdQueryConfig,
+    ColdQueryError,
+    cold_search,
+    main,
+)
 from lightrag.kg.lancedb_cold_recall import paired_bootstrap_recall, recall_at_k
 from lightrag.kg.lancedb_impl import export_snapshot
 
@@ -57,11 +62,23 @@ async def test_tag_behind_latest_version_is_refused(tmp_path, seeded):
     rag, _ = seeded
     dest = tmp_path / "lake"
     await export_snapshot(rag, str(dest), "v1")
-    extra = {"content": "gamma chunk", "full_doc_id": "doc-2",
-             "chunk_order_index": 1, "tokens": 2, "file_path": "b.txt"}
+    extra = {
+        "content": "gamma chunk",
+        "full_doc_id": "doc-2",
+        "chunk_order_index": 1,
+        "tokens": 2,
+        "file_path": "b.txt",
+    }
     await rag.text_chunks.upsert({"chunk-4": extra})
-    await rag.chunks_vdb.upsert({"chunk-4": {
-        "content": extra["content"], "full_doc_id": "doc-2", "file_path": "b.txt"}})
+    await rag.chunks_vdb.upsert(
+        {
+            "chunk-4": {
+                "content": extra["content"],
+                "full_doc_id": "doc-2",
+                "file_path": "b.txt",
+            }
+        }
+    )
     await rag.text_chunks.index_done_callback()
     await rag.chunks_vdb.index_done_callback()
     await export_snapshot(rag, str(dest), "v2")
@@ -89,7 +106,11 @@ async def test_missing_table_fails_loud(snapshot):
 async def test_missing_tag_fails_loud(snapshot):
     _, _, dest = snapshot
     with pytest.raises(ColdQueryError, match="not found on table"):
-        cold_search(_config(dest, tag="absent"), expected_vector(CHUNKS["chunk-1"]["content"]), 3)
+        cold_search(
+            _config(dest, tag="absent"),
+            expected_vector(CHUNKS["chunk-1"]["content"]),
+            3,
+        )
 
 
 async def test_l2_metric_orders_by_euclidean_distance(snapshot):
@@ -167,8 +188,17 @@ async def test_cli_emits_json_hits(snapshot, tmp_path, capsys, source):
 
 def test_cli_refuses_two_query_vector_sources(capsys):
     with pytest.raises(SystemExit) as exc_info:
-        main(["--dest", "unused", "--tag", _TAG,
-              "--query-vector", "[1, 0.25, 0.5, 0.75]",
-              "--query-vector-file", "unused.json"])
+        main(
+            [
+                "--dest",
+                "unused",
+                "--tag",
+                _TAG,
+                "--query-vector",
+                "[1, 0.25, 0.5, 0.75]",
+                "--query-vector-file",
+                "unused.json",
+            ]
+        )
     assert exc_info.value.code == 1
     assert "exactly one" in capsys.readouterr().err

@@ -69,7 +69,9 @@ async def test_export_publishes_tagged_snapshot_with_stored_vectors(tmp_path, se
         assert chunks[cid]["file_path"] == source["file_path"]
         assert chunks[cid]["embedding"] == expected_vector(source["content"])
 
-    entities = {r["entity_name"]: r for r in db.open_table("entities").to_arrow().to_pylist()}
+    entities = {
+        r["entity_name"]: r for r in db.open_table("entities").to_arrow().to_pylist()
+    }
     assert set(entities) == set(NODES)
     for name, props in NODES.items():
         assert entities[name]["id"] == compute_mdhash_id(name, prefix="ent-")
@@ -93,7 +95,10 @@ async def test_export_publishes_tagged_snapshot_with_stored_vectors(tmp_path, se
     for name in _TABLES:
         table = db.open_table(name)
         assert table.tags.get_version("snap-1") == table.version
-        assert report["tables"][name] == {"rows": table.count_rows(), "version": table.version}
+        assert report["tables"][name] == {
+            "rows": table.count_rows(),
+            "version": table.version,
+        }
         assert table.schema.metadata[b"lightrag.embedding_model"] == MODEL_NAME.encode()
 
 
@@ -102,11 +107,23 @@ async def test_reexport_creates_new_version_and_keeps_old_tag(tmp_path, seeded):
     dest = str(tmp_path / "lake")
     first = await export_snapshot(rag, dest, "v1")
 
-    new_chunk = {"content": "gamma chunk", "full_doc_id": "doc-2",
-                 "chunk_order_index": 1, "tokens": 2, "file_path": "b.txt"}
+    new_chunk = {
+        "content": "gamma chunk",
+        "full_doc_id": "doc-2",
+        "chunk_order_index": 1,
+        "tokens": 2,
+        "file_path": "b.txt",
+    }
     await rag.text_chunks.upsert({"chunk-4": new_chunk})
-    await rag.chunks_vdb.upsert({"chunk-4": {
-        "content": new_chunk["content"], "full_doc_id": "doc-2", "file_path": "b.txt"}})
+    await rag.chunks_vdb.upsert(
+        {
+            "chunk-4": {
+                "content": new_chunk["content"],
+                "full_doc_id": "doc-2",
+                "file_path": "b.txt",
+            }
+        }
+    )
     await rag.text_chunks.index_done_callback()
     await rag.chunks_vdb.index_done_callback()
 
@@ -179,11 +196,23 @@ async def test_unflushed_vector_row_cannot_silently_embed(tmp_path, seeded):
     module rule demands flushed sources and the CLI installs a raising stub.
     """
     rag, embedder = seeded
-    pending = {"content": "pending chunk", "full_doc_id": "doc-1",
-               "chunk_order_index": 9, "tokens": 2, "file_path": "a.txt"}
+    pending = {
+        "content": "pending chunk",
+        "full_doc_id": "doc-1",
+        "chunk_order_index": 9,
+        "tokens": 2,
+        "file_path": "a.txt",
+    }
     await rag.text_chunks.upsert({"chunk-x": pending})
-    await rag.chunks_vdb.upsert({"chunk-x": {
-        "content": pending["content"], "full_doc_id": "doc-1", "file_path": "a.txt"}})
+    await rag.chunks_vdb.upsert(
+        {
+            "chunk-x": {
+                "content": pending["content"],
+                "full_doc_id": "doc-1",
+                "file_path": "a.txt",
+            }
+        }
+    )
     await rag.text_chunks.index_done_callback()  # chunks_vdb deliberately NOT flushed
     embedder.armed = True
 
@@ -194,8 +223,12 @@ async def test_unflushed_vector_row_cannot_silently_embed(tmp_path, seeded):
 
 async def test_missing_storages_refused(tmp_path):
     rag = SimpleNamespace(
-        full_docs=None, text_chunks=None, chunk_entity_relation_graph=None,
-        entities_vdb=None, relationships_vdb=None, chunks_vdb=None,
+        full_docs=None,
+        text_chunks=None,
+        chunk_entity_relation_graph=None,
+        entities_vdb=None,
+        relationships_vdb=None,
+        chunks_vdb=None,
         embedding_func=None,
     )
     with pytest.raises(ExportError, match="initialize_storages"):
@@ -269,25 +302,43 @@ def test_cli_exports_seeded_workspace(tmp_path, monkeypatch):
     main()
 
     db = lancedb.connect(dest)
-    expected = {"docs": len(DOCS), "chunks": len(CHUNKS),
-                "entities": len(NODES), "relations": len(EDGES)}
+    expected = {
+        "docs": len(DOCS),
+        "chunks": len(CHUNKS),
+        "entities": len(NODES),
+        "relations": len(EDGES),
+    }
     for name, count in expected.items():
         table = db.open_table(name)
         assert table.count_rows() == count
         assert table.tags.get_version("cli-snap") == table.version
     chunks = {r["id"]: r for r in db.open_table("chunks").to_arrow().to_pylist()}
-    assert chunks["chunk-1"]["embedding"] == expected_vector(CHUNKS["chunk-1"]["content"])
+    assert chunks["chunk-1"]["embedding"] == expected_vector(
+        CHUNKS["chunk-1"]["content"]
+    )
 
 
 _CREDS_ENV = (
-    "OSS_DEFAULT_SECRET_ID", "OSS_DEFAULT_SECRET_KEY", "OSS_DEFAULT_SECRET_TOKEN",
-    "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET", "oss_access_ak", "oss_access_sk",
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-    "OSS_ENDPOINT", "oss_endpoint", "AWS_ENDPOINT_URL", "AWS_ENDPOINT",
-    "OSS_REGION", "AWS_REGION",
+    "OSS_DEFAULT_SECRET_ID",
+    "OSS_DEFAULT_SECRET_KEY",
+    "OSS_DEFAULT_SECRET_TOKEN",
+    "OSS_ACCESS_KEY_ID",
+    "OSS_ACCESS_KEY_SECRET",
+    "oss_access_ak",
+    "oss_access_sk",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "OSS_ENDPOINT",
+    "oss_endpoint",
+    "AWS_ENDPOINT_URL",
+    "AWS_ENDPOINT",
+    "OSS_REGION",
+    "AWS_REGION",
 )
 _STS_ENV = {
-    "OSS_DEFAULT_SECRET_ID": "STS.test-id", "OSS_DEFAULT_SECRET_KEY": "test-secret",
+    "OSS_DEFAULT_SECRET_ID": "STS.test-id",
+    "OSS_DEFAULT_SECRET_KEY": "test-secret",
     "OSS_DEFAULT_SECRET_TOKEN": "test-token",
     "OSS_ENDPOINT": "https://oss-cn-hangzhou-internal.aliyuncs.com",
 }
@@ -297,39 +348,66 @@ _STS_ENV = {
     ("env", "dest", "expected"),
     [
         pytest.param(
-            _STS_ENV, "oss://bucket/prefix",
-            {"access_key_id": "STS.test-id", "access_key_secret": "test-secret",
-             "security_token": "test-token",
-             "endpoint": "https://oss-cn-hangzhou-internal.aliyuncs.com",
-             "region": "cn-hangzhou"},
+            _STS_ENV,
+            "oss://bucket/prefix",
+            {
+                "access_key_id": "STS.test-id",
+                "access_key_secret": "test-secret",
+                "security_token": "test-token",
+                "endpoint": "https://oss-cn-hangzhou-internal.aliyuncs.com",
+                "region": "cn-hangzhou",
+            },
             id="native-oss-sts",
         ),
         pytest.param(
-            _STS_ENV, "s3://bucket/prefix",
-            {"aws_access_key_id": "STS.test-id", "aws_secret_access_key": "test-secret",
-             "aws_session_token": "test-token", "virtual_hosted_style_request": "true",
-             "aws_endpoint": "https://oss-cn-hangzhou-internal.aliyuncs.com",
-             "aws_allow_http": "false", "aws_region": "us-east-1"},
+            _STS_ENV,
+            "s3://bucket/prefix",
+            {
+                "aws_access_key_id": "STS.test-id",
+                "aws_secret_access_key": "test-secret",
+                "aws_session_token": "test-token",
+                "virtual_hosted_style_request": "true",
+                "aws_endpoint": "https://oss-cn-hangzhou-internal.aliyuncs.com",
+                "aws_allow_http": "false",
+                "aws_region": "us-east-1",
+            },
             id="s3-compat-sts",
         ),
         pytest.param(
-            {"OSS_DEFAULT_SECRET_ID": "STS.test-id", "OSS_DEFAULT_SECRET_KEY": "test-secret",
-             "OSS_REGION": "cn-beijing", "AWS_SESSION_TOKEN": "aws-token",
-             "AWS_ENDPOINT_URL": "https://s3.us-west-2.amazonaws.com", "AWS_REGION": "us-west-2"},
+            {
+                "OSS_DEFAULT_SECRET_ID": "STS.test-id",
+                "OSS_DEFAULT_SECRET_KEY": "test-secret",
+                "OSS_REGION": "cn-beijing",
+                "AWS_SESSION_TOKEN": "aws-token",
+                "AWS_ENDPOINT_URL": "https://s3.us-west-2.amazonaws.com",
+                "AWS_REGION": "us-west-2",
+            },
             "oss://bucket/prefix",
-            {"access_key_id": "STS.test-id", "access_key_secret": "test-secret",
-             "region": "cn-beijing"},
+            {
+                "access_key_id": "STS.test-id",
+                "access_key_secret": "test-secret",
+                "region": "cn-beijing",
+            },
             id="native-oss-ignores-aws-fallbacks",
         ),
         pytest.param(
-            {"AWS_ACCESS_KEY_ID": "AKIA-test", "AWS_SECRET_ACCESS_KEY": "aws-secret",
-             "AWS_SESSION_TOKEN": "aws-token", "AWS_ENDPOINT_URL": "http://localhost:9000",
-             "AWS_REGION": "eu-west-1"},
+            {
+                "AWS_ACCESS_KEY_ID": "AKIA-test",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "AWS_SESSION_TOKEN": "aws-token",
+                "AWS_ENDPOINT_URL": "http://localhost:9000",
+                "AWS_REGION": "eu-west-1",
+            },
             "s3://bucket/prefix",
-            {"aws_access_key_id": "AKIA-test", "aws_secret_access_key": "aws-secret",
-             "aws_session_token": "aws-token", "virtual_hosted_style_request": "true",
-             "aws_endpoint": "http://localhost:9000", "aws_allow_http": "true",
-             "aws_region": "eu-west-1"},
+            {
+                "aws_access_key_id": "AKIA-test",
+                "aws_secret_access_key": "aws-secret",
+                "aws_session_token": "aws-token",
+                "virtual_hosted_style_request": "true",
+                "aws_endpoint": "http://localhost:9000",
+                "aws_allow_http": "true",
+                "aws_region": "eu-west-1",
+            },
             id="aws-only-s3",
         ),
         pytest.param({}, "oss://bucket/prefix", {}, id="no-creds"),
@@ -352,22 +430,59 @@ async def test_concat_collision_edges_both_archived(tmp_path, seeded):
     graph = rag.chunk_entity_relation_graph
     names = ("A", "BC", "AB", "C")
     for name in names:
-        await graph.upsert_node(name, {"entity_type": "person", "description": "x",
-                                       "source_id": "chunk-1", "file_path": "a.txt"})
-    await graph.upsert_edge("A", "BC", {"keywords": "k1", "description": "d1",
-                                        "source_id": "chunk-1", "weight": 1.0, "file_path": "a.txt"})
-    await graph.upsert_edge("AB", "C", {"keywords": "k2", "description": "d2",
-                                        "source_id": "chunk-1", "weight": 1.0, "file_path": "a.txt"})
-    await rag.entities_vdb.upsert({
-        compute_mdhash_id(name, prefix="ent-"): {
-            "entity_name": name, "content": f"{name}\nx",
-            "source_id": "chunk-1", "file_path": "a.txt"}
-        for name in names
-    })
-    await rag.relationships_vdb.upsert({
-        compute_mdhash_id("ABC", prefix="rel-"): {
-            "src_id": "A", "tgt_id": "BC", "content": "k1\tA\nBC\nd1",
-            "source_id": "chunk-1", "file_path": "a.txt"}})
+        await graph.upsert_node(
+            name,
+            {
+                "entity_type": "person",
+                "description": "x",
+                "source_id": "chunk-1",
+                "file_path": "a.txt",
+            },
+        )
+    await graph.upsert_edge(
+        "A",
+        "BC",
+        {
+            "keywords": "k1",
+            "description": "d1",
+            "source_id": "chunk-1",
+            "weight": 1.0,
+            "file_path": "a.txt",
+        },
+    )
+    await graph.upsert_edge(
+        "AB",
+        "C",
+        {
+            "keywords": "k2",
+            "description": "d2",
+            "source_id": "chunk-1",
+            "weight": 1.0,
+            "file_path": "a.txt",
+        },
+    )
+    await rag.entities_vdb.upsert(
+        {
+            compute_mdhash_id(name, prefix="ent-"): {
+                "entity_name": name,
+                "content": f"{name}\nx",
+                "source_id": "chunk-1",
+                "file_path": "a.txt",
+            }
+            for name in names
+        }
+    )
+    await rag.relationships_vdb.upsert(
+        {
+            compute_mdhash_id("ABC", prefix="rel-"): {
+                "src_id": "A",
+                "tgt_id": "BC",
+                "content": "k1\tA\nBC\nd1",
+                "source_id": "chunk-1",
+                "file_path": "a.txt",
+            }
+        }
+    )
     for storage in (graph, rag.entities_vdb, rag.relationships_vdb):
         await storage.index_done_callback()
     embedder.armed = True
@@ -398,7 +513,8 @@ def test_cli_resolves_provider_default_dim_and_model(tmp_path, monkeypatch):
 
     fake = ModuleType("lightrag.llm.fakebind")
     fake.fakebind_embed = EmbeddingFunc(
-        embedding_dim=DIM, func=_unused_provider, model_name=MODEL_NAME)
+        embedding_dim=DIM, func=_unused_provider, model_name=MODEL_NAME
+    )
     monkeypatch.setitem(sys.modules, "lightrag.llm.fakebind", fake)
     monkeypatch.setenv("EMBEDDING_BINDING", "fakebind")
     monkeypatch.delenv("EMBEDDING_DIM", raising=False)
@@ -423,13 +539,23 @@ def test_cli_resolves_provider_default_dim_and_model(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("binding", "extra_env", "model"),
     [
-        pytest.param("openai", {"EMBEDDING_MODEL": "custom-embed-model"},
-                     "custom-embed-model", id="openai-custom-model"),
-        pytest.param("azure_openai", {"AZURE_EMBEDDING_DEPLOYMENT": "my-deployment"},
-                     "my-deployment", id="azure-deployment"),
+        pytest.param(
+            "openai",
+            {"EMBEDDING_MODEL": "custom-embed-model"},
+            "custom-embed-model",
+            id="openai-custom-model",
+        ),
+        pytest.param(
+            "azure_openai",
+            {"AZURE_EMBEDDING_DEPLOYMENT": "my-deployment"},
+            "my-deployment",
+            id="azure-deployment",
+        ),
     ],
 )
-def test_cli_custom_model_without_dim_refused(tmp_path, monkeypatch, binding, extra_env, model):
+def test_cli_custom_model_without_dim_refused(
+    tmp_path, monkeypatch, binding, extra_env, model
+):
     """A non-default model with no EMBEDDING_DIM must fail loud like the
     server's dimension guard, not silently export under the provider default."""
     monkeypatch.setenv("EMBEDDING_BINDING", binding)
@@ -443,7 +569,9 @@ def test_cli_custom_model_without_dim_refused(tmp_path, monkeypatch, binding, ex
         ["lancedb_impl", "--dest", str(tmp_path / "lake"), "--tag", "snap"],
     )
 
-    with pytest.raises(ExportError, match=rf"EMBEDDING_DIM must be set for model '{model}'"):
+    with pytest.raises(
+        ExportError, match=rf"EMBEDDING_DIM must be set for model '{model}'"
+    ):
         main()
     assert list(lancedb.connect(str(tmp_path / "lake")).list_tables()) == []
 

@@ -26,22 +26,54 @@ DOCS = {
     "doc-2": {"content": "beta document body"},
 }
 CHUNKS = {
-    "chunk-1": {"content": "alpha chunk one", "full_doc_id": "doc-1",
-                "chunk_order_index": 0, "tokens": 3, "file_path": "a.txt"},
-    "chunk-2": {"content": "alpha chunk two", "full_doc_id": "doc-1",
-                "chunk_order_index": 1, "tokens": 3, "file_path": "a.txt"},
-    "chunk-3": {"content": "beta chunk one", "full_doc_id": "doc-2",
-                "chunk_order_index": 0, "tokens": 3, "file_path": "b.txt"},
+    "chunk-1": {
+        "content": "alpha chunk one",
+        "full_doc_id": "doc-1",
+        "chunk_order_index": 0,
+        "tokens": 3,
+        "file_path": "a.txt",
+    },
+    "chunk-2": {
+        "content": "alpha chunk two",
+        "full_doc_id": "doc-1",
+        "chunk_order_index": 1,
+        "tokens": 3,
+        "file_path": "a.txt",
+    },
+    "chunk-3": {
+        "content": "beta chunk one",
+        "full_doc_id": "doc-2",
+        "chunk_order_index": 0,
+        "tokens": 3,
+        "file_path": "b.txt",
+    },
 }
 NODES = {
-    "Alice": {"entity_type": "person", "description": "engineer",
-              "source_id": "chunk-1", "file_path": "a.txt"},
-    "Bob": {"entity_type": "person", "description": "manager",
-            "source_id": "chunk-3", "file_path": "b.txt"},
+    "Alice": {
+        "entity_type": "person",
+        "description": "engineer",
+        "source_id": "chunk-1",
+        "file_path": "a.txt",
+    },
+    "Bob": {
+        "entity_type": "person",
+        "description": "manager",
+        "source_id": "chunk-3",
+        "file_path": "b.txt",
+    },
 }
 EDGES = [
-    ("Alice", "Bob", {"keywords": "works with", "description": "colleagues",
-                      "source_id": "chunk-1", "weight": 2.0, "file_path": "a.txt"}),
+    (
+        "Alice",
+        "Bob",
+        {
+            "keywords": "works with",
+            "description": "colleagues",
+            "source_id": "chunk-1",
+            "weight": 2.0,
+            "file_path": "a.txt",
+        },
+    ),
 ]
 
 
@@ -124,26 +156,46 @@ async def seed_rag(tmp_path):
     }
 
     def kv(namespace):
-        return JsonKVStorage(namespace=namespace, workspace="",
-                             global_config=gc, embedding_func=ef)
+        return JsonKVStorage(
+            namespace=namespace, workspace="", global_config=gc, embedding_func=ef
+        )
 
     def vdb(namespace, meta_fields):
-        return NanoVectorDBStorage(namespace=namespace, workspace="",
-                                   global_config=gc, embedding_func=ef,
-                                   meta_fields=meta_fields)
+        return NanoVectorDBStorage(
+            namespace=namespace,
+            workspace="",
+            global_config=gc,
+            embedding_func=ef,
+            meta_fields=meta_fields,
+        )
 
     full_docs = kv(NameSpace.KV_STORE_FULL_DOCS)
     text_chunks = kv(NameSpace.KV_STORE_TEXT_CHUNKS)
-    graph = NetworkXStorage(namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
-                            workspace="", global_config=gc, embedding_func=ef)
-    entities_vdb = vdb(NameSpace.VECTOR_STORE_ENTITIES,
-                       {"entity_name", "source_id", "content", "file_path"})
-    relationships_vdb = vdb(NameSpace.VECTOR_STORE_RELATIONSHIPS,
-                            {"src_id", "tgt_id", "source_id", "content", "file_path"})
-    chunks_vdb = vdb(NameSpace.VECTOR_STORE_CHUNKS,
-                     {"full_doc_id", "content", "file_path"})
-    storages = [full_docs, text_chunks, graph,
-                entities_vdb, relationships_vdb, chunks_vdb]
+    graph = NetworkXStorage(
+        namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
+        workspace="",
+        global_config=gc,
+        embedding_func=ef,
+    )
+    entities_vdb = vdb(
+        NameSpace.VECTOR_STORE_ENTITIES,
+        {"entity_name", "source_id", "content", "file_path"},
+    )
+    relationships_vdb = vdb(
+        NameSpace.VECTOR_STORE_RELATIONSHIPS,
+        {"src_id", "tgt_id", "source_id", "content", "file_path"},
+    )
+    chunks_vdb = vdb(
+        NameSpace.VECTOR_STORE_CHUNKS, {"full_doc_id", "content", "file_path"}
+    )
+    storages = [
+        full_docs,
+        text_chunks,
+        graph,
+        entities_vdb,
+        relationships_vdb,
+        chunks_vdb,
+    ]
     for storage in storages:
         await storage.initialize()
 
@@ -153,34 +205,48 @@ async def seed_rag(tmp_path):
         await graph.upsert_node(name, props)
     for src, tgt, props in EDGES:
         await graph.upsert_edge(src, tgt, props)
-    await entities_vdb.upsert({
-        compute_mdhash_id(name, prefix="ent-"): {
-            "entity_name": name, "content": entity_content(name),
-            "source_id": props["source_id"], "file_path": props["file_path"],
+    await entities_vdb.upsert(
+        {
+            compute_mdhash_id(name, prefix="ent-"): {
+                "entity_name": name,
+                "content": entity_content(name),
+                "source_id": props["source_id"],
+                "file_path": props["file_path"],
+            }
+            for name, props in NODES.items()
         }
-        for name, props in NODES.items()
-    })
+    )
     rel_payloads = {}
     for src, tgt, props in EDGES:
         s, t = sorted((src, tgt))
         rel_payloads[compute_mdhash_id(s + t, prefix="rel-")] = {
-            "src_id": s, "tgt_id": t,
+            "src_id": s,
+            "tgt_id": t,
             "content": relation_content(s, t, props),
-            "source_id": props["source_id"], "file_path": props["file_path"],
+            "source_id": props["source_id"],
+            "file_path": props["file_path"],
         }
     await relationships_vdb.upsert(rel_payloads)
-    await chunks_vdb.upsert({
-        cid: {"content": c["content"], "full_doc_id": c["full_doc_id"],
-              "file_path": c["file_path"]}
-        for cid, c in CHUNKS.items()
-    })
+    await chunks_vdb.upsert(
+        {
+            cid: {
+                "content": c["content"],
+                "full_doc_id": c["full_doc_id"],
+                "file_path": c["file_path"],
+            }
+            for cid, c in CHUNKS.items()
+        }
+    )
     for storage in storages:
         await storage.index_done_callback()
 
     rag = SimpleNamespace(
-        full_docs=full_docs, text_chunks=text_chunks,
-        chunk_entity_relation_graph=graph, entities_vdb=entities_vdb,
-        relationships_vdb=relationships_vdb, chunks_vdb=chunks_vdb,
+        full_docs=full_docs,
+        text_chunks=text_chunks,
+        chunk_entity_relation_graph=graph,
+        entities_vdb=entities_vdb,
+        relationships_vdb=relationships_vdb,
+        chunks_vdb=chunks_vdb,
         embedding_func=ef,
     )
     return rag, embedder

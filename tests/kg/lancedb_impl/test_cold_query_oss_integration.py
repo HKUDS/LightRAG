@@ -58,7 +58,9 @@ async def test_cold_query_reads_tagged_oss_snapshot(tmp_path):
     tag = f"int-{uuid.uuid4().hex[:8]}"
     vector = expected_vector(CHUNKS["chunk-1"]["content"])
     try:
-        first = await export_snapshot(rag, dest, tag, batch_size=500, storage_options=options)
+        first = await export_snapshot(
+            rag, dest, tag, batch_size=500, storage_options=options
+        )
         assert embedder.export_calls == 0
 
         config = ColdQueryConfig(dest=dest, tag=tag, storage_options=options)
@@ -68,13 +70,17 @@ async def test_cold_query_reads_tagged_oss_snapshot(tmp_path):
         assert hits[0].distance == pytest.approx(0.0, abs=1e-6)
 
         hot = await rag.chunks_vdb.query("ignored", top_k=10, query_embedding=vector)
-        assert recall_at_k([hit.id for hit in hits], [row["id"] for row in hot], 10) == 1.0
+        assert (
+            recall_at_k([hit.id for hit in hits], [row["id"] for row in hot], 10) == 1.0
+        )
 
         tag2 = f"int-{uuid.uuid4().hex[:8]}"
         await export_snapshot(rag, dest, tag2, batch_size=500, storage_options=options)
         with pytest.raises(ColdQueryError, match="behind the latest version"):
             cold_search(config, vector, top_k=10)
-        latest = cold_search(ColdQueryConfig(dest=dest, tag=tag2, storage_options=options), vector, 10)
+        latest = cold_search(
+            ColdQueryConfig(dest=dest, tag=tag2, storage_options=options), vector, 10
+        )
         assert latest[0].id == "chunk-1"
         assert first["tables"]["chunks"]["rows"] == len(CHUNKS)
     finally:
