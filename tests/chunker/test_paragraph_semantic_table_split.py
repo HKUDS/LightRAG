@@ -1471,3 +1471,127 @@ def test_split_table_text_header_holding_closing_tag_is_injected_whole():
         assert parsed is not None, piece
         assert parsed[1][:1] == header
     assert all(_count_tokens(tokenizer, p) <= 300 for p in pieces)
+
+
+# ---------------------------------------------------------------------------
+# rowspan cells across row-split boundaries
+# ---------------------------------------------------------------------------
+
+_SEGMENT_HEADER = (
+    "<thead><tr><th>Segment</th><th>Quarter</th><th>Revenue</th></tr></thead>"
+)
+
+
+def _segment_table(segments: dict[str, list[tuple[str, str]]]) -> str:
+    body = []
+    for segment, quarters in segments.items():
+        for i, (quarter, revenue) in enumerate(quarters):
+            label = f'<td rowspan="{len(quarters)}">{segment}</td>' if i == 0 else ""
+            body.append(f"<tr>{label}<td>{quarter}</td><td>{revenue}</td></tr>")
+    return (
+        f'<table id="tb-seg" format="html">{_SEGMENT_HEADER}'
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _body_rows(piece: str) -> list[list[tuple[str, int]]]:
+    """(text, rowspan) of every body cell, row by row."""
+    import re
+
+    body = piece.split("<tbody>", 1)[1]
+    rows = []
+    for tr in re.findall(r"<tr>(.*?)</tr>", body):
+        cells = []
+        for attrs, text in re.findall(r"<td([^>]*)>(.*?)</td>", tr):
+            span = re.search(r'rowspan="(\d+)"', attrs)
+            cells.append((text, int(span.group(1)) if span else 1))
+        rows.append(cells)
+    return rows
+
+
+def _split_segments(target_max: int = 420):
+    table = _segment_table(
+        {
+            "Cloud": [
+                ("Q1", "1,200"),
+                ("Q2", "1,350"),
+                ("Q3", "1,410"),
+                ("Q4", "1,520"),
+            ],
+            "Hardware": [("Q1", "800"), ("Q2", "760"), ("Q3", "790"), ("Q4", "810")],
+        }
+    )
+    return _split_table_text(
+        table,
+        tokenizer=_make_tokenizer(),
+        target_max=target_max,
+        target_ideal=int(target_max * 0.8),
+        last_min=20,
+        header_body=_SEGMENT_HEADER,
+    )
+
+
+@pytest.mark.offline
+def test_rowspan_cell_is_repeated_in_the_next_slice():
+    pieces = _split_segments()
+    assert len(pieces) >= 2
+    for piece in pieces:
+        for cells in _body_rows(piece):
+            if ("1,520", 1) in cells:
+                # Cloud's Q4 row keeps its segment label, in the first column.
+                assert cells[0][0] == "Cloud"
+
+
+@pytest.mark.offline
+def test_rowspan_never_runs_past_its_slice():
+    for piece in _split_segments():
+        rows = _body_rows(piece)
+        for index, cells in enumerate(rows):
+            for _text, rowspan in cells:
+                assert rowspan <= len(rows) - index
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("target_max", [300, 420, 600, 900])
+def test_every_slice_row_fills_every_column(target_max):
+    pieces = _split_segments(target_max)
+    assert all(piece.startswith("<table") for piece in pieces)
+    for piece in pieces:
+        covered: dict[int, int] = {}  # row index -> columns covered by spans
+        for index, cells in enumerate(_body_rows(piece)):
+            width = covered.get(index, 0) + len(cells)
+            assert width == 3, (target_max, piece)
+            for _text, rowspan in cells:
+                for later in range(index + 1, index + rowspan):
+                    covered[later] = covered.get(later, 0) + 1
+
+
+@pytest.mark.offline
+def test_rowspan_inside_one_slice_is_left_unchanged():
+    table = _segment_table({"Cloud": [("Q1", "1,200"), ("Q2", "1,350")]})
+    pieces = _split_table_text(
+        table,
+        tokenizer=_make_tokenizer(),
+        target_max=10_000,
+        target_ideal=8_000,
+        last_min=20,
+    )
+    assert pieces == [table]
+
+
+@pytest.mark.offline
+def test_table_without_rowspan_splits_as_before():
+    rows = "".join(f"<tr><td>r{i}</td><td>{'x' * 40}</td></tr>" for i in range(12))
+    table = f'<table id="tb-plain" format="html"><tbody>{rows}</tbody></table>'
+    pieces = _split_table_text(
+        table,
+        tokenizer=_make_tokenizer(),
+        target_max=300,
+        target_ideal=240,
+        last_min=20,
+    )
+    assert len(pieces) >= 2
+    rejoined = "".join(
+        piece.split("<tbody>", 1)[1].rsplit("</tbody>", 1)[0] for piece in pieces
+    )
+    assert rejoined == rows

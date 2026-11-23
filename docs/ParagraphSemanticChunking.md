@@ -114,6 +114,8 @@ The P chunker reads `.blocks.jsonl` directly, treating each content line as an i
 
 Before slicing, the `<table {attrs}></table>` wrapper token overhead is debited so that re-wrapped slices stay within `table_max` as much as possible. Each slice is re-wrapped as a legal `<table>` tag for easy downstream parsing.
 
+A body cell with `rowspan` that crosses a slice boundary is made local to each slice: in the earlier slice its `rowspan` is cut to the rows that slice holds, and the cell is repeated (with the remaining `rowspan`) in the first row of the next slice, at the same column. Without this, the rows after the boundary would have no cell for that column and their values would shift one column left under the header. `<thead>` rows are kept verbatim.
+
 #### 3.2.2 Row-Level Recursive Re-Slicing
 
 If a row subset still exceeds `table_max` after re-wrapping, it is subdivided further within that row subset. **When a slice has converged to a single row that cannot be kept both `≤ target_max` and header-complete (the row's content itself exceeds the cap, or it fits but leaves no room for the header it would need), the whole table degrades to an R recursive character split of the original `<table>` text (whose body still carries the header), and a `logger.warning` is logged** — the header content survives as plain text along with the original table text and is never silently dropped, nor is a "some `<table>` slices + some orphaned character fragments" mixed output produced. A slice that needs no injected header and whose single row fits `target_max` is still kept whole as legal `<table>` markup. This mechanism keeps table content expressible by row boundaries in legal table structure as much as possible.

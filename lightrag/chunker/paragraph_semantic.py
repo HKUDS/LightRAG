@@ -545,6 +545,164 @@ def _split_html_rows_by_tokens(
     return chunks
 
 
+# A ``<td>``/``<th>`` cell with its end tag, as the table writers emit it.
+_HTML_CELL_RE = re.compile(
+    r"<(?P<tag>td|th)\b(?P<attrs>[^>]*)>(?P<inner>.*?)</(?P=tag)\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_HTML_TR_PARTS_RE = re.compile(
+    r"(?P<open><tr\b[^>]*>)(?P<inner>.*)(?P<close></tr\s*>)\s*\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+_HTML_SPAN_ATTR_RE = re.compile(
+    r"""\s*\b(?P<name>rowspan|colspan)\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s>]+))""",
+    re.IGNORECASE,
+)
+
+
+def _html_span_value(attrs: str, name: str) -> int:
+    """Read ``rowspan``/``colspan`` from a cell's attrs as an int ``>= 1``."""
+    for match in _HTML_SPAN_ATTR_RE.finditer(attrs):
+        if match.group("name").lower() != name:
+            continue
+        raw = match.group("dq") or match.group("sq") or match.group("bare") or "1"
+        try:
+            return max(int(raw.strip()), 1)
+        except ValueError:
+            return 1
+    return 1
+
+
+def _html_cell_with_rowspan(tag: str, attrs: str, inner: str, rowspan: int) -> str:
+    """Re-emit a cell with ``rowspan`` set to ``rowspan`` (dropped when 1)."""
+    # Drop only the rowspan attribute so every other attribute stays as it is.
+    kept = _HTML_SPAN_ATTR_RE.sub(
+        lambda m: "" if m.group("name").lower() == "rowspan" else m.group(0),
+        attrs,
+    )
+    span = f' rowspan="{rowspan}"' if rowspan > 1 else ""
+    return f"<{tag}{kept}{span}>{inner}</{tag}>"
+
+
+def _parse_html_tr(tr: str) -> tuple[str, list[re.Match[str]], str] | None:
+    """Split a ``<tr>`` into its open tag, cell matches and close tag.
+
+    Returns ``None`` when the row holds anything besides whitespace and
+    complete ``<td>``/``<th>`` cells (omitted end tags, nested tables, text
+    between cells), so such a row is left exactly as it is.
+    """
+    parts = _HTML_TR_PARTS_RE.match(tr)
+    if parts is None:
+        return None
+    inner = parts.group("inner")
+    cells = list(_HTML_CELL_RE.finditer(inner))
+    if _HTML_CELL_RE.sub("", inner).strip():
+        return None
+    if any("<table" in cell.group("inner").lower() for cell in cells):
+        return None
+    return parts.group("open"), cells, parts.group("close")
+
+
+def _html_rows_slice_with_rowspans(
+    rows: list[tuple[str, str]], start: int, end: int
+) -> list[tuple[str, str]]:
+    """Return ``rows[start:end]`` with ``rowspan`` cells made local to the slice.
+
+    Row splitting cuts a table between two ``<tr>`` rows, but a cell with
+    ``rowspan="N"`` covers the next ``N - 1`` rows too. Kept as is, the cell
+    claims rows the slice does not hold, and the first rows of the next slice
+    have no cell for that column, so their values shift one column left under
+    the header. This makes every slice a table on its own:
+
+    * a spanned cell that starts before ``start`` and still covers ``start`` is
+      repeated in the slice's first row, at its column, with the rows it covers
+      inside the slice as its ``rowspan``;
+    * a cell whose ``rowspan`` runs past ``end`` is cut to the rows left in the
+      slice.
+
+    Spans never cross a ``<thead>``/``<tbody>``/``<tfoot>`` boundary (HTML
+    limits them to their row group). ``<thead>`` rows, rows that need no
+    change, and rows that :func:`_parse_html_tr` cannot parse are returned
+    unchanged.
+    """
+    # Start column -> (last row index covered, colspan, tag, attrs, inner).
+    active: dict[int, tuple[int, int, str, str, str]] = {}
+    origin: dict[int, int] = {}
+    current_wrapper: str | None = None
+    out: list[tuple[str, str]] = []
+    for index in range(end):
+        wrapper, tr = rows[index]
+        if wrapper != current_wrapper:
+            active.clear()
+            origin.clear()
+            current_wrapper = wrapper
+        for col in [c for c, span in active.items() if span[0] < index]:
+            del active[col]
+            del origin[col]
+        # The header is kept verbatim (HeaderRecovery repeats it as stored).
+        parsed = None if wrapper == "thead" else _parse_html_tr(tr)
+        if parsed is None:
+            if index >= start:
+                out.append((wrapper, tr))
+            continue
+        open_tag, cells, close_tag = parsed
+        occupied: set[int] = set()
+        for col, (_last, colspan, *_cell) in active.items():
+            occupied.update(range(col, col + colspan))
+        placed: list[tuple[int, re.Match[str]]] = []
+        col = 0
+        for cell in cells:
+            while col in occupied:
+                col += 1
+            placed.append((col, cell))
+            col += _html_span_value(cell.group("attrs"), "colspan")
+        if index >= start:
+            pieces: list[tuple[int, str]] = []
+            changed = False
+            if index == start:
+                for col, (last, _colspan, tag, attrs, inner) in active.items():
+                    if origin[col] < start:
+                        span = min(last, end - 1) - start + 1
+                        pieces.append(
+                            (col, _html_cell_with_rowspan(tag, attrs, inner, span))
+                        )
+                        changed = True
+            for col, cell in placed:
+                rowspan = _html_span_value(cell.group("attrs"), "rowspan")
+                clipped = min(rowspan, end - index)
+                if clipped != rowspan:
+                    pieces.append(
+                        (
+                            col,
+                            _html_cell_with_rowspan(
+                                cell.group("tag"),
+                                cell.group("attrs"),
+                                cell.group("inner"),
+                                clipped,
+                            ),
+                        )
+                    )
+                    changed = True
+                else:
+                    pieces.append((col, cell.group(0)))
+            if changed:
+                pieces.sort(key=lambda item: item[0])
+                tr = open_tag + "".join(html for _, html in pieces) + close_tag
+            out.append((wrapper, tr))
+        for col, cell in placed:
+            rowspan = _html_span_value(cell.group("attrs"), "rowspan")
+            if rowspan > 1:
+                active[col] = (
+                    index + rowspan - 1,
+                    _html_span_value(cell.group("attrs"), "colspan"),
+                    cell.group("tag"),
+                    cell.group("attrs"),
+                    cell.group("inner"),
+                )
+                origin[col] = index
+    return out
+
+
 def _dedup_preserving_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -835,10 +993,18 @@ def _split_table_text(
                 last_min=body_last_min,
             )
 
+            # Every chunk is a contiguous run of ``rows_html`` holding the
+            # same tuple objects, so its first row locates it in the table.
+            row_index = {id(row): i for i, row in enumerate(rows_html)}
+
             def serialize(chunk_rows: list[tuple[str, str]]) -> str:
+                start = row_index[id(chunk_rows[0])]
+                local_rows = _html_rows_slice_with_rowspans(
+                    rows_html, start, start + len(chunk_rows)
+                )
                 return (
                     f"<table {attrs}>"
-                    f"{_serialize_rows_with_wrappers(chunk_rows)}"
+                    f"{_serialize_rows_with_wrappers(local_rows)}"
                     f"</table>"
                 )
 
