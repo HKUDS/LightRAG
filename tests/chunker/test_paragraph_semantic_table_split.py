@@ -1480,9 +1480,15 @@ def test_split_table_text_header_holding_closing_tag_is_injected_whole():
 _SEGMENT_HEADER = (
     "<thead><tr><th>Segment</th><th>Quarter</th><th>Revenue</th></tr></thead>"
 )
+_SPAN_ATTR = r'{}="(\d+)"'
 
 
-def _segment_table(segments: dict[str, list[tuple[str, str]]]) -> str:
+def _segment_table() -> str:
+    """Cloud/Hardware labels each span their four quarter rows."""
+    segments = {
+        "Cloud": [("Q1", "1,200"), ("Q2", "1,350"), ("Q3", "1,410"), ("Q4", "1,520")],
+        "Hardware": [("Q1", "800"), ("Q2", "760"), ("Q3", "790"), ("Q4", "810")],
+    }
     body = []
     for segment, quarters in segments.items():
         for i, (quarter, revenue) in enumerate(quarters):
@@ -1494,89 +1500,89 @@ def _segment_table(segments: dict[str, list[tuple[str, str]]]) -> str:
     )
 
 
-def _body_rows(piece: str) -> list[list[tuple[str, int]]]:
-    """(text, rowspan) of every body cell, row by row."""
+def _colspan_table() -> str:
+    """Per group: a 4-row label, a 2x2 block, and a 2-row cell before the last column."""
+    pad = "x" * 30
+    body = []
+    for g in range(3):
+        body.append(
+            f'<tr><td rowspan="4">L{g}</td><td rowspan="2" colspan="2">B{g}</td>'
+            f'<td>{g}-1 {pad}</td><td rowspan="2">R{g}</td><td>{g}-t1</td></tr>'
+            f"<tr><td>{g}-2 {pad}</td><td>{g}-t2</td></tr>"
+            f"<tr><td>{g}-a</td><td>{g}-b</td><td>{g}-3 {pad}</td><td>{g}-r</td><td>{g}-t3</td></tr>"
+            f'<tr><td colspan="2">{g}-c</td><td>{g}-4 {pad}</td><td>{g}-s</td><td>{g}-t4</td></tr>'
+        )
+    return f'<table id="tb-col" format="html"><tbody>{"".join(body)}</tbody></table>'
+
+
+def _body_grid(piece: str) -> list[list[str]]:
+    """Expand a piece's body rows to a text grid, spans filled in.
+
+    Fails when a span runs past the piece's last row or a row leaves a column
+    uncovered, so the grid alone shows a dropped or misplaced spanned cell.
+    """
     import re
 
-    body = piece.split("<tbody>", 1)[1]
-    rows = []
-    for tr in re.findall(r"<tr>(.*?)</tr>", body):
-        cells = []
+    trs = re.findall(r"<tr>(.*?)</tr>", piece.split("<tbody>", 1)[1])
+    pending: dict[tuple[int, int], str] = {}
+    grid = []
+    for r, tr in enumerate(trs):
+        row = {c: t for (rr, c), t in pending.items() if rr == r}
+        col = 0
         for attrs, text in re.findall(r"<td([^>]*)>(.*?)</td>", tr):
-            span = re.search(r'rowspan="(\d+)"', attrs)
-            cells.append((text, int(span.group(1)) if span else 1))
-        rows.append(cells)
-    return rows
+            while col in row:
+                col += 1
+            spans = [
+                re.search(_SPAN_ATTR.format(n), attrs) for n in ("rowspan", "colspan")
+            ]
+            rowspan, colspan = (int(m.group(1)) if m else 1 for m in spans)
+            assert r + rowspan <= len(trs), ("rowspan runs past its slice", piece)
+            for dr in range(rowspan):
+                for dc in range(colspan):
+                    if dr:
+                        pending[(r + dr, col + dc)] = text
+                    else:
+                        row[col + dc] = text
+            col += colspan
+        assert sorted(row) == list(range(len(row))), ("uncovered column", piece)
+        grid.append([row[c] for c in sorted(row)])
+    return grid
 
 
-def _split_segments(target_max: int = 420):
-    table = _segment_table(
-        {
-            "Cloud": [
-                ("Q1", "1,200"),
-                ("Q2", "1,350"),
-                ("Q3", "1,410"),
-                ("Q4", "1,520"),
-            ],
-            "Hardware": [("Q1", "800"), ("Q2", "760"), ("Q3", "790"), ("Q4", "810")],
-        }
-    )
-    return _split_table_text(
-        table,
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("table", "header_body", "target_max", "opens_on"),
+    [
+        # Cut after Cloud's Q3: the next slice opens on Cloud's Q4 row.
+        pytest.param(_segment_table, _SEGMENT_HEADER, 420, ["Cloud", "Q4"], id="label"),
+        # Cut after Cloud's Q2: the label is repeated with rowspan="2".
+        pytest.param(
+            _segment_table, _SEGMENT_HEADER, 300, ["Cloud", "Q3"], id="label-2"
+        ),
+        # One-row slices inside every span: repeated cells keep colspan and column.
+        pytest.param(_colspan_table, None, 200, ["L0", "B0", "B0"], id="colspan"),
+    ],
+)
+def test_rowspan_cells_are_local_to_each_slice(
+    table, header_body, target_max, opens_on
+):
+    source = table()
+    pieces = _split_table_text(
+        source,
         tokenizer=_make_tokenizer(),
         target_max=target_max,
         target_ideal=int(target_max * 0.8),
         last_min=20,
-        header_body=_SEGMENT_HEADER,
+        header_body=header_body,
     )
-
-
-@pytest.mark.offline
-def test_rowspan_cell_is_repeated_in_the_next_slice():
-    pieces = _split_segments()
     assert len(pieces) >= 2
-    for piece in pieces:
-        for cells in _body_rows(piece):
-            if ("1,520", 1) in cells:
-                # Cloud's Q4 row keeps its segment label, in the first column.
-                assert cells[0][0] == "Cloud"
-
-
-@pytest.mark.offline
-def test_rowspan_never_runs_past_its_slice():
-    for piece in _split_segments():
-        rows = _body_rows(piece)
-        for index, cells in enumerate(rows):
-            for _text, rowspan in cells:
-                assert rowspan <= len(rows) - index
-
-
-@pytest.mark.offline
-@pytest.mark.parametrize("target_max", [300, 420, 600, 900])
-def test_every_slice_row_fills_every_column(target_max):
-    pieces = _split_segments(target_max)
     assert all(piece.startswith("<table") for piece in pieces)
-    for piece in pieces:
-        covered: dict[int, int] = {}  # row index -> columns covered by spans
-        for index, cells in enumerate(_body_rows(piece)):
-            width = covered.get(index, 0) + len(cells)
-            assert width == 3, (target_max, piece)
-            for _text, rowspan in cells:
-                for later in range(index + 1, index + rowspan):
-                    covered[later] = covered.get(later, 0) + 1
-
-
-@pytest.mark.offline
-def test_rowspan_inside_one_slice_is_left_unchanged():
-    table = _segment_table({"Cloud": [("Q1", "1,200"), ("Q2", "1,350")]})
-    pieces = _split_table_text(
-        table,
-        tokenizer=_make_tokenizer(),
-        target_max=10_000,
-        target_ideal=8_000,
-        last_min=20,
-    )
-    assert pieces == [table]
+    # Rejoined, the slices' grids are the source table's grid row for row.
+    grids = [_body_grid(piece) for piece in pieces]
+    assert [row for grid in grids for row in grid] == _body_grid(source)
+    # The case really cuts through the span it names: a later slice opens on
+    # a continuation row, which only a repeated spanned cell can complete.
+    assert opens_on in [grid[0][: len(opens_on)] for grid in grids[1:]], pieces
 
 
 @pytest.mark.offline

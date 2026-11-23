@@ -114,7 +114,7 @@ The P chunker reads `.blocks.jsonl` directly, treating each content line as an i
 
 Before slicing, the `<table {attrs}></table>` wrapper token overhead is debited so that re-wrapped slices stay within `table_max` as much as possible. Each slice is re-wrapped as a legal `<table>` tag for easy downstream parsing.
 
-A body cell with `rowspan` that crosses a slice boundary is made local to each slice: in the earlier slice its `rowspan` is cut to the rows that slice holds, and the cell is repeated (with the remaining `rowspan`) in the first row of the next slice, at the same column. Without this, the rows after the boundary would have no cell for that column and their values would shift one column left under the header. `<thead>` rows are kept verbatim.
+A body cell with `rowspan` that crosses a slice boundary is made local to each slice: in the earlier slice its `rowspan` is cut to the rows that slice holds, and the cell is repeated (with the remaining `rowspan`) in the first row of the next slice, at the same column. Without this, the rows after the boundary would have no cell for that column and their values would shift one column left under the header. `<thead>` rows are kept verbatim. The repeated cell costs tokens the row splitter did not count; a slice it pushes over the cap is re-split like any other, and a single row that no longer fits degrades the table as described in §3.2.2. A table with no body `rowspan` splits exactly as before.
 
 #### 3.2.2 Row-Level Recursive Re-Slicing
 
