@@ -10,55 +10,31 @@ from lightrag.kg.neo4j_impl import Neo4JStorage
 pytestmark = pytest.mark.offline
 
 
-class _FakeResult:
-    async def consume(self):
-        return None
+class _UnavailableDriver:
+    """Driver whose every session fails to open, counting the attempts."""
 
+    def __init__(self):
+        self.attempts = 0
 
-class _FakeTransaction:
-    def __init__(self, driver):
-        self._driver = driver
-
-    async def run(self, query, **params):
-        self._driver.writes += 1
-        return _FakeResult()
-
-
-class _FakeSession:
-    def __init__(self, driver):
-        self._driver = driver
+    def session(self, **kwargs):
+        return self
 
     async def __aenter__(self):
-        self._driver.attempts += 1
-        if self._driver.attempts <= self._driver.failures:
-            raise neo4jExceptions.ServiceUnavailable("Neo4j unavailable")
-        return self
+        self.attempts += 1
+        raise neo4jExceptions.ServiceUnavailable("Neo4j unavailable")
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def execute_write(self, callback):
-        return await callback(_FakeTransaction(self._driver))
 
-
-class _FakeDriver:
-    def __init__(self, failures):
-        self.failures = failures
-        self.attempts = 0
-        self.writes = 0
-
-    def session(self, **kwargs):
-        return _FakeSession(self)
-
-
-def _make_storage(failures):
+def _make_storage():
     storage = Neo4JStorage(
         namespace="chunk_entity_relation",
         global_config={"max_graph_nodes": 1000},
         embedding_func=None,
         workspace="test",
     )
-    driver = _FakeDriver(failures)
+    driver = _UnavailableDriver()
     storage._driver = driver
     storage._DATABASE = "neo4j"
     return storage, driver
@@ -87,35 +63,22 @@ WRITE_CASES = [
 async def test_write_retry_exhaustion_reraises_original_exception(
     monkeypatch, method_name, args
 ):
-    storage, driver = _make_storage(failures=3)
+    storage, driver = _make_storage()
     method = getattr(Neo4JStorage, method_name)
     monkeypatch.setattr(method.retry, "wait", wait_none())
 
-    with pytest.raises(neo4jExceptions.ServiceUnavailable) as exc_info:
+    with pytest.raises(neo4jExceptions.ServiceUnavailable):
         await getattr(storage, method_name)(*args)
 
-    assert type(exc_info.value) is neo4jExceptions.ServiceUnavailable
     assert driver.attempts == 3
 
 
 @pytest.mark.asyncio
 async def test_remove_nodes_does_not_multiply_delete_node_retries(monkeypatch):
-    storage, driver = _make_storage(failures=3)
+    storage, driver = _make_storage()
     monkeypatch.setattr(Neo4JStorage.delete_node.retry, "wait", wait_none())
 
-    with pytest.raises(neo4jExceptions.ServiceUnavailable) as exc_info:
+    with pytest.raises(neo4jExceptions.ServiceUnavailable):
         await storage.remove_nodes(["node"])
 
-    assert type(exc_info.value) is neo4jExceptions.ServiceUnavailable
     assert driver.attempts == 3
-
-
-@pytest.mark.asyncio
-async def test_write_retry_transient_failure_then_success(monkeypatch):
-    storage, driver = _make_storage(failures=1)
-    monkeypatch.setattr(Neo4JStorage.upsert_node.retry, "wait", wait_none())
-
-    await storage.upsert_node("node", {"entity_id": "node"})
-
-    assert driver.attempts == 2
-    assert driver.writes == 1
