@@ -83,15 +83,21 @@ def _check_config(config: ColdQueryConfig) -> None:
 def _open_table(config: ColdQueryConfig) -> Table:
     try:
         options = dict(config.storage_options or {})
-        return lancedb.connect(config.dest, storage_options=options).open_table(config.table)
+        return lancedb.connect(config.dest, storage_options=options).open_table(
+            config.table
+        )
     except Exception as exc:
-        raise ColdQueryError(f"cannot open table {config.table!r} at {config.dest!r}: {exc}") from exc
+        raise ColdQueryError(
+            f"cannot open table {config.table!r} at {config.dest!r}: {exc}"
+        ) from exc
 
 
 def _latest_tag_version(table: Table, config: ColdQueryConfig) -> int:
     tags = table.tags.list()
     if config.tag not in tags:
-        raise ColdQueryError(f"tag {config.tag!r} not found on table {config.table!r}; available: {sorted(tags)}")
+        raise ColdQueryError(
+            f"tag {config.tag!r} not found on table {config.table!r}; available: {sorted(tags)}"
+        )
     tagged = int(table.tags.get_version(config.tag))
     if tagged != int(table.version):
         raise ColdQueryError(
@@ -108,7 +114,9 @@ def _embedding_dim(table: Table, config: ColdQueryConfig) -> int:
     except KeyError as exc:
         raise ColdQueryError(f"table {config.table!r} has no embedding column") from exc
     if not pa.types.is_fixed_size_list(field.type):
-        raise ColdQueryError(f"embedding column is {field.type}, expected a fixed-size list")
+        raise ColdQueryError(
+            f"embedding column is {field.type}, expected a fixed-size list"
+        )
     return int(field.type.list_size)
 
 
@@ -118,7 +126,9 @@ def _query_values(query_vector: Sequence[float], dim: int) -> list[float]:
     except (TypeError, ValueError) as exc:
         raise ColdQueryError("query vector must be a sequence of numbers") from exc
     if len(values) != dim:
-        raise ColdQueryError(f"query vector has dimension {len(values)}, table embedding dimension is {dim}")
+        raise ColdQueryError(
+            f"query vector has dimension {len(values)}, table embedding dimension is {dim}"
+        )
     if not all(math.isfinite(value) for value in values):
         raise ColdQueryError("query vector contains a non-finite value")
     return values
@@ -142,22 +152,31 @@ def _s3_setup(options: Mapping[str, str], dest: str) -> str:
         host = host if host.startswith("s3.") else f"s3.{host}"
         host = host if host.startswith(f"{bucket}.") else f"{bucket}.{host}"
     token = options.get("aws_session_token") or options.get("security_token")
-    parts = ["PROVIDER config", f"SCOPE {_sql_literal('s3://' + bucket + '/')}", f"ACCESS_KEY_ID {_sql_literal(key)}",
-             f"SECRET_ACCESS_KEY {_sql_literal(secret)}", f"REGION {_sql_literal(options.get('aws_region') or options.get('region') or 'us-east-1')}",
-             "VIRTUAL_HOSTED_STYLE_REQUEST 'true'"]
+    parts = [
+        "PROVIDER config",
+        f"SCOPE {_sql_literal('s3://' + bucket + '/')}",
+        f"ACCESS_KEY_ID {_sql_literal(key)}",
+        f"SECRET_ACCESS_KEY {_sql_literal(secret)}",
+        f"REGION {_sql_literal(options.get('aws_region') or options.get('region') or 'us-east-1')}",
+        "VIRTUAL_HOSTED_STYLE_REQUEST 'true'",
+    ]
     if token:
         parts.append(f"SESSION_TOKEN {_sql_literal(token)}")
     if host:
         parts.append(f"ENDPOINT {_sql_literal(scheme + host)}")
-    return ("INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET "
-            "(TYPE LANCE, " + ", ".join(parts) + ");")
+    return (
+        "INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET "
+        "(TYPE LANCE, " + ", ".join(parts) + ");"
+    )
 
 
 def _build_sql(
     config: ColdQueryConfig, values: list[float], dim: int, top_k: int, setup: str
 ) -> str:
     # DuckDB httpfs reads OSS via the S3 protocol: scan the oss:// lake under its s3:// alias.
-    path = f"{config.dest.replace('oss://', 's3://', 1).rstrip('/')}/{config.table}.lance"
+    path = (
+        f"{config.dest.replace('oss://', 's3://', 1).rstrip('/')}/{config.table}.lance"
+    )
     vector = "[" + ", ".join(repr(value) for value in values) + f"]::FLOAT[{dim}]"
     statements = ["LOAD lance;"]
     statements.extend(s for s in (setup, config.duckdb_setup.strip()) if s)
@@ -195,7 +214,11 @@ def _query_rows(binary: str, sql: str, timeout_s: float) -> list[dict]:
         raise ColdQueryError(f"cannot run duckdb: {exc}") from exc
     output = proc.stdout.strip()
     if proc.returncode != 0 or not output:
-        detail = re.sub(r"(?i)\b(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|KEY_ID|SECRET)\s+'[^']*'", r"\1 '***'", (proc.stderr or output).strip()[-2000:])
+        detail = re.sub(
+            r"(?i)\b(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|KEY_ID|SECRET)\s+'[^']*'",
+            r"\1 '***'",
+            (proc.stderr or output).strip()[-2000:],
+        )
         raise ColdQueryError(f"duckdb failed (exit {proc.returncode}): {detail}")
     # duckdb -json emits one JSON doc per statement (CREATE SECRET -> [{"Success":true}])
     # and may pretty-print rows across lines; decode every doc, keep the last (SELECT rows).
@@ -227,9 +250,15 @@ def cold_search(
     _latest_tag_version(table, config)
     dim = _embedding_dim(table, config)
     values = _query_values(query_vector, dim)
-    setup = _s3_setup(config.storage_options or {}, config.dest) if config.dest.startswith(("s3://", "oss://")) else ""
+    setup = (
+        _s3_setup(config.storage_options or {}, config.dest)
+        if config.dest.startswith(("s3://", "oss://"))
+        else ""
+    )
     rows = _query_rows(
-        _duckdb_binary(config), _build_sql(config, values, dim, top_k, setup), config.timeout_s
+        _duckdb_binary(config),
+        _build_sql(config, values, dim, top_k, setup),
+        config.timeout_s,
     )
     hits: list[ColdHit] = []
     for row in rows:
@@ -247,8 +276,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run an exact top-k cold query over a tagged Lance snapshot."
     )
-    parser.add_argument("--dest", required=True, help="local directory, oss:// or s3:// URI")
-    parser.add_argument("--tag", required=True, help="tag at the table's latest version")
+    parser.add_argument(
+        "--dest", required=True, help="local directory, oss:// or s3:// URI"
+    )
+    parser.add_argument(
+        "--tag", required=True, help="tag at the table's latest version"
+    )
     parser.add_argument("--table", default="chunks")
     parser.add_argument("--query-vector", help="JSON list, e.g. '[0.1, 0.2]'")
     parser.add_argument("--query-vector-file", help="file containing a JSON list")
@@ -276,9 +309,19 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise ColdQueryError(f"query vector is not valid JSON: {exc}") from exc
         if not isinstance(vector, list) or not vector:
             raise ColdQueryError("query vector must be a non-empty JSON list")
-        options = storage_options_from_env(args.dest) if args.dest.startswith(("s3://", "oss://")) else None
+        options = (
+            storage_options_from_env(args.dest)
+            if args.dest.startswith(("s3://", "oss://"))
+            else None
+        )
         config = ColdQueryConfig(
-            args.dest, args.tag, args.table, args.metric, args.duckdb_bin, args.timeout, options
+            args.dest,
+            args.tag,
+            args.table,
+            args.metric,
+            args.duckdb_bin,
+            args.timeout,
+            options,
         )
         started = time.perf_counter()
         hits = cold_search(config, vector, args.top_k)
@@ -286,9 +329,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ColdQueryError as exc:
         sys.stderr.write(f"cold-query error: {exc}\n")
         raise SystemExit(1) from exc
-    result = {"dest": args.dest, "table": args.table, "tag": args.tag, "metric": args.metric,
-              "top_k": args.top_k, "latency_ms": round(latency_ms, 3),
-              "hits": [hit._asdict() for hit in hits]}
+    result = {
+        "dest": args.dest,
+        "table": args.table,
+        "tag": args.tag,
+        "metric": args.metric,
+        "top_k": args.top_k,
+        "latency_ms": round(latency_ms, 3),
+        "hits": [hit._asdict() for hit in hits],
+    }
     sys.stdout.write(json.dumps(result) + "\n")
 
 
