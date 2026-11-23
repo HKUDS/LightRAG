@@ -23,8 +23,8 @@ class _FakeRAG:
 
 @pytest.mark.asyncio
 async def test_bypass_non_streaming_answer_at_query_priority():
-    """A TruncatedResponse stays non-streaming, and the call is queued at
-    query priority.
+    """A TruncatedResponse stays non-streaming, the call is queued at query
+    priority, and a prompt below the RAG minimum still reaches the LLM.
 
     TruncatedResponse is a str subclass: an exact ``type(response) is str``
     check would push it into the streaming branch, handing callers a bare str
@@ -34,6 +34,10 @@ async def test_bypass_non_streaming_answer_at_query_priority():
     The bypass answer is interactive like the kg/naive answers and the Ollama
     ``/api/chat`` bypass; summary priority would queue it behind every pending
     RAG answer on the query role queue.
+
+    ``"中"`` is below the RAG minimum, which bypass skips because it does no
+    retrieval; the empty-prompt rejection is pinned in
+    ``tests/test_lightrag_query_validation.py``.
     """
     seen: list[dict] = []
 
@@ -42,7 +46,7 @@ async def test_bypass_non_streaming_answer_at_query_priority():
         return TruncatedResponse("partial answer")
 
     result = await LightRAG.aquery_llm(
-        _FakeRAG(llm), "question", param=QueryParam(mode="bypass", stream=False)
+        _FakeRAG(llm), "中", param=QueryParam(mode="bypass", stream=False)
     )
 
     llm_response = result["llm_response"]
