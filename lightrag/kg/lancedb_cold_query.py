@@ -195,15 +195,17 @@ def _query_rows(binary: str, sql: str, timeout_s: float) -> list[dict]:
         raise ColdQueryError(f"cannot run duckdb: {exc}") from exc
     output = proc.stdout.strip()
     if proc.returncode != 0 or not output:
-        detail = (proc.stderr or output).strip()[-2000:]
+        detail = re.sub(r"(?i)\b(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|KEY_ID|SECRET)\s+'[^']*'", r"\1 '***'", (proc.stderr or output).strip()[-2000:])
         raise ColdQueryError(f"duckdb failed (exit {proc.returncode}): {detail}")
-    try:
-        rows = json.loads(output)
-    except json.JSONDecodeError:
+    # duckdb -json emits one JSON doc per statement (CREATE SECRET -> [{"Success":true}])
+    # and may pretty-print rows across lines; decode every doc, keep the last (SELECT rows).
+    decoder = json.JSONDecoder()
+    rows, idx = None, 0
+    while idx < len(output):
         try:
-            rows = json.loads(output.splitlines()[-1])
-        except (IndexError, json.JSONDecodeError) as exc:
-            raise ColdQueryError(f"duckdb returned no JSON rows: {output[-1000:]}") from exc
+            rows, idx = decoder.raw_decode(output, idx)
+        except json.JSONDecodeError:
+            idx += 1
     if not isinstance(rows, list):
         raise ColdQueryError("duckdb did not return a row list")
     return rows
