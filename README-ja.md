@@ -51,8 +51,6 @@
     <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
     <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="LightRAG の GitHub Star アカウントが自己申告した所属。掲載機関は 2026 年 11 月 23 日時点で確認された 304 機関から選んだものです。Star は個人によるものです。">
   </picture>
-  <br>
-  <img src="assets/stargazers/stargazer-divider.gif" width="900" alt="">
 </p>
 
 <div align="center" style="margin: 30px 0;">

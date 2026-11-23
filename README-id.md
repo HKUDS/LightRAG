@@ -51,8 +51,6 @@
     <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
     <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="Organisasi pilihan dari 304 organisasi yang teridentifikasi dari afiliasi yang dilaporkan sendiri oleh para pemberi bintang LightRAG di GitHub pada 23 November 2026. Bintang bersifat pribadi.">
   </picture>
-  <br>
-  <img src="assets/stargazers/stargazer-divider.gif" width="900" alt="">
 </p>
 
 <div align="center" style="margin: 30px 0;">

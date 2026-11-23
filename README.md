@@ -51,8 +51,6 @@
     <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
     <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="Selected organizations among the 304 identified from self-reported LightRAG stargazer affiliations on GitHub on November 23, 2026. Stars are personal.">
   </picture>
-  <br>
-  <img src="assets/stargazers/stargazer-divider.gif" width="900" alt="">
 </p>
 
 <div align="center" style="margin: 30px 0;">
