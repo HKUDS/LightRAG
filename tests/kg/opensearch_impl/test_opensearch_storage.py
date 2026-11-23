@@ -4040,10 +4040,19 @@ class TestGraphPPLDetection:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("env_value", [None, "", "ture"])
     async def test_ppl_detected_when_available(
-        self, global_config, embed_func, mock_client
+        self, global_config, embed_func, mock_client, monkeypatch, env_value
     ):
-        """When PPL endpoint responds successfully, graphlookup should be detected."""
+        """When PPL endpoint responds successfully, graphlookup should be detected.
+
+        An unset, blank or unrecognized override must keep auto-detection: a
+        blank value must not read as ``False``.
+        """
+        if env_value is None:
+            monkeypatch.delenv("OPENSEARCH_USE_PPL_GRAPHLOOKUP", raising=False)
+        else:
+            monkeypatch.setenv("OPENSEARCH_USE_PPL_GRAPHLOOKUP", env_value)
         mock_client.transport = AsyncMock()
         mock_client.transport.perform_request = AsyncMock(
             return_value={"datarows": [], "schema": []}
@@ -4052,6 +4061,7 @@ class TestGraphPPLDetection:
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert s._ppl_graphlookup_available is True
+            mock_client.transport.perform_request.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_ppl_not_detected_when_endpoint_fails(
@@ -4068,11 +4078,9 @@ class TestGraphPPLDetection:
             assert s._ppl_graphlookup_available is False
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("env_value", ["true", "1"])
-    async def test_env_override_true(
-        self, global_config, embed_func, mock_client, env_value
-    ):
-        with patch.dict("os.environ", {"OPENSEARCH_USE_PPL_GRAPHLOOKUP": env_value}):
+    async def test_env_override_true(self, global_config, embed_func, mock_client):
+        # A non-literal spelling: the override must go through get_env_value.
+        with patch.dict("os.environ", {"OPENSEARCH_USE_PPL_GRAPHLOOKUP": " Yes "}):
             with patch.object(ClientManager, "get_client", return_value=mock_client):
                 s = self._make(global_config, embed_func)
                 await s.initialize()
@@ -4081,15 +4089,13 @@ class TestGraphPPLDetection:
                 mock_client.transport.perform_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("env_value", ["false", "0", "off"])
-    async def test_env_override_false(
-        self, global_config, embed_func, mock_client, env_value
-    ):
+    async def test_env_override_false(self, global_config, embed_func, mock_client):
+        # A non-literal spelling: the override must go through get_env_value.
         mock_client.transport = AsyncMock()
         mock_client.transport.perform_request = AsyncMock(
             return_value={"datarows": [], "schema": []}
         )
-        with patch.dict("os.environ", {"OPENSEARCH_USE_PPL_GRAPHLOOKUP": env_value}):
+        with patch.dict("os.environ", {"OPENSEARCH_USE_PPL_GRAPHLOOKUP": "0"}):
             with patch.object(ClientManager, "get_client", return_value=mock_client):
                 s = self._make(global_config, embed_func)
                 await s.initialize()

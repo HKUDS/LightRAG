@@ -3876,7 +3876,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     - Application-level batched BFS (fallback, works on any OpenSearch 3.x+)
 
     The strategy is auto-detected during initialize() and can be overridden via
-    the OPENSEARCH_USE_PPL_GRAPHLOOKUP environment variable (true/false).
+    the OPENSEARCH_USE_PPL_GRAPHLOOKUP environment variable (any boolean spelling
+    get_env_value accepts, e.g. true/false or 1/0); an unset, blank or
+    unrecognized value keeps auto-detection.
     """
 
     client: AsyncOpenSearch = field(default=None)

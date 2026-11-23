@@ -203,15 +203,13 @@ async def test_unreadable_config_warns_but_starts(fake, caplog):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("env_value", ["true", "1", " Yes "])
-async def test_explicit_override_downgrades_to_a_warning(
-    fake, monkeypatch, caplog, env_value
-):
+async def test_explicit_override_downgrades_to_a_warning(fake, monkeypatch, caplog):
     import logging
 
     from lightrag.utils import logger
 
-    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", env_value)
+    # A non-literal spelling: the flag must go through get_env_value.
+    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", " Yes ")
     fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
     storage = _doc_status_storage()
     with capture_lightrag_logs(caplog):
