@@ -121,6 +121,7 @@ This repair (`lightrag/chunker/_html_rowspan.py`) is all or nothing per table. I
 - the body is an optional `<thead>` block followed by the body rows, either bare or inside a single `<tbody>`; nothing else stands between the rows (no comment, `<caption>`, `<colgroup>`, `<tfoot>` or second `<tbody>`);
 - every body row is a sequence of complete `<td>`/`<th>` cells whose content holds no table markup (no nested table, no omitted end tag);
 - `rowspan`/`colspan` appear at most once per cell and are plain integers within HTML's limits (`rowspan` 1 to 65534, `colspan` 1 to 1000); `rowspan="0"` is not supported;
+- no row leaves a column empty to the left of a cell that spans into it from an earlier row, and no cell's `colspan` runs into such a span: a cell repeated into that row would otherwise land in the wrong column;
 - the layout work (spans carried into each row plus the columns they cover, summed over the rows) stays within a fixed budget, so a hostile table cannot make it quadratic.
 
 A repeated cell costs tokens the row splitter did not count: a slice it pushes over the cap is re-split like any other, halved when the splitter cannot reduce it, and a single row that still does not fit degrades the table as described in §3.2.2. A table with no body `rowspan` splits exactly as before.

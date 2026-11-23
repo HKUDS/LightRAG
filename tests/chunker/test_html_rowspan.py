@@ -236,6 +236,27 @@ _SPAN_ROWS = _rows('<td rowspan="2">A</td><td>a1</td>', "<td>a2</td>")
             id="colspan-over-limit",
         ),
         pytest.param(
+            # Longer than ``int`` accepts: still a refusal, not a crash.
+            _rows(f'<td rowspan="{"9" * 5000}">A</td><td>a1</td>', "<td>a2</td>"),
+            "rowspan is outside",
+            id="rowspan-huge",
+        ),
+        pytest.param(
+            # Row 2 holds one cell: A, repeated there, would move to column 2.
+            _rows('<td>X</td><td>Y</td><td rowspan="2">A</td>', "<td>B</td>"),
+            "empty column",
+            id="hole-before-span",
+        ),
+        pytest.param(
+            # B's colspan runs into the column A still covers.
+            _rows(
+                '<td>X</td><td rowspan="2">A</td><td>Z</td>',
+                '<td colspan="2">B</td>',
+            ),
+            "overlaps a span",
+            id="cell-overlaps-span",
+        ),
+        pytest.param(
             _rows('<td rowspan="2" rowspan="3">A</td><td>a1</td>', "<td>a2</td>"),
             "repeats rowspan",
             id="repeated-attribute",

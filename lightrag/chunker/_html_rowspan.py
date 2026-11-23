@@ -90,8 +90,10 @@ def _span_value(name: str, match: re.Match[str]) -> int:
     raw = raw.strip()
     if not (raw.isascii() and raw.isdecimal()):
         raise _Unsupported(f"{name} is not a positive integer")
-    value = int(raw)
-    if not 1 <= value <= _SPAN_LIMITS[name]:
+    # Compare the digit count first: ``int`` refuses a very long digit string.
+    limit = _SPAN_LIMITS[name]
+    value = int(raw) if len(raw) <= len(str(limit)) else limit + 1
+    if not 1 <= value <= limit:
         raise _Unsupported(f"{name} is outside 1..{_SPAN_LIMITS[name]}")
     return value
 
@@ -103,7 +105,9 @@ def _parse_cell(match: re.Match[str]) -> _Cell:
     attrs = match.group("attrs")
     spans: dict[str, int] = {}
     kept: list[str] = []
-    for attr in _ATTR_RE.finditer(attrs):
+    # ``attrs`` matched the grammar, so the attributes tile it from the start
+    # and only whitespace can follow them; scanning that tail is quadratic.
+    for attr in _ATTR_RE.finditer(attrs.rstrip()):
         name = attr.group("name").lower()
         if name not in _SPAN_LIMITS:
             kept.append(attr.group(0))
@@ -243,11 +247,24 @@ def _layout(
         for cell in cells:
             while col in occupied:
                 col += 1
+            if cell.colspan > 1 and occupied:
+                work += cell.colspan
+                if work > LAYOUT_BUDGET:
+                    raise _Unsupported("too many overlapping spans")
+                if not occupied.isdisjoint(range(col + 1, col + cell.colspan)):
+                    raise _Unsupported("a cell overlaps a span from an earlier row")
             placed.append((col, cell))
             if cell.rowspan > 1:
                 has_spans = True
                 active[col] = (col, min(row + cell.rowspan - 1, last_row), cell)
             col += cell.colspan
+        # Cells fill the free columns from the left, so the row has a hole
+        # exactly when a carried span lies beyond the last of its own cells.
+        # A cell repeated into such a row would land in the hole's column.
+        if occupied and max(occupied) >= col:
+            covered = len(occupied) + sum(cell.colspan for _col, cell in placed)
+            if covered <= max(occupied):
+                raise _Unsupported("an empty column left of a spanned cell")
         parsed.append((open_tag, placed, close_tag))
     return parsed, carried, has_spans
 
