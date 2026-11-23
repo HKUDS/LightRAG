@@ -624,6 +624,8 @@ They are grouped by the strategy they configure. A strategy-specific variable al
 
 #### F — fixed length
 
+Windows are cut at character boundaries of the source (the same `Tokenizer.split_by_token_limit` the pre-embedding hard split uses), so a window never splits a multi-byte character and a chunk's content is always the source text it came from. A chunk's `tokens` counts its stored, whitespace-stripped content; because BPE attaches a space to the following word, a window whose leading space is stripped can count a token or two above `chunk_token_size`.
+
 - **`CHUNK_F_SIZE`** — unset, int.
   F's own `chunk_token_size`, outranking the top-level fallback (`CHUNK_SIZE` and the SDK path's `LightRAG(chunk_token_size=…)`). When unset, F inherits the top-level resolved value.
 - **`CHUNK_F_OVERLAP_SIZE`** — unset, int.
