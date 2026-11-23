@@ -761,7 +761,7 @@ class OpenAILLMOptions(BindingOptions):
     frequency_penalty: float = 0.0  # Penalty for token frequency (-2.0 to 2.0)
     max_completion_tokens: int = None  # Maximum number of tokens to generate
     presence_penalty: float = 0.0  # Penalty for token presence (-2.0 to 2.0)
-    reasoning_effort: str = "medium"  # Reasoning effort level (low, medium, high)
+    reasoning_effort: str = "medium"  # Accepted values depend on the model
     safety_identifier: str = ""  # Safety identifier for content filtering
     service_tier: str = ""  # Service tier for API usage
     stop: List[str] = field(default_factory=list)  # Stop sequences
@@ -775,7 +775,7 @@ class OpenAILLMOptions(BindingOptions):
         "frequency_penalty": "Penalty for token frequency (-2.0 to 2.0, positive values discourage repetition)",
         "max_completion_tokens": "Maximum number of tokens to generate (optional, leave empty for model default)",
         "presence_penalty": "Penalty for token presence (-2.0 to 2.0, positive values encourage new topics)",
-        "reasoning_effort": "Reasoning effort level for o1 models (low, medium, high)",
+        "reasoning_effort": "Reasoning effort for reasoning models (e.g. none, low, medium, high); accepted values depend on the model",
         "safety_identifier": "Safety identifier for content filtering (optional)",
         "service_tier": "Service tier for API usage (optional)",
         "stop": 'Stop sequences (JSON array of strings, e.g., \'["</s>", "\\n\\n"]\')',
@@ -806,7 +806,7 @@ class OpenAIResponsesLLMOptions(BindingOptions):
 
     # Sampling and generation parameters
     max_output_tokens: int = None  # Maximum number of output tokens to generate
-    reasoning_effort: str = ""  # Reasoning effort level (minimal, low, medium, high)
+    reasoning_effort: str = ""  # Accepted values depend on the model
     reasoning_summary: str = ""  # Reasoning summary detail (auto, concise, detailed)
     service_tier: str = ""  # Service tier for API usage
     store: bool = False  # Server-side retention; the driver sends false unless set
@@ -818,7 +818,7 @@ class OpenAIResponsesLLMOptions(BindingOptions):
     # Help descriptions
     _help: ClassVar[dict[str, str]] = {
         "max_output_tokens": "Maximum number of output tokens to generate (optional, leave empty for model default)",
-        "reasoning_effort": "Reasoning effort for reasoning models (minimal, low, medium, high); sent as reasoning.effort",
+        "reasoning_effort": "Reasoning effort for reasoning models (e.g. none, low, medium, high; accepted values depend on the model); sent as reasoning.effort",
         "reasoning_summary": "Request reasoning summaries (auto, concise, detailed) so enable_cot calls can emit <think> content; sent as reasoning.summary. Leave empty for models without reasoning",
         "service_tier": "Service tier for API usage (optional)",
         "store": "Whether OpenAI retains the response server-side for later retrieval (default false; the API's own default is true)",

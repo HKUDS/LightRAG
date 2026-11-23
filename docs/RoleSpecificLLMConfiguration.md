@@ -15,13 +15,15 @@ Four roles are currently supported:
 
 If a role has no dedicated configuration, LightRAG uses the base `LLM_*` configuration.
 
+For direct OpenAI API configurations, update any GPT-5, GPT-5 mini, or GPT-5 nano model pins before their [December 11, 2026 shutdown](https://developers.openai.com/api/docs/deprecations). The replacements do not accept `minimal`; use `none` only for models that support it, such as GPT-6.1 Terra or GPT-6 Luna.
+
 ## Base LLM Configuration
 
 The base configuration defines the default LLM provider, model, service endpoint, authentication information, and concurrency control:
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -55,7 +57,7 @@ Each role can override the binding, model, endpoint, API key, concurrency, and t
 
 ```env
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
 QUERY_MAX_ASYNC_LLM=2
@@ -128,13 +130,14 @@ Therefore, when you only want to change the model within the same provider, you 
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-# QUERY inherits host, API key, timeout, concurrency, and OPENAI_LLM_REASONING_EFFORT
-QUERY_LLM_MODEL=gpt-5
+# QUERY inherits host, API key, timeout, and concurrency
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 ```
 
 ### Cross-Provider Overrides
@@ -155,10 +158,10 @@ LLM_BINDING_HOST=http://localhost:11434
 OLLAMA_LLM_NUM_CTX=32768
 
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5-mini
+QUERY_LLM_MODEL=gpt-6.1-terra
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_openai_api_key
-QUERY_OPENAI_LLM_REASONING_EFFORT=minimal
+QUERY_OPENAI_LLM_REASONING_EFFORT=none
 ```
 
 For cross-provider configurations, explicitly setting `{ROLE}_LLM_BINDING_HOST` is recommended to avoid confusion between the default host and the base provider endpoint.
@@ -175,7 +178,7 @@ Role-level Bedrock example:
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 
@@ -210,16 +213,17 @@ Suitable when using the same OpenAI key and endpoint, but using a stronger model
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 QUERY_MAX_ASYNC_LLM=2
 ```
 
-`QUERY` inherits the base host, API key, and `OPENAI_LLM_REASONING_EFFORT`.
+`QUERY` inherits the base host and API key, but overrides reasoning effort to `low` because GPT-6.1 Sol does not accept `none`.
 
 ### 2. Same Provider, Change the Model and Tune Options
 
@@ -227,13 +231,13 @@ Suitable when the base model is used for extraction and final answers use a high
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 QUERY_LLM_TIMEOUT=240
@@ -243,7 +247,7 @@ QUERY_LLM_TIMEOUT=240
 
 Suitable when all roles use the `openai` binding, but some roles access the official OpenAI API while others access a local vLLM, SGLang, OpenRouter, or another OpenAI-compatible endpoint. In the example below:
 
-- `EXTRACT` uses the official OpenAI `gpt-5-mini`.
+- `EXTRACT` uses the official OpenAI `gpt-6.1-terra`.
 - `QUERY` uses the official OpenAI `gpt-5.4` with a separate OpenAI key.
 - `KEYWORD` uses `Qwen3.5-35B-A3B` deployed by local vLLM.
 
@@ -253,7 +257,7 @@ Suitable when all roles use the `openai` binding, but some roles access the offi
 # have a valid OpenAI configuration.
 ###########################################################################
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
 LLM_TIMEOUT=240
@@ -268,10 +272,10 @@ MAX_ASYNC_LLM=4
 # OPENAI_LLM_REASONING_EFFORT=none
 
 ###########################################################################
-# EXTRACT: OpenAI official API, gpt-5-mini
+# EXTRACT: OpenAI official API, gpt-6.1-terra
 ###########################################################################
 EXTRACT_LLM_BINDING=openai
-EXTRACT_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
 EXTRACT_LLM_BINDING_HOST=https://api.openai.com/v1
 EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
@@ -318,7 +322,7 @@ Suitable when the base uses an official OpenAI model and only keyword extraction
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 OPENAI_LLM_REASONING_EFFORT=medium
@@ -340,7 +344,7 @@ Suitable when text tasks use a cheaper model and multimodal analysis uses a visi
 VLM_PROCESS_ENABLE=true
 
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -361,7 +365,7 @@ Suitable when only one role accesses Bedrock and uses independent IAM/STS creden
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 
