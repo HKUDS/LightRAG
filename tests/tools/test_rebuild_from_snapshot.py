@@ -224,7 +224,7 @@ async def test_open_snapshot_dimension_mismatch_fails_loud(tmp_path):
 async def test_open_snapshot_null_vector_fails_loud(tmp_path):
     dest = str(tmp_path / "hand-lake")
     db = lancedb.connect(dest)
-    schemas = _schemas(DIM)
+    schemas = _schemas(DIM, MODEL_NAME)
     vector = expected_vector("x")
     rows = {
         "docs": [{"id": "doc-1", "content": "body"}],
