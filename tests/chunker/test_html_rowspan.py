@@ -28,7 +28,7 @@ _SEGMENT_HEADER = (
 )
 
 
-def _segment_table(label_attrs: str = "") -> str:
+def _segment_table(label_attrs: str = "", wrap: str = "{}") -> str:
     """Cloud/Hardware labels each span their four quarter rows."""
     segments = {
         "Cloud": [("Q1", "1,200"), ("Q2", "1,350"), ("Q3", "1,410"), ("Q4", "1,520")],
@@ -38,7 +38,8 @@ def _segment_table(label_attrs: str = "") -> str:
     for segment, quarters in segments.items():
         for i, (quarter, revenue) in enumerate(quarters):
             label = (
-                f'<td rowspan="{len(quarters)}"{label_attrs}>{segment}</td>'
+                f'<td rowspan="{len(quarters)}"{label_attrs}>'
+                f"{wrap.format(segment)}</td>"
                 if i == 0
                 else ""
             )
@@ -140,12 +141,15 @@ def _body_grid(piece: str) -> list[list[str]]:
     [
         # Cut after Cloud's Q3: the next slice opens on Cloud's Q4 row.
         pytest.param(_segment_table, _SEGMENT_HEADER, 420, ["Cloud", "Q4"], id="label"),
-        # A quoted ``>`` in the label's attributes is part of its start tag.
+        # A quoted ``>`` is part of its tag, in the label's own attributes and
+        # in an element inside the label; a ``<`` that starts no tag is text.
         pytest.param(
-            lambda: _segment_table(' title="a > b"'),
+            lambda: _segment_table(
+                ' title="a > b"', '<span title="1 > 0">{}</span> < 9<br/>'
+            ),
             _SEGMENT_HEADER,
-            420,
-            ["Cloud", "Q4"],
+            500,
+            ["Cloud < 9", "Q4"],
             id="quoted-gt",
         ),
         # Cut after Cloud's Q2: the label is repeated with rowspan="2".
@@ -234,6 +238,20 @@ _SPAN_ROWS = _rows('<td rowspan="2">A</td><td>a1</td>', "<td>a2</td>")
             _rows('<td rowspan="2" colspan="1001">A</td><td>a1</td>', "<td>a2</td>"),
             "colspan is outside",
             id="colspan-over-limit",
+        ),
+        pytest.param(
+            # The first ``</td>`` sits inside a quoted attribute of the span.
+            _rows(
+                '<td rowspan="2"><span title="</td><td>">A</span></td><td>a1</td>',
+                "<td>a2</td>",
+            ),
+            "cannot be read",
+            id="delimiter-in-nested-attribute",
+        ),
+        pytest.param(
+            _rows('<td rowspan="2">A<![CDATA[x]]></td><td>a1</td>', "<td>a2</td>"),
+            "declaration inside a cell",
+            id="declaration-in-cell",
         ),
         pytest.param(
             # Longer than ``int`` accepts: still a refusal, not a crash.

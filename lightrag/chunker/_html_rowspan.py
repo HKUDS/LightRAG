@@ -54,6 +54,10 @@ _CELL_RE = re.compile(
     rf"\s*<(?P<tag>td|th)(?P<attrs>{_ATTRS})>(?P<inner>.*?)</(?P=tag)\s*>",
     re.DOTALL | re.IGNORECASE,
 )
+# A complete tag inside a cell. Requiring every tag of a cell's content to be
+# complete proves that the ``</td>`` which ended the cell was not inside a
+# quoted attribute value of a nested element.
+_INNER_TAG_RE = re.compile(rf"""</?[A-Za-z][^\s<>/"'=]*{_ATTRS}/?>""")
 # Table structure inside a cell: a nested table, or a cell whose end tag was
 # omitted so that the next cell's start tag landed in its content.
 _STRUCTURE_IN_CELL_RE = re.compile(
@@ -98,10 +102,27 @@ def _span_value(name: str, match: re.Match[str]) -> int:
     return value
 
 
-def _parse_cell(match: re.Match[str]) -> _Cell:
-    inner = match.group("inner")
+def _check_cell_content(inner: str) -> None:
     if _STRUCTURE_IN_CELL_RE.search(inner):
         raise _Unsupported("table markup inside a cell")
+    pos = inner.find("<")
+    while pos != -1:
+        following = inner[pos + 1 : pos + 2]
+        if following.isascii() and (following.isalpha() or following == "/"):
+            tag = _INNER_TAG_RE.match(inner, pos)
+            if tag is None:
+                raise _Unsupported("a tag inside a cell that cannot be read")
+            pos = inner.find("<", tag.end())
+        elif following in ("!", "?"):
+            raise _Unsupported("a declaration inside a cell")
+        else:
+            # A ``<`` that starts no tag is text.
+            pos = inner.find("<", pos + 1)
+
+
+def _parse_cell(match: re.Match[str]) -> _Cell:
+    inner = match.group("inner")
+    _check_cell_content(inner)
     attrs = match.group("attrs")
     spans: dict[str, int] = {}
     kept: list[str] = []
