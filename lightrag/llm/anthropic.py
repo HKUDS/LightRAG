@@ -301,7 +301,7 @@ async def anthropic_complete_if_cache(
             stop_reason = getattr(response, "stop_reason", None)
             hit_context_limit = stop_reason == "model_context_window_exceeded"
             truncated = stop_reason == "max_tokens" or hit_context_limit
-            if content is None or (hit_context_limit and not content.strip()):
+            if content is None or (truncated and not content.strip()):
                 if truncated:
                     # Reasoning can use the remaining budget before any visible
                     # text is produced. Retrying the same prompt and limits

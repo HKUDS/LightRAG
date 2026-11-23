@@ -111,14 +111,35 @@ async def test_anthropic_thinking_only_max_tokens_raises_empty_truncated(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "content",
-    [[], [SimpleNamespace(type="text", text=" ")]],
-    ids=["no-text-block", "blank-text-block"],
+    ("stop_reason", "content", "expected_hint", "absent_hint"),
+    [
+        (
+            "model_context_window_exceeded",
+            [],
+            "shorten the input",
+            "raising max_tokens",
+        ),
+        (
+            "model_context_window_exceeded",
+            [SimpleNamespace(type="text", text=" ")],
+            "shorten the input",
+            "raising max_tokens",
+        ),
+        (
+            "max_tokens",
+            [SimpleNamespace(type="text", text=" \n")],
+            "raising max_tokens",
+            "shorten the input",
+        ),
+    ],
+    ids=["context-no-text-block", "context-blank-text", "max-tokens-blank-text"],
 )
-async def test_anthropic_empty_context_limited_response_recommends_shorter_input(
-    content,
+async def test_anthropic_blank_truncated_response_raises_with_remedy(
+    stop_reason, content, expected_hint, absent_hint
 ):
-    client = _make_client(content=content, stop_reason="model_context_window_exceeded")
+    """A truncated response with no visible text is never returned as a
+    blank ``TruncatedResponse``; the hint names the remedy for its limit."""
+    client = _make_client(content=content, stop_reason=stop_reason)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
         with pytest.raises(EmptyTruncatedResponseError) as excinfo:
@@ -127,7 +148,7 @@ async def test_anthropic_empty_context_limited_response_recommends_shorter_input
             )
 
     message = str(excinfo.value)
-    assert "model_context_window_exceeded" in message
-    assert "shorten the input" in message
-    assert "raising max_tokens" not in message
+    assert f"stop_reason={stop_reason}" in message
+    assert expected_hint in message
+    assert absent_hint not in message
     client.close.assert_awaited_once()
