@@ -104,8 +104,9 @@ async def build_target(tmp_path, embedder):
 
 
 async def read_back_vdbs(rag):
-    """Vectors + meta records of all three vdbs, keyed by id (no timestamps:
-    ``__created_at__`` resets on every rebuild by design)."""
+    """Vectors + meta records of all three vdbs, keyed by id (no wall-clock
+    stamps: ``__created_at__`` and the ``created_at`` read-back mirror derived
+    from it both reset on every rebuild by design)."""
     out = {}
     for label, vdb, ids in (
         ("entities", rag.entities_vdb, list(ENTITY_IDS.values())),
@@ -113,7 +114,7 @@ async def read_back_vdbs(rag):
         ("chunks", rag.chunks_vdb, list(CHUNKS)),
     ):
         records = {r["id"]: {k: v for k, v in r.items()
-                             if k not in ("id", "__created_at__")}
+                             if k not in ("id", "__created_at__", "created_at")}
                    for r in await vdb.get_by_ids(ids)}
         out[label] = {"vectors": await vdb.get_vectors_by_ids(ids), "records": records}
     return out

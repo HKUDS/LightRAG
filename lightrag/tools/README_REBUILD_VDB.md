@@ -266,6 +266,8 @@ ingestion):
   this only ever surfaces more context, never a different vector.
 - **`__created_at__` resets** on the rebuilt vector records, as for any
   rebuild. No query logic depends on it.
+- **`created_at` resets with it**: read paths mirror `__created_at__` into
+  `created_at`, so both wall-clock stamps are fresh after a restore.
 
 ## Consistency check
 
