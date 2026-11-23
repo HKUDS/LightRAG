@@ -38,7 +38,15 @@ handling exact (see below). A non-empty target is refused before anything is
 written.
 
 Both backends read the usual `POSTGRES_USER`, `POSTGRES_PASSWORD`,
-`POSTGRES_DATABASE`, `POSTGRES_HOST` and `POSTGRES_PORT` variables.
+`POSTGRES_DATABASE`, `POSTGRES_HOST` and `POSTGRES_PORT` variables. The tool
+loads them from `.env` in the **current directory** without overriding
+variables already set in the shell, so run it from the directory the server
+is started from, with the same environment, or it may connect to a different
+database or workspace than the server uses.
+
+The tool only reads its configuration and never writes it: the server keeps
+using whatever `LIGHTRAG_GRAPH_STORAGE` says until you change it yourself —
+see [Switching the server to the new backend](#switching-the-server-to-the-new-backend).
 
 ## Usage
 
@@ -137,6 +145,33 @@ will destroy the existing slice.
 run: both modes hold the whole graph in memory (see **It does not stream**
 below), so a dry run against the real source is the cheapest way to gauge how
 much memory the real run will need.
+
+## Switching the server to the new backend
+
+The tool copies the graph; it does not reconfigure anything. It never edits
+`.env`, the shell environment or a compose file, so after a successful run the
+server still selects `PGGraphStorage` and would keep reading and writing the
+AGE graph. Switch it yourself, with every LightRAG writer still stopped:
+
+1. Run `--apply` and confirm the run succeeded: exit code 0, `verified: True`
+   and no `error` key in the report. Do not switch after a failed run.
+2. Set `LIGHTRAG_GRAPH_STORAGE=PGTableGraphStorage` wherever the server takes
+   it from: `.env`, and any shell export or compose `environment:` entry,
+   which outrank `.env`. With the setup wizard, choose `PGTableGraphStorage`
+   in `make env-storage` instead of editing by hand.
+3. Leave `WORKSPACE` / `POSTGRES_WORKSPACE` and the `POSTGRES_*` connection
+   variables as they were for the migration, so the server opens the slice
+   that was written (the `workspace` field of the report).
+4. Start the server and spot-check the graph, for example in the WebUI graph
+   view or with a `local` query.
+
+The source graph is only read, never modified or deleted, so the AGE data
+stays where it was. Rolling back means setting `LIGHTRAG_GRAPH_STORAGE` back
+to `PGGraphStorage` — but anything written after the switch exists only in
+the new tables, so roll back before the server ingests new documents. Once
+you no longer need the AGE graph, removing it (and moving off the AGE-enabled
+PostgreSQL image, see [DockerDeployment.md](../../docs/DockerDeployment.md))
+is a separate, manual step.
 
 ## What makes it refuse
 
@@ -267,3 +302,8 @@ rows can be removed by hand.
   distinct workspaces. Check which graph a workspace actually resolves to
   before migrating one whose name contains punctuation.
 - **It does not move vectors, KV data or document status.**
+- **It does not change your configuration.** `LIGHTRAG_GRAPH_STORAGE` must be
+  switched by hand after the run; see
+  [Switching the server to the new backend](#switching-the-server-to-the-new-backend).
+- **It does not delete the source graph.** The AGE graph is left in place
+  after a successful run; removing it is up to you.
