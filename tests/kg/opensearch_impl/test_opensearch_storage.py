@@ -468,7 +468,7 @@ class TestClientManager:
             (" True ", "t", {}, (True, True), set()),
             ("ture", "true", {}, (True, True), {"OPENSEARCH_USE_SSL"}),
             ("true", "ture", {}, (True, False), {"OPENSEARCH_VERIFY_CERTS"}),
-            (None, None, {"use_ssl": "on"}, (True, False), set()),
+            (None, None, {"verify_certs": "on"}, (True, True), set()),
         ],
     )
     @pytest.mark.asyncio

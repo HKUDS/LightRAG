@@ -52,9 +52,8 @@ from ..exceptions import (
     StorageRecordNotFoundError,
 )
 from ..utils import (
-    ENV_BOOL_FALSE_WORDS,
-    ENV_BOOL_TRUE_WORDS,
     logger,
+    parse_bool_setting,
     compute_mdhash_id,
     _cooperative_yield,
     get_env_value,
@@ -102,21 +101,12 @@ def _get_opensearch_env(key, fallback):
 
 
 def _get_opensearch_bool(key, fallback):
-    value = _get_opensearch_env(key, str(fallback).lower())
-    text = value.strip().lower()
-    if text in ENV_BOOL_TRUE_WORDS:
-        return True
-    if text in ENV_BOOL_FALSE_WORDS:
-        return False
-    logger.warning(
-        "OpenSearch setting %s=%r is not a recognized boolean "
-        "(expected one of %s), using default %r",
+    return parse_bool_setting(
         key,
-        value,
-        "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+        _get_opensearch_env(key, str(fallback).lower()),
         fallback,
+        source="OpenSearch setting",
     )
-    return fallback
 
 
 def _get_index_number_of_shards() -> int:
