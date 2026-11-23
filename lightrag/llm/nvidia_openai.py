@@ -94,6 +94,23 @@ async def nvidia_openai_embed(
             encoding_format=encode,
             extra_body={"input_type": input_type, "truncate": trunc},
         )
+        rows = response.data
+        # NIM labels every row with its input position; vector stores consume
+        # rows positionally. An endpoint that omits indices entirely keeps its
+        # response order, but a partially or inconsistently indexed batch is
+        # rejected. Mirrors ``openai_embed``.
+        indices = [getattr(row, "index", None) for row in rows]
+        if any(index is not None for index in indices):
+            if (
+                len(indices) != len(texts)
+                or any(type(index) is not int for index in indices)
+                or set(indices) != set(range(len(texts)))
+            ):
+                raise ValueError(
+                    f"NVIDIA API returned invalid embedding indices "
+                    f"for {len(texts)} texts (first 10: {indices[:10]})"
+                )
+            rows = sorted(rows, key=lambda row: row.index)
         # The SDK leaves explicitly requested base64 responses encoded.
         # Both encodings return float32, matching ``openai_embed``.
         return np.array(
@@ -101,6 +118,6 @@ async def nvidia_openai_embed(
                 np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
                 if isinstance(dp.embedding, str)
                 else np.asarray(dp.embedding, dtype=np.float32)
-                for dp in response.data
+                for dp in rows
             ]
         )
