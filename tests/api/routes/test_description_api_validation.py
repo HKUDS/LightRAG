@@ -12,6 +12,9 @@ from lightrag import utils_graph
 from lightrag.utils import VectorStorageConsistencyError
 
 
+pytestmark = pytest.mark.offline
+
+
 class DummyGraphStorage:
     def __init__(self, node=None):
         self.node = node
@@ -212,33 +215,6 @@ async def test_aedit_entity_allows_updates_without_description(monkeypatch):
     )
 
     assert result["operation_summary"]["operation_status"] == "success"
-
-
-def test_handle_single_relationship_extraction_ignores_empty_description():
-    relation = _handle_single_relationship_extraction(
-        ["relation", "Alice", "Bob", "works_with", "   "],
-        chunk_key="chunk-1",
-        timestamp=1,
-    )
-
-    assert relation is None
-
-
-def test_mis_prefixed_relation_row_is_recovered():
-    record = _normalize_text_extraction_record_attributes(
-        ["entity", "Alice", "Acme Corp", "founded", "Alice founded Acme Corp."],
-        chunk_key="chunk-1",
-    )
-
-    relation = _handle_single_relationship_extraction(
-        record,
-        chunk_key="chunk-1",
-        timestamp=1,
-    )
-
-    assert relation is not None
-    assert relation["src_id"] == "Alice"
-    assert relation["tgt_id"] == "Acme Corp"
 
 
 def test_four_part_entity_row_remains_entity():

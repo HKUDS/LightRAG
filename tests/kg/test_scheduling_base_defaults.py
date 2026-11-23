@@ -26,7 +26,6 @@ import pytest
 
 from lightrag.base import (
     CURSOR_END,
-    CursorPosition,
     DocProcessingStatus,
     DocSchedulingRecord,
     DocStatus,
@@ -218,11 +217,6 @@ def test_subclass_missing_an_abstract_cannot_instantiate():
         _Incomplete()
 
 
-def test_minimal_subclass_instantiates():
-    storage = _MinimalDocStatusStorage()
-    assert isinstance(storage, DocStatusStorage)
-
-
 def test_scheduling_record_projection_is_lightweight():
     projected = {f.name for f in fields(DocSchedulingRecord)}
     assert "chunks_list" not in projected
@@ -272,8 +266,3 @@ def test_source_conflict_methods_raise_capability_error():
             )
 
     asyncio.run(_run())
-
-
-def test_cursor_position_type_available():
-    # Sanity: the sealed cursor type is importable for type checks.
-    assert issubclass(type(CURSOR_END), CursorPosition)

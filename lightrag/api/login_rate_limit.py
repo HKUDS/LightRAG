@@ -34,8 +34,15 @@ brand-new key is simply not tracked until a slot frees. This is a basic
 in-process safety bound; large-scale or distributed attacks (including a
 sustained flood that keeps the table full of live keys) are the job of an
 upstream reverse proxy / WAF.
+
+Keys are stored as a fixed-size SHA-256 digest, never as the submitted text.
+The username is attacker-controlled and only the request-body ceiling bounds
+it, so storing it verbatim would let each failed login retain up to a whole
+request body, and the key-count cap would bound nothing in bytes. Callers keep
+passing the readable key; only the lockout alert sees it, truncated.
 """
 
+import hashlib
 import time
 from collections import OrderedDict, deque
 from typing import Callable, Optional
@@ -81,10 +88,16 @@ class LoginRateLimiter:
         self.alert_interval_seconds = alert_interval_seconds
         self._clock = clock
         # Ordered so the least-recently-active key can be evicted in O(1).
-        self._entries: "OrderedDict[str, _Entry]" = OrderedDict()
+        # Indexed by _slot(key), never by the caller's key (module docstring).
+        self._entries: "OrderedDict[bytes, _Entry]" = OrderedDict()
         # Per-category throttle state for _alert.
         self._alert_last: dict[str, float] = {}
         self._alert_suppressed: dict[str, int] = {}
+
+    @staticmethod
+    def _slot(key: str) -> bytes:
+        """Fixed-size map index for ``key``, whatever the key's length."""
+        return hashlib.sha256(key.encode("utf-8", "surrogatepass")).digest()
 
     @property
     def enabled(self) -> bool:
@@ -98,18 +111,18 @@ class LoginRateLimiter:
         while dq and dq[0] <= cutoff:
             dq.popleft()
 
-    def _live_entry(self, key: str, now: float) -> Optional[_Entry]:
-        """Return ``key``'s entry after pruning, dropping it if fully dead.
+    def _live_entry(self, slot: bytes, now: float) -> Optional[_Entry]:
+        """Return ``slot``'s entry after pruning, dropping it if fully dead.
 
         An entry is dead once it has no in-window failures and no in-flight
         reservation, so idle keys do not accumulate.
         """
-        entry = self._entries.get(key)
+        entry = self._entries.get(slot)
         if entry is None:
             return None
         self._prune(entry, now)
         if not entry.failures and entry.pending == 0:
-            del self._entries[key]
+            del self._entries[slot]
             return None
         return entry
 
@@ -122,7 +135,7 @@ class LoginRateLimiter:
         if not self.enabled:
             return None
         now = self._clock()
-        entry = self._live_entry(key, now)
+        entry = self._live_entry(self._slot(key), now)
         if entry is None:
             return None
         confirmed = len(entry.failures)
@@ -148,16 +161,17 @@ class LoginRateLimiter:
         if not self.enabled:
             return
         now = self._clock()
-        entry = self._live_entry(key, now)
+        slot = self._slot(key)
+        entry = self._live_entry(slot, now)
         if entry is None:
             if not self._make_room(now):
                 # Table is full of live records. Do NOT evict one to make room --
                 # that could clear an active lockout. Leave this key untracked;
                 # release/commit/reset below all no-op safely for a missing key.
                 return
-            entry = self._entries[key] = _Entry()
+            entry = self._entries[slot] = _Entry()
         entry.pending += 1
-        self._entries.move_to_end(key)
+        self._entries.move_to_end(slot)
 
     def release(self, key: str) -> None:
         """Drop one in-flight reservation for ``key`` (call once per reserve).
@@ -167,13 +181,14 @@ class LoginRateLimiter:
         occupying capacity. Keeping the map free of idle entries is also what
         lets ``_make_room`` trust that a live front implies a live table.
         """
-        entry = self._entries.get(key)
+        slot = self._slot(key)
+        entry = self._entries.get(slot)
         if entry is None:
             return
         if entry.pending > 0:
             entry.pending -= 1
         if entry.pending == 0 and not entry.failures:
-            del self._entries[key]
+            del self._entries[slot]
 
     def commit_failure(self, key: str) -> None:
         """Record a confirmed failure (call only after a verified wrong password).
@@ -184,12 +199,13 @@ class LoginRateLimiter:
         if not self.enabled:
             return
         now = self._clock()
-        entry = self._entries.get(key)
+        slot = self._slot(key)
+        entry = self._entries.get(slot)
         if entry is None:
             return  # untracked (table was full when the attempt was reserved)
         self._prune(entry, now)
         entry.failures.append(now)
-        self._entries.move_to_end(key)
+        self._entries.move_to_end(slot)
         if len(entry.failures) == self.max_attempts:
             self._alert(
                 now,
@@ -206,12 +222,13 @@ class LoginRateLimiter:
         In-flight reservations for other concurrent requests are left untouched;
         the entry is removed once it has neither a reservation nor a failure.
         """
-        entry = self._entries.get(key)
+        slot = self._slot(key)
+        entry = self._entries.get(slot)
         if entry is None:
             return
         entry.failures.clear()
         if entry.pending == 0:
-            del self._entries[key]
+            del self._entries[slot]
 
     def _make_room(self, now: float) -> bool:
         """Ensure there is room for one new key; return True if a slot is free.
@@ -221,7 +238,7 @@ class LoginRateLimiter:
         live every remaining key is too and nothing more can be evicted.
         """
         while len(self._entries) >= self.max_tracked_keys:
-            key, entry = next(iter(self._entries.items()))  # least-recently-active
+            slot, entry = next(iter(self._entries.items()))  # least-recently-active
             self._prune(entry, now)
             if entry.failures or entry.pending > 0:
                 # Capacity exhausted by live records: a likely flood. New keys go
@@ -235,7 +252,7 @@ class LoginRateLimiter:
                     f"reverse proxy / WAF rate limit",
                 )
                 return False
-            del self._entries[key]  # dead -> reclaim
+            del self._entries[slot]  # dead -> reclaim
         return True
 
     def _alert(self, now: float, category: str, message: str) -> None:

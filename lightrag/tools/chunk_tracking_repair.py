@@ -34,7 +34,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from lightrag.base import CURSOR_END, CURSOR_START, DocStatus
-from lightrag.constants import RELATION_NO_EVIDENCE_SOURCE_IDS
+from lightrag.constants import DEFAULT_WORKING_DIR, RELATION_NO_EVIDENCE_SOURCE_IDS
 from lightrag.utils import (
     EmbeddingFunc,
     has_chunk_tracking_row,
@@ -171,7 +171,8 @@ class _DiskPlan:
     def sync(self) -> None:
         """Commit the plan and force its file and directory entry to disk."""
         self.connection.commit()
-        file_fd = os.open(self.path, os.O_RDONLY)
+        # Not O_RDONLY: Windows os.fsync needs a writable descriptor (EBADF).
+        file_fd = os.open(self.path, os.O_RDWR)
         try:
             os.fsync(file_fd)
         finally:
@@ -1052,7 +1053,7 @@ async def _build_rag():
         raise RuntimeError("chunk_tracking_repair never embeds")
 
     return LightRAG(
-        working_dir=os.getenv("WORKING_DIR", "./rag_storage"),
+        working_dir=os.getenv("WORKING_DIR", DEFAULT_WORKING_DIR),
         workspace=os.getenv("WORKSPACE", ""),
         kv_storage=os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
         graph_storage=os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),

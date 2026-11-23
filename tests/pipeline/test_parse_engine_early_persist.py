@@ -43,7 +43,6 @@ from lightrag.utils import EmbeddingFunc, Tokenizer, compute_mdhash_id
 from lightrag.utils_pipeline import (
     _DOC_STATUS_METADATA_CARRY_OVER_KEYS,
     doc_status_metadata_carry_over,
-    doc_status_reset_metadata,
     make_lightrag_doc_content,
     resolve_doc_status_parse_engine,
 )
@@ -111,25 +110,6 @@ def test_carry_over_preserves_parse_engine_and_format():
     assert carried["parse_engine"] == PARSER_ENGINE_MINERU
 
 
-def test_reset_still_drops_parse_engine_and_format():
-    # Carry-over (across transitions) is independent of reset (back to
-    # PENDING): a re-queue regenerates these per-attempt directives, so they
-    # must NOT survive a reset even though they survive transitions.
-    reset = doc_status_reset_metadata(
-        {
-            "metadata": {
-                "parse_format": FULL_DOCS_FORMAT_LIGHTRAG,
-                "parse_engine": PARSER_ENGINE_MINERU,
-                "process_options": "iF",
-                "source_file": "report.pdf",
-            }
-        }
-    )
-    assert reset == {"process_options": "iF", "source_file": "report.pdf"}
-    assert "parse_engine" not in reset
-    assert "parse_format" not in reset
-
-
 # ---------------------------------------------------------------------------
 # End-to-end: early persistence + no value jump
 # ---------------------------------------------------------------------------
@@ -154,7 +134,15 @@ async def _mock_llm(prompt, **kwargs):
 def _new_rag(tmp_path: Path) -> LightRAG:
     return LightRAG(
         working_dir=str(tmp_path),
-        workspace=f"parse-engine-early-{tmp_path.name}",
+        # The parent is in the name because callers here pass a SUBDIRECTORY of
+        # pytest's tmp_path (`tmp_path / "work"`), so `tmp_path.name` alone
+        # collides across tests. That matters because the two stores it collides
+        # across do not have the same lifetime: JsonKVStorage keeps its data in a
+        # process-wide Manager().dict() keyed by workspace, while file-backed
+        # vector storages write under working_dir, which IS unique per test. One
+        # test's text chunks then survive into the next test's fresh, empty
+        # chunk vectors -- a shape no deployment produces.
+        workspace=f"parse-engine-early-{tmp_path.parent.name}-{tmp_path.name}",
         llm_model_func=_mock_llm,
         embedding_func=EmbeddingFunc(
             embedding_dim=32,

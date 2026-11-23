@@ -15,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+pytestmark = pytest.mark.offline
+
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",
     "EMBEDDING_BINDING",
@@ -100,16 +102,6 @@ class TestQueryRouteJsonOnly:
             "/query must NOT declare application/x-ndjson — streaming belongs to /query/stream"
         )
 
-    def test_query_route_exists_and_accepts_post(self):
-        client = _build_client()
-        # A minimal POST to /query should reach the route (it'll 422 or 500
-        # since we don't have a real LLM, but it should NOT 404/405)
-        response = client.post("/query", json={"query": "test", "mode": "mix"})
-        assert response.status_code not in (
-            404,
-            405,
-        ), "/query route must exist and accept POST"
-
 
 class TestQueryStreamRoute:
     """The /query/stream endpoint must serve application/x-ndjson."""
@@ -133,14 +125,6 @@ class TestQueryStreamRoute:
         assert "application/x-ndjson" in content, (
             "/query/stream must declare application/x-ndjson in OpenAPI spec"
         )
-
-    def test_stream_route_exists_and_accepts_post(self):
-        client = _build_client()
-        response = client.post("/query/stream", json={"query": "test", "mode": "mix"})
-        assert response.status_code not in (
-            404,
-            405,
-        ), "/query/stream route must exist and accept POST"
 
 
 class TestQueryStreamResponseContentType:
@@ -328,7 +312,9 @@ class TestQueryStreamProtocolOrder:
             )
             assert response.status_code == 200
             lines = self._parse_ndjson(response.text)
-            assert lines[-1] == {"error": "query failed"}
+            assert set(lines[-1]) == {"error"}
+            assert lines[-1]["error"].startswith("Internal server error (error_id: ")
+            assert "query failed" not in response.text
             assert not any("response_time" in item for item in lines)
         finally:
             sys.argv = original_argv

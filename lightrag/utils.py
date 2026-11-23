@@ -12,12 +12,14 @@ import json
 import logging
 import logging.handlers
 import math
+import configparser
 import os
 import re
 import time
 import uuid
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import Future as ConcurrentFuture, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +48,7 @@ from lightrag.exceptions import (
     ChunkBlockMatchError,
     CommitBookkeepingError,
     EmptyTruncatedResponseError,
+    ReasoningOnlyResponseError,
 )
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -319,6 +322,12 @@ def validate_file_path_security(file_path_str: str, base_dir: Path) -> Optional[
         return None
 
 
+# Spellings accepted for boolean env values. A blank value counts as false,
+# matching the historical "anything not true is false" reading of ``KEY=``.
+ENV_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
+ENV_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -332,7 +341,13 @@ def get_env_value(
         special_none (bool): If True, return None when value is "None"
 
     Returns:
-        any: Converted value from environment or default
+        any: Converted value from environment or default. A value that does
+        not convert falls back to ``default``; a non-blank one also logs a
+        warning, a blank one (``KEY=`` in .env/Compose) does not.
+
+    For ``bool`` the accepted spellings are ``ENV_BOOL_TRUE_WORDS`` and
+    ``ENV_BOOL_FALSE_WORDS`` (blank reads as ``False``); anything else, such
+    as the typo ``ture``, warns and returns ``default``.
     """
     value = os.getenv(env_key)
     if value is None:
@@ -343,7 +358,20 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        return value.strip().lower() in ("true", "1", "yes", "t", "on")
+        text = value.strip().lower()
+        if text in ENV_BOOL_TRUE_WORDS:
+            return True
+        if text in ENV_BOOL_FALSE_WORDS:
+            return False
+        logger.warning(
+            "Environment variable %s=%r is not a recognized boolean "
+            "(expected one of %s), using default %r",
+            env_key,
+            value,
+            "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+            default,
+        )
+        return default
 
     # Handle list type with JSON parsing
     if value_type is list:
@@ -368,6 +396,16 @@ def get_env_value(
     try:
         converted = value_type(value)
     except (ValueError, TypeError):
+        # A blank value is the usual "unset" idiom in .env/Compose and falls
+        # back quietly; anything else is a typo the operator should hear about.
+        if value.strip():
+            logger.warning(
+                "Environment variable %s=%r is not a valid %s, using default %r",
+                env_key,
+                value,
+                getattr(value_type, "__name__", value_type),
+                default,
+            )
         return default
 
     # Reject non-finite floats so env-backed thresholds cannot become NaN/Inf.
@@ -492,9 +530,11 @@ def safe_log_value(value: str, max_length: int = 200) -> str:
     submitted username, and operator-supplied identifiers in audited admin
     actions (source-conflict repair).
     """
-    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value)
-    if len(sanitized) > max_length:
-        sanitized = sanitized[:max_length] + "…(truncated)"
+    # Truncate BEFORE the per-character pass: the value can be as large as a
+    # request body, and the replacement is one-for-one, so the result is the same.
+    sanitized = "".join(ch if ch.isprintable() else "?" for ch in value[:max_length])
+    if len(value) > max_length:
+        sanitized += "…(truncated)"
     return sanitized
 
 
@@ -1025,7 +1065,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
     """Generate a unique filename in target_dir, adding numeric suffixes on conflict.
 
     Tries the original name first, then `{stem}_001{ext}` ... `{stem}_999{ext}`,
-    falling back to a timestamp-suffixed name if all numeric slots are taken.
+    falling back to `{stem}_{unix_seconds}{ext}` if all numeric slots are taken;
+    an occupied timestamp name advances the suffix by one until a free name is
+    found, so the suffix may run ahead of the clock.
+
+    The name is only free when checked: the caller renames separately, so two
+    concurrent callers can still pick the same name.
     """
     original_path = Path(original_name)
     base_name = original_path.stem
@@ -1039,7 +1084,12 @@ def get_unique_filename_in_parsed(target_dir: Path, original_name: str) -> str:
         if not (target_dir / new_name).exists():
             return new_name
 
-    return f"{base_name}_{int(time.time())}{extension}"
+    # Probe existing timestamp names too. The caller still chooses and renames
+    # separately, so this only avoids overwriting a file already on disk.
+    suffix = int(time.time())
+    while (target_dir / f"{base_name}_{suffix}{extension}").exists():
+        suffix += 1
+    return f"{base_name}_{suffix}{extension}"
 
 
 async def move_file_to_parsed_dir(
@@ -1190,6 +1240,103 @@ class TokenBudgetError(Exception):
         )
 
 
+def provider_timeout(timeout: Any) -> Any:
+    """The timeout to hand a provider client, or None to keep the SDK default.
+
+    ``LLM_TIMEOUT`` / ``{ROLE}_LLM_TIMEOUT`` / ``default_llm_timeout`` of 0 (or
+    a negative value) mean "LightRAG sets no timeout; the provider SDK's own
+    default applies" -- never "wait forever". So a number <= 0 maps to None,
+    like an unset value; anything else (a positive number, an
+    ``httpx.Timeout``) is returned unchanged.
+
+    A provider must then OMIT the timeout when this returns None rather than
+    pass ``timeout=None`` on: OpenAI-style SDKs read an explicit None as "no
+    timeout at all", and httpx-based ones time out at once on 0.
+    """
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and timeout <= 0
+    ):
+        return None
+    return timeout
+
+
+# The effective embedding / rerank timeout of the LightRAG call running in this
+# context (``default_embedding_timeout`` / ``default_rerank_timeout``): the
+# value that call's queue is sized from. ``bind_embedding_timeout`` /
+# ``bind_rerank_timeout`` set it inside the queue worker around each call;
+# ``embedding_timeout`` / ``rerank_timeout`` read it so a bundled binding sizes
+# its client the same way, even when it is reached through a ``partial`` or a
+# custom function.
+_EMBEDDING_TIMEOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "lightrag_embedding_timeout"
+)
+_RERANK_TIMEOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "lightrag_rerank_timeout"
+)
+
+
+def _bind_call_timeout(
+    func: Callable[..., Any], timeout_var: contextvars.ContextVar, timeout: Any
+) -> Callable[..., Any]:
+    @wraps(func)
+    async def call_with_timeout(*args: Any, **kwargs: Any) -> Any:
+        token = timeout_var.set(timeout)
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            timeout_var.reset(token)
+
+    return call_with_timeout
+
+
+def bind_embedding_timeout(
+    func: Callable[..., Any], timeout: Any
+) -> Callable[..., Any]:
+    """Wrap async ``func`` so :func:`embedding_timeout` sees ``timeout`` inside it.
+
+    Apply it BEFORE ``priority_limit_async_func_call``, so the value is set
+    inside the worker task that executes the call. ``timeout`` is never
+    passed to ``func`` as an argument, and ``func``'s signature stays
+    inspectable through ``__wrapped__`` (``EmbeddingFunc`` reads it).
+    """
+    return _bind_call_timeout(func, _EMBEDDING_TIMEOUT, timeout)
+
+
+def bind_rerank_timeout(func: Callable[..., Any], timeout: Any) -> Callable[..., Any]:
+    """Wrap async ``func`` so :func:`rerank_timeout` sees ``timeout`` inside it.
+
+    Same rules as :func:`bind_embedding_timeout`.
+    """
+    return _bind_call_timeout(func, _RERANK_TIMEOUT, timeout)
+
+
+def embedding_timeout(timeout: Any = None) -> Any:
+    """The timeout an embedding binding hands its client, or None for the SDK default.
+
+    ``timeout`` is the binding's own explicit argument and wins when given.
+    When it is None, the effective ``default_embedding_timeout`` of the
+    LightRAG embedding call in progress applies, and nothing outside one. The
+    result goes through :func:`provider_timeout`, so a number <= 0 also
+    returns None: the binding must then OMIT the timeout, not pass None on.
+    """
+    if timeout is None:
+        timeout = _EMBEDDING_TIMEOUT.get(None)
+    return provider_timeout(timeout)
+
+
+def rerank_timeout(timeout: Any = None) -> Any:
+    """The timeout a rerank binding hands its client, or None for the SDK default.
+
+    Same rules as :func:`embedding_timeout`, with ``default_rerank_timeout``
+    as the fallback inside a LightRAG rerank call.
+    """
+    if timeout is None:
+        timeout = _RERANK_TIMEOUT.get(None)
+    return provider_timeout(timeout)
+
+
 def priority_limit_async_func_call(
     max_size: int,
     llm_timeout: float = None,
@@ -1213,7 +1360,10 @@ def priority_limit_async_func_call(
     Args:
         max_size: Maximum number of concurrent calls
         max_queue_size: Maximum queue capacity to prevent memory overflow
-        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts
+        llm_timeout: LLM provider timeout (from global config), used to calculate other timeouts.
+            A value <= 0 means the provider SDK's default timeout applies (see
+            ``provider_timeout``): no execution or health-check cap is derived
+            from it, since the client's own timeout bounds the call.
         max_execution_timeout: Maximum time for worker to execute function (defaults to llm_timeout + 30s)
         max_task_duration: Maximum time before health check intervenes (defaults to llm_timeout + 60s)
         cleanup_timeout: Maximum time to wait for cleanup operations (defaults to 2.0s)
@@ -1235,12 +1385,32 @@ def priority_limit_async_func_call(
 
     Returns:
         Decorator function
+
+    Raises:
+        ValueError: ``max_size`` is below 1. Exactly ``max_size`` workers are
+            dispatched, so a non-positive limit would leave every wrapped
+            call queued forever.
     """
+    if max_size < 1:
+        raise ValueError(
+            f"{queue_name}: max_size must be >= 1 (a non-positive limit "
+            "dispatches no workers, so the wrapped calls would never run); "
+            f"got {max_size}"
+        )
 
     def final_dec(func):
         # Ensure func is callable
         if not callable(func):
             raise TypeError(f"Expected a callable object, got {type(func)}")
+
+        # A non-positive ``llm_timeout`` means "LightRAG sets no timeout; the
+        # provider SDK's default bounds the call" (see ``provider_timeout``).
+        # Normalize it to the unset state here, otherwise the derivation below
+        # produces a 0s worker budget and ``asyncio.wait_for`` fails every call
+        # before the wrapped function starts.
+        nonlocal llm_timeout
+        if provider_timeout(llm_timeout) is None:
+            llm_timeout = None
 
         # Calculate timeout hierarchy if llm_timeout is provided (Dynamic Timeout Calculation)
         if llm_timeout is not None:
@@ -1285,6 +1455,7 @@ def priority_limit_async_func_call(
         publish_stats = False
         shared = None  # lazily imported lightrag.kg.shared_storage module
         work_available = asyncio.Event()
+        queue_waiters: deque[asyncio.Future] = deque()
         admission_cond = asyncio.Condition()
         # Logical queued count: live tasks waiting in the queue (excludes
         # running tasks and cancelled zombies) — same capacity semantics as
@@ -1547,6 +1718,91 @@ def priority_limit_async_func_call(
             if publish_stats:
                 await _publish_stats(force=True)
 
+        async def _execute_call(
+            task_state: TaskState, args: tuple, kwargs: dict, ctx: contextvars.Context
+        ):
+            # Execute the call under the enqueuer's captured
+            # context, not the worker's creation-time context
+            # (asyncio.Task snapshots contextvars once, at
+            # create_task() time, and this worker task is
+            # long-lived — reused across many unrelated
+            # calls). ctx.run(asyncio.ensure_future, ...)
+            # schedules the coroutine as a fresh Task whose
+            # own context is copied from ctx (works on
+            # Python 3.10, unlike create_task's context=
+            # kwarg which needs 3.11+).
+            exec_task = ctx.run(asyncio.ensure_future, func(*args, **kwargs))
+
+            # A running call has three cancellation sources: the caller
+            # abandoning it, the execution timeout, and the worker being
+            # cancelled by a forced shutdown. All three go through
+            # cancel_once, so the call is cancelled once: a second cancel
+            # would land in the cleanup the first one started (an async
+            # finally / __aexit__ closing the provider client) and abort it.
+            # This is why the timeout is a timer owned here rather than
+            # asyncio.wait_for, and why the await below is shielded: both
+            # would otherwise cancel the call without consulting the guard.
+            # The one exception is a worker cancelled while the call is
+            # already unwinding: it waits cleanup_timeout, then forces.
+            cancel_sent = False
+            timed_out = False
+
+            def cancel_once() -> bool:
+                nonlocal cancel_sent
+                if cancel_sent or exec_task.done():
+                    return False
+                cancel_sent = True
+                exec_task.cancel()
+                return True
+
+            def cancel_execution(future):
+                if future.cancelled():
+                    cancel_once()
+
+            def expire_execution():
+                nonlocal timed_out
+                timed_out = cancel_once()
+
+            # The caller awaits a separate result future, not the execution task.
+            task_state.future.add_done_callback(cancel_execution)
+            timeout_handle = None
+            if max_execution_timeout is not None:
+                timeout_handle = asyncio.get_running_loop().call_later(
+                    max_execution_timeout, expire_execution
+                )
+            try:
+                return await asyncio.shield(exec_task)
+            except asyncio.CancelledError:
+                if not exec_task.done():
+                    # The call is still running, so this is the worker
+                    # itself being cancelled (a forced shutdown).
+                    if not cancel_once():
+                        # Already unwinding from an earlier cancel: let the
+                        # cleanup finish, and force it only if it overruns.
+                        await asyncio.wait({exec_task}, timeout=cleanup_timeout)
+                        if not exec_task.done():
+                            exec_task.cancel()
+                    # The worker holds the call's slot until the call is gone.
+                    await asyncio.wait({exec_task})
+                    if not exec_task.cancelled():
+                        exec_task.exception()  # mark retrieved
+                    raise
+                # Report the timeout only when it is what cancelled the call.
+                if timed_out and exec_task.cancelled():
+                    raise asyncio.TimeoutError from None
+                raise
+            finally:
+                if timeout_handle is not None:
+                    timeout_handle.cancel()
+                task_state.future.remove_done_callback(cancel_execution)
+
+        def _wake_next_submitter():
+            while queue_waiters:
+                waiter = queue_waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(None)
+                    break
+
         async def worker():
             """Enhanced worker that processes tasks with proper timeout and state management"""
             try:
@@ -1564,6 +1820,8 @@ def priority_limit_async_func_call(
                             ) = await asyncio.wait_for(queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
                             continue
+
+                        _wake_next_submitter()
 
                         # Get task state and mark worker as started
                         async with task_states_lock:
@@ -1588,25 +1846,7 @@ def priority_limit_async_func_call(
                             continue
 
                         try:
-                            # Execute the call under the enqueuer's captured
-                            # context, not the worker's creation-time context
-                            # (asyncio.Task snapshots contextvars once, at
-                            # create_task() time, and this worker task is
-                            # long-lived — reused across many unrelated
-                            # calls). ctx.run(asyncio.ensure_future, ...)
-                            # schedules the coroutine as a fresh Task whose
-                            # own context is copied from ctx (works on
-                            # Python 3.10, unlike create_task's context=
-                            # kwarg which needs 3.11+).
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task, timeout=max_execution_timeout
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             # Set result if future is still valid
                             if not task_state.future.done():
@@ -1848,19 +2088,7 @@ def priority_limit_async_func_call(
                             ):
                                 continue  # finally cleans up + returns slot
 
-                            # Run under the enqueuer's captured context, not
-                            # this long-lived worker's creation-time context
-                            # — see the matching comment in worker().
-                            exec_task = ctx.run(
-                                asyncio.ensure_future, func(*args, **kwargs)
-                            )
-                            if max_execution_timeout is not None:
-                                result = await asyncio.wait_for(
-                                    exec_task,
-                                    timeout=max_execution_timeout,
-                                )
-                            else:
-                                result = await exec_task
+                            result = await _execute_call(task_state, args, kwargs, ctx)
 
                             if not task_state.future.done():
                                 task_state.future.set_result(result)
@@ -2166,6 +2394,8 @@ def priority_limit_async_func_call(
                     admission_cond.notify_all()
             else:
                 accepting_new_tasks = False
+                while queue_waiters:
+                    _wake_next_submitter()
 
             drain_timed_out = False
             if graceful and queue is not None:
@@ -2346,6 +2576,7 @@ def priority_limit_async_func_call(
             # From here the reservation belongs to the exactly-once rule
             # (worker_started transfer, or the finally cleanup below).
 
+            submitted = False
             try:
                 active_futures.add(future)
 
@@ -2365,6 +2596,7 @@ def priority_limit_async_func_call(
                 # (priority, count, ...) tuple keeps heap ordering intact.
                 queue.put_nowait((_priority, current_count, task_id, args, kwargs, ctx))
                 submitted_total += 1
+                submitted = True
                 work_available.set()
                 await _publish_stats()
 
@@ -2413,7 +2645,17 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
+                    cancelled_total += 1
+                raise
             finally:
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 notify_needed = False
                 async with task_states_lock:
@@ -2436,7 +2678,12 @@ def priority_limit_async_func_call(
             **kwargs,
         ):
             """
-            Execute function with enhanced priority-based concurrency control and timeout handling
+            Execute function with enhanced priority-based concurrency control and timeout handling.
+
+            Caller cancellation and _timeout are propagated to the running coroutine.
+            Cancellation is cooperative: capacity is released when that coroutine
+            exits, which can be before synchronous SDK work in a background thread
+            or an already accepted remote request stops.
 
             Args:
                 *args: Positional arguments passed to the function
@@ -2451,6 +2698,7 @@ def priority_limit_async_func_call(
             Raises:
                 TimeoutError: If the function call times out at any level
                 QueueFullError: If the queue is full and waiting times out
+                RuntimeError: If shutdown closes admission, including while waiting for queue capacity
                 Any exception raised by the decorated function
             """
             nonlocal submitted_total, completed_total, cancelled_total, failed_total
@@ -2477,6 +2725,7 @@ def priority_limit_async_func_call(
                 future=future, start_time=asyncio.get_running_loop().time()
             )
 
+            submitted = False
             try:
                 # Register task state
                 async with task_states_lock:
@@ -2498,32 +2747,52 @@ def priority_limit_async_func_call(
                 # limited_worker / shutdown drain).
                 ctx = contextvars.copy_context()
 
-                # Queue the task with timeout handling
-                try:
+                async def enqueue():
+                    nonlocal rejected_total
+                    # Queue.shutdown() only exists from Python 3.13, so before
+                    # that nothing can wake a blocked bounded Queue.put() when
+                    # shutdown starts. Wait for capacity or closure, then admit
+                    # without yielding so shutdown cannot race the final check.
+                    while queue.full() and accepting_new_tasks:
+                        waiter = asyncio.get_running_loop().create_future()
+                        queue_waiters.append(waiter)
+                        try:
+                            await waiter
+                        except BaseException:
+                            waiter.cancel()
+                            try:
+                                queue_waiters.remove(waiter)
+                            except ValueError:
+                                pass
+                            # A selected submitter can be cancelled before
+                            # using its slot. Pass it on, as Queue.put() does.
+                            if not queue.full() and not waiter.cancelled():
+                                _wake_next_submitter()
+                            raise
                     if not accepting_new_tasks:
                         rejected_total += 1
                         raise RuntimeError(f"{queue_name}: Queue is shutting down")
+                    queue.put_nowait(
+                        (_priority, current_count, task_id, args, kwargs, ctx)
+                    )
+
+                # Queue the task with timeout handling
+                try:
                     if _queue_timeout is not None:
-                        await asyncio.wait_for(
-                            queue.put(
-                                (_priority, current_count, task_id, args, kwargs, ctx)
-                            ),
-                            timeout=_queue_timeout,
-                        )
+                        await asyncio.wait_for(enqueue(), timeout=_queue_timeout)
                     else:
-                        await queue.put(
-                            (_priority, current_count, task_id, args, kwargs, ctx)
-                        )
+                        await enqueue()
                     submitted_total += 1
+                    submitted = True
                     await _publish_stats()
                 except asyncio.TimeoutError:
                     raise QueueFullError(
                         f"{queue_name}: Queue full, timeout after {_queue_timeout} seconds"
                     )
-                except Exception as e:
-                    # Clean up on queue error
+                except Exception:
+                    # Admission failed: no worker will consume this future.
                     if not future.done():
-                        future.set_exception(e)
+                        future.cancel()
                     raise
 
                 # Wait for result with timeout handling
@@ -2574,8 +2843,18 @@ def priority_limit_async_func_call(
                     failed_total += 1
                     raise
 
+            except asyncio.CancelledError:
+                # Count cancellation before the result wait starts, without
+                # counting a future already cancelled by the inner handlers
+                # or a call cancelled before it was submitted (still waiting
+                # to enter the queue): cancelled_total covers submitted calls.
+                if future.cancel() and submitted:
+                    cancelled_total += 1
+                raise
             finally:
                 # Ensure cleanup
+                if not future.done():
+                    future.cancel()
                 active_futures.discard(future)
                 async with task_states_lock:
                     task_states.pop(task_id, None)
@@ -2960,6 +3239,23 @@ def mark_cancellation_deferred(exc: BaseException) -> None:
     """
     if isinstance(exc, asyncio.CancelledError):
         setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, True)
+
+
+def retract_cancellation_deferred(exc: BaseException) -> None:
+    """Withdraw the stamp after the caller ROLLED BACK what the region wrote.
+
+    ``_wait_deferring_cancellation`` judges only the future it was given: a
+    write that finished after the cancel was requested is stamped as durable.
+    A caller that then undoes that write on its way out -- the upload route
+    unlinking the file it was copying -- must call this once the undo has
+    SUCCEEDED, or the cancellation it re-raises claims a write that no longer
+    exists. Do not call it when the undo failed: what was written is still
+    there, and the stamp is then the truthful report.
+
+    A no-op for anything that is not a stamped cancellation.
+    """
+    if isinstance(exc, asyncio.CancelledError) and cancellation_was_deferred(exc):
+        setattr(exc, _DEFERRED_PAST_CANCEL_ATTR, False)
 
 
 async def _wait_deferring_cancellation(
@@ -3803,8 +4099,12 @@ class TiktokenTokenizer(Tokenizer):
                 "tiktoken is not installed. Please install it with `pip install tiktoken` or pass a custom `tokenizer`."
             )
 
+        from lightrag.tiktoken_cache import load_tiktoken_encoding
+
         try:
-            tokenizer = tiktoken.encoding_for_model(model_name)
+            tokenizer = load_tiktoken_encoding(
+                lambda: tiktoken.encoding_for_model(model_name)
+            )
             super().__init__(model_name=model_name, tokenizer=tokenizer)
         except KeyError:
             raise ValueError(f"Invalid model_name: {model_name}.")
@@ -4262,6 +4562,14 @@ def _map_child_span(
     return {"start": abs_start, "end": abs_end}
 
 
+# U+FFFD. A token window whose boundary splits a multi-byte UTF-8 character
+# (any non-ASCII char: 2-byte Latin/Greek, 3-byte CJK and symbols, 4-byte emoji)
+# decodes the partial bytes to this character. Shared by the fixed-token chunker,
+# this function and sidecar backfill so the three agree on what a boundary
+# artifact is.
+_REPLACEMENT_CHAR = "\ufffd"
+
+
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
@@ -4292,6 +4600,14 @@ def enforce_chunk_token_limit_before_embedding(
     cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
     than silently emitting a wrong span — the same failure sidecar backfill
     itself would eventually surface, just earlier and with better context.
+    A span recovered by stripping boundary U+FFFD, or a parent with no span
+    whose content still contains U+FFFD, is not that divergence: the children
+    are marked ``_source_span_unavailable`` (popped before the chunk dict is
+    stored) so backfill degrades them instead of failing the document. The
+    recovered case is recognized by the content minus its leading/trailing
+    U+FFFD matching the source slice; interior U+FFFD that the source itself
+    contains does not disqualify it. Content that does not reconcile with the
+    source slice still raises.
 
     Known limitation -- ``sidecar`` is not re-scoped for pre-sidecar chunks:
     this function runs BEFORE :func:`lightrag.sidecar.backfill.backfill_chunk_sidecars`
@@ -4365,6 +4681,7 @@ def enforce_chunk_token_limit_before_embedding(
         # O(parent length)).
         projection: list[int] | None = None
         parent_start = parent_end = None
+        span_unavailable = False
         if isinstance(parent_span, dict):
             try:
                 parent_start = int(parent_span["start"])
@@ -4377,7 +4694,32 @@ def enforce_chunk_token_limit_before_embedding(
                 parent_start = parent_end = None
 
             if parent_start is not None and parent_end - parent_start != len(content):
-                if source_content:
+                # A span recovered by stripping boundary U+FFFD is not a
+                # verbatim slice of the chunk beside it. Child offsets cannot
+                # be projected (a ZWJ sequence makes the width gap unequal to
+                # the replacement count). Mark the children unavailable
+                # instead of raising. Interior U+FFFD is allowed: the source
+                # comparison below proves it is the source's own character.
+                # Content that does not reconcile with the source slice is
+                # still a real divergence.
+                boundary_artifact = False
+                if source_content and (
+                    content.startswith(_REPLACEMENT_CHAR)
+                    or content.endswith(_REPLACEMENT_CHAR)
+                ):
+                    stripped = content.strip(_REPLACEMENT_CHAR)
+                    if stripped:
+                        source_slice = source_content[parent_start:parent_end]
+                        stripped_compact = "".join(stripped.split())
+                        if source_slice == stripped or (
+                            stripped_compact
+                            and stripped_compact == "".join(source_slice.split())
+                        ):
+                            boundary_artifact = True
+                if boundary_artifact:
+                    span_unavailable = True
+                    parent_start = parent_end = None
+                elif source_content:
                     projection = _parent_to_source_projection(
                         source_content, parent_start, parent_end, content
                     )
@@ -4394,6 +4736,12 @@ def enforce_chunk_token_limit_before_embedding(
                     # _map_child_span is never reached with an untrustworthy
                     # direct-arithmetic assumption).
                     parent_start = parent_end = None
+        if parent_start is None and _REPLACEMENT_CHAR in content:
+            # No usable parent span (probe failed, or a boundary-recovered
+            # span we refused to project). Children that no longer contain
+            # U+FFFD must degrade instead of failing backfill. A literal
+            # U+FFFD is not itself the marker.
+            span_unavailable = True
 
         total_parts = len(spans)
         for i, span in enumerate(spans, 1):
@@ -4412,15 +4760,19 @@ def enforce_chunk_token_limit_before_embedding(
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
-            child_span = None
-            if parent_start is not None:
-                child_span = _map_child_span(
-                    span.start, span.end, parent_start, parent_end, projection
-                )
-            if child_span is not None:
-                new_dp["_source_span"] = child_span
-            elif "_source_span" in new_dp:
+            if span_unavailable:
                 new_dp.pop("_source_span", None)
+                new_dp["_source_span_unavailable"] = True
+            else:
+                child_span = None
+                if parent_start is not None:
+                    child_span = _map_child_span(
+                        span.start, span.end, parent_start, parent_end, projection
+                    )
+                if child_span is not None:
+                    new_dp["_source_span"] = child_span
+                elif "_source_span" in new_dp:
+                    new_dp.pop("_source_span", None)
 
             new_dp["split_type"] = "hard_fallback"
             new_dp["split_part"] = i
@@ -4539,14 +4891,15 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     await hashing_kv.upsert({flattened_key: cache_entry})
 
 
-def safe_unicode_decode(content):
-    # Regular expression to find all Unicode escape sequences of the form \uXXXX
-    unicode_escape_pattern = re.compile(r"\\u([0-9a-fA-F]{4})")
+def safe_unicode_decode(content: bytes) -> str:
+    r"""Decode complete \uXXXX runs, combining valid UTF-16 surrogate pairs.
 
-    # Function to replace the Unicode escape with the actual character
-    def replace_unicode_escape(match):
-        # Convert the matched hexadecimal value into the actual Unicode character
-        return chr(int(match.group(1), 16))
+    Other escape sequences and already-decoded UTF-8 text are preserved.
+    """
+    unicode_escape_pattern = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
+
+    def replace_unicode_escape(match: re.Match[str]) -> str:
+        return json.loads(f'"{match.group(0)}"')
 
     # Perform the substitution
     decoded_content = unicode_escape_pattern.sub(
@@ -4576,6 +4929,33 @@ async def _cooperative_yield(iteration: int, every: int = 64) -> None:
     """
     if iteration > 0 and iteration % every == 0:
         await asyncio.sleep(0)
+
+
+async def cancel_and_drain_tasks(tasks: Iterable[asyncio.Task]) -> None:
+    """Cancel every unfinished task in *tasks* and wait until all have ended.
+
+    Use it on the exit path of any coroutine that owns child tasks and waits
+    on them with ``asyncio.wait`` (or has not started waiting yet): neither
+    stops the children, so without this a cancelled or failed parent leaves
+    them running after it has returned. Every child's outcome is retrieved,
+    so none is reported as "Task exception was never retrieved".
+
+    Never raises for a child's failure or cancellation. It awaits only when a
+    child was still running, so on an exit where every child has finished it
+    adds no await point -- safe in a ``finally`` that must not open a fresh
+    cancellation window on the success path. A cancellation of the caller
+    while it does wait propagates as usual (``gather`` then cancels the
+    children it was still waiting on).
+    """
+    tasks = list(tasks)
+    running = [task for task in tasks if not task.done()]
+    for task in running:
+        task.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+    for task in tasks:
+        if not task.cancelled():
+            task.exception()  # mark retrieved; never raises for a done task
 
 
 async def wait_tasks_with_drain(
@@ -4655,9 +5035,7 @@ async def wait_tasks_with_drain(
         # propagating so no task keeps writing in the background. Per-task
         # CancelledError stored in a task's own result is caught by the
         # inner handler and does NOT take this path.
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await cancel_and_drain_tasks(tasks)
         raise
 
     if first_exception is not None:
@@ -4702,6 +5080,20 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     new_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(new_loop)
     return new_loop
+
+
+def _markdown_table_cell(value: Any) -> str:
+    """Render ``value`` as one cell of a Markdown table row.
+
+    A literal ``|`` ends a cell, so a value holding one (common in text
+    extracted from tables) would spill into the next column, and a line break
+    would end the row. Escape the pipe, doubling any backslashes right before
+    it so a stored ``\\|`` cannot cancel the escape, and turn line breaks into
+    ``<br>``. A value with neither is written unchanged, so any other Markdown
+    it holds renders as it always did.
+    """
+    text = re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", str(value))
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
 
 
 async def aexport_data(
@@ -4762,11 +5154,11 @@ async def aexport_data(
         entities_data.append(entity_row)
 
     # --- Relations ---
-    for src_entity in all_entities:
-        for tgt_entity in all_entities:
-            if src_entity == tgt_entity:
-                continue
-
+    # Relations are undirected: has_edge(a, b) and has_edge(b, a) answer for
+    # the same edge, so probe each unordered pair once. Probing ordered pairs
+    # exported every relation twice, once per orientation.
+    for src_index, src_entity in enumerate(all_entities):
+        for tgt_entity in all_entities[src_index + 1 :]:
             edge_exists = await chunk_entity_relation_graph.has_edge(
                 src_entity, tgt_entity
             )
@@ -4942,7 +5334,9 @@ async def aexport_data(
                 # Write rows
                 for entity in entities_data:
                     mdfile.write(
-                        "| " + " | ".join(str(v) for v in entity.values()) + " |\n"
+                        "| "
+                        + " | ".join(_markdown_table_cell(v) for v in entity.values())
+                        + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -4960,7 +5354,9 @@ async def aexport_data(
                 # Write rows
                 for relation in relations_data:
                     mdfile.write(
-                        "| " + " | ".join(str(v) for v in relation.values()) + " |\n"
+                        "| "
+                        + " | ".join(_markdown_table_cell(v) for v in relation.values())
+                        + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -4981,7 +5377,9 @@ async def aexport_data(
                 for relationship in relationships_data:
                     mdfile.write(
                         "| "
-                        + " | ".join(str(v) for v in relationship.values())
+                        + " | ".join(
+                            _markdown_table_cell(v) for v in relationship.values()
+                        )
                         + " |\n"
                     )
             else:
@@ -5476,6 +5874,67 @@ def _reject_empty_truncated_response(
     raise EmptyTruncatedResponseError(message)
 
 
+def is_reasoning_only_answer(response: Any) -> bool:
+    """Return True for a non-streaming answer that is a reasoning trace only.
+
+    True when nothing is left after ``remove_think_tags``, or when what is
+    left is an unclosed ``<think>`` block (inline reasoning cut off
+    mid-trace). False for streaming iterators, empty strings and any answer
+    that carries text outside the think block. Never raises.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return False
+    cleaned = remove_think_tags(response)
+    unclosed_think = cleaned.startswith("<think>") and "</think>" not in cleaned
+    return not cleaned or unclosed_think
+
+
+def reject_reasoning_only_answer(response: Any) -> None:
+    """Fail a non-streaming query answer that is reasoning and nothing else.
+
+    Call it on the answering LLM's result BEFORE the query-cache write
+    (``kg_query``, ``naive_query``, bypass mode). The query paths pass
+    ``enable_cot=True``, and a ``<think>...</think>`` wrapper with no answer
+    after it is a NON-empty string, so without this check it is returned and
+    cached as the answer. The bindings with a retry policy (OpenAI, OpenAI
+    Responses, Gemini) already raise on that shape in their non-streaming
+    path; this is the safety net for every other source of it: Zhipu, models
+    that put the trace inline in ``content``, and custom LLM functions.
+
+    Raises :class:`EmptyTruncatedResponseError` for a ``TruncatedResponse``
+    and :class:`ReasoningOnlyResponseError` otherwise. Streaming responses and
+    answers with text outside the think block pass through. Only lengths are
+    logged, never content.
+    """
+    if not is_reasoning_only_answer(response):
+        return
+    truncated = is_truncated_response(response)
+    diagnostics = format_response_diagnostics(
+        truncated=truncated,
+        response_len=len(response),
+        answer_len=0,
+    )
+    if truncated:
+        hint = empty_length_truncated_hint(
+            "consider raising the LLM's output token limit or disabling "
+            "thinking mode for the query role",
+            reasoning_consumed_budget=True,
+        )
+    else:
+        hint = (
+            "model returned reasoning-only output; consider disabling thinking "
+            "mode or lowering the reasoning effort for the query role"
+        )
+    message = (
+        "Query answer carried no text outside the reasoning trace "
+        f"({diagnostics}): {hint}"
+    )
+    logger.error(message)
+    if truncated:
+        raise EmptyTruncatedResponseError(message)
+    raise ReasoningOnlyResponseError(message)
+
+
 def get_extract_cache_fence(text_chunks_storage) -> asyncio.Lock:
     """Mutual exclusion between an extract cache attach+write and its commit.
 
@@ -5805,8 +6264,41 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
+def remove_spaces_next_to_chinese(text: str, *, multiline: bool = False) -> str:
+    """Remove the spaces between Chinese characters, and between Chinese and
+    Latin text (letters, digits and ``()[]@#$%!&*-=+_``).
+
+    These are the space rules of :func:`normalize_extracted_info`, which runs
+    them itself. In free text (``multiline``) only horizontal whitespace is a
+    space, so a line break between two Chinese characters stays.
+    """
+    space = r"[^\S\n]+" if multiline else r"\s+"
+    # Use regex to remove spaces between Chinese characters
+    # Regex explanation:
+    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
+    # {space}: One or more whitespace characters
+    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
+    text = re.sub(rf"(?<=[\u4e00-\u9fa5]){space}(?=[\u4e00-\u9fa5])", "", text)
+
+    # Remove spaces between Chinese and English/numbers/symbols
+    text = re.sub(
+        rf"(?<=[\u4e00-\u9fa5]){space}(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])",
+        "",
+        text,
+    )
+    return re.sub(
+        rf"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_]){space}(?=[\u4e00-\u9fa5])",
+        "",
+        text,
+    )
+
+
 def sanitize_and_normalize_extracted_text(
-    input_text: str, remove_inner_quotes=False
+    input_text: str,
+    remove_inner_quotes=False,
+    *,
+    multiline: bool = False,
+    final_space_pass: bool = True,
 ) -> str:
     """Sanitize and normalize extracted text
 
@@ -5817,27 +6309,65 @@ def sanitize_and_normalize_extracted_text(
             normalize non-breaking spaces. Matching outer quotation marks are
             removed independently of this option only when the enclosed text
             contains no corresponding quote characters.
+        multiline: ``True`` for free text (descriptions), whose line breaks
+            are kept; ``False`` (default) for single-line values such as
+            names, types and keywords. See :func:`normalize_extracted_info`.
+        final_space_pass: see :func:`normalize_extracted_info`.
 
     Returns:
         Sanitized and normalized text string
     """
+    if multiline and input_text:
+        # Vertical tab (a soft line break in a PowerPoint text box) and form
+        # feed are control characters the sanitizer deletes. In free text they
+        # are line breaks, so convert them first. In a single-line value they
+        # stay deleted: turning them into a space would split a name the
+        # current rule already merges (see normalize_extracted_info).
+        input_text = input_text.replace("\v", "\n").replace("\f", "\n")
     safe_input_text = sanitize_text_for_encoding(input_text)
     if safe_input_text:
         normalized_text = normalize_extracted_info(
-            safe_input_text, remove_inner_quotes=remove_inner_quotes
+            safe_input_text,
+            remove_inner_quotes=remove_inner_quotes,
+            multiline=multiline,
+            final_space_pass=final_space_pass,
         )
         return normalized_text
     return ""
 
 
-def normalize_entity_name(input_text: str) -> str:
-    """Normalize an entity identifier using the extraction naming contract."""
-    return sanitize_and_normalize_extracted_text(input_text, remove_inner_quotes=True)
+def normalize_entity_name(input_text: str, *, final_space_pass: bool = True) -> str:
+    """Normalize an entity identifier using the extraction naming contract.
+
+    A caller that caps the identifier's length must pass
+    ``final_space_pass=False`` and run :func:`remove_spaces_next_to_chinese`
+    on the capped result, as the extraction parsers in ``lightrag.operate`` do
+    (see :func:`normalize_extracted_info`).
+    """
+    return sanitize_and_normalize_extracted_text(
+        input_text, remove_inner_quotes=True, final_space_pass=final_space_pass
+    )
 
 
-def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
+def normalize_extracted_info(
+    name: str,
+    remove_inner_quotes=False,
+    *,
+    multiline: bool = False,
+    final_space_pass: bool = True,
+) -> str:
     """Normalize entity/relation names and description with the following rules:
-    - Clean HTML tags (paragraph and line break tags)
+    - Paragraph and line break tags (``<p>``, ``</p>``, ``<br>``, ``<br/>``,
+      ``<br />`` ...): removed in a single-line value, a line break when
+      ``multiline`` is set
+    - multiline = False (names, types, keywords): once the rules below have
+      rewritten the value, and before the numeric filters and the final space
+      pass, collapse every run of spaces, tabs and line breaks (``\\n``,
+      ``\\r``, U+0085, U+2028, U+2029) into one space, so a value never carries
+      a line break
+    - multiline = True (descriptions): those line breaks, vertical tab and
+      form feed become ``\\n``; spaces and tabs around a line break are
+      dropped, and at most one blank line is kept in a row
     - Convert Chinese symbols to English symbols
     - Remove spaces between Chinese characters
     - Remove spaces between Chinese characters and English letters/numbers
@@ -5852,6 +6382,9 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
         - Remove English quotation marks adjacent to Chinese characters
         - Convert non-breaking spaces to regular spaces
         - Convert narrow non-breaking spaces after non-digits to regular spaces
+        - Last, in a single-line value: remove the spaces this leaves between
+          Chinese characters and between Chinese and Latin text
+          (``Apple "苹果"`` gives ``Apple苹果``, as ``Apple 苹果`` does)
 
     Args:
         name: Entity name to normalize
@@ -5859,13 +6392,35 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             non-breaking-space rules above. Matching outer quotation marks are
             removed independently of this option only when the enclosed text
             contains no corresponding quote characters.
+        multiline: whether the value is free text whose line breaks are
+            kept (descriptions) or a single-line value (the default).
+        final_space_pass: ``False`` leaves out the last rule above (the
+            second run of the space rules). A caller that cuts the value to a
+            length limit passes ``False`` and runs
+            :func:`remove_spaces_next_to_chinese` on the cut value: the pass
+            shortens a value, so running it before the cut lets two spellings
+            that used to be cut to the same key be cut to different ones.
 
     Returns:
         Normalized entity name
+
+    A change to what a single-line value normalizes to may only MERGE names
+    that used to differ, never split names that used to be equal: rebuilding
+    an entity after a document deletion re-parses the cached LLM output with
+    the current rules and matches it by the stored name, so a split drops the
+    facts of the records that no longer match. See "Entity name normalization
+    changes" in docs/design/PurgeRecoveryContract.md.
     """
-    # Clean HTML tags - remove paragraph and line break tags
-    name = re.sub(r"</p\s*>|<p\s*>|<p/>", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"</br\s*>|<br\s*>|<br/>", "", name, flags=re.IGNORECASE)
+    # Paragraph and line break tags stand for a line break: the delimited
+    # extraction format is one record per line, so an LLM cannot emit a real
+    # one. In free text they become one. In a single-line value they are
+    # removed, which glues "Acme<br>Corp" into "AcmeCorp": a space would read
+    # better, but it would split "Acme<br>Corp" from a stored "AcmeCorp" (see
+    # the merge-only rule in the docstring). A self-closing tag may have a
+    # space before its slash (<br />, <p />).
+    tag_replacement = "\n" if multiline else ""
+    name = re.sub(r"</p\s*>|<p\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
+    name = re.sub(r"</br\s*>|<br\s*/?>", tag_replacement, name, flags=re.IGNORECASE)
 
     # Chinese full-width letters to half-width (A-Z, a-z)
     name = name.translate(
@@ -5893,20 +6448,20 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     # Chinese full-width space to regular space (after other replacements)
     name = name.replace("　", " ")
 
-    # Use regex to remove spaces between Chinese characters
-    # Regex explanation:
-    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
-    # \s+: One or more whitespace characters
-    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
-    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", name)
+    # Free text: one spelling for every line break, no spaces around one, at
+    # most one blank line in a row. Strip here, so the outer-quote removal
+    # below still sees a quote a tag sat next to. Single-line values are
+    # collapsed further down instead, after the quote and non-breaking space
+    # rules, which keeps the merge-only rule.
+    if multiline:
+        name = re.sub(r"\r\n?|[\v\f\x85\u2028\u2029]", "\n", name)
+        name = re.sub(r"[ \t]*\n[ \t]*", "\n", name)
+        name = re.sub(r"\n{3,}", "\n\n", name)
+        name = name.strip()
 
-    # Remove spaces between Chinese and English/numbers/symbols
-    name = re.sub(
-        r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
-    )
-    name = re.sub(
-        r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
-    )
+    # In free text only horizontal whitespace is a "space" to remove: a line
+    # break between two Chinese characters is content and stays.
+    name = remove_spaces_next_to_chinese(name, multiline=multiline)
 
     # Remove outer quotes
     if len(name) >= 2:
@@ -5938,16 +6493,28 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
             if "《" not in inner_content and "》" not in inner_content:
                 name = inner_content
 
+    removed_inner_quotes = False
     if remove_inner_quotes:
+        before_quote_removal = name
         # Remove Chinese quotes
         name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # Remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+        removed_inner_quotes = name != before_quote_removal
         # Convert non-breaking space to regular space
         name = name.replace("\u00a0", " ")
         # Convert narrow non-breaking space to regular space when after non-digits
         name = re.sub(r"(?<=[^\d])\u202F", " ", name)
+
+    # Single-line value: collapse spaces, tabs and line breaks into one space.
+    # This runs after the non-breaking space conversions, so its result
+    # is a function of what the previous rules produced: it only merges names,
+    # and running the collapse again finds no whitespace left to change.
+    # U+00A0 / U+202F are left to the rules above (a U+202F after a digit is
+    # kept on purpose).
+    if not multiline:
+        name = re.sub(r"[ \t\n\r\x85\u2028\u2029]+", " ", name)
 
     # Remove spaces from the beginning and end of the text
     name = name.strip()
@@ -5966,6 +6533,20 @@ def normalize_extracted_info(name: str, remove_inner_quotes=False) -> str:
     if len(name) < 6 and should_filter_by_dots(name):
         # Filter out mixed numeric and dot content with length < 6, requiring at least one dot
         return ""
+
+    # Removing the inner quotes can leave a space the rules above ran too early
+    # to see: 'Apple "苹果"' became "Apple 苹果", while "Apple 苹果" gives
+    # "Apple苹果". Run them once more on the final single-line result. This
+    # comes after everything else, so it is a function of the previous result
+    # and only merges names (see the merge-only rule in the docstring).
+    # Only a removed inner quote can expose such a space: the other rules
+    # either keep the characters on both sides of a space, or (the outer
+    # quotes) leave it at an edge for the strip. So the pass is skipped when
+    # no inner quote was removed, which gives the same result. A caller that
+    # cuts the value to a length limit runs the pass after the cut instead
+    # (final_space_pass=False), so the merge-only rule holds for the cut key.
+    if final_space_pass and removed_inner_quotes and not multiline:
+        name = remove_spaces_next_to_chinese(name)
 
     return name
 
@@ -6887,19 +7468,18 @@ class TokenTracker:
         """Add token usage from one LLM call.
 
         Args:
-            token_counts: A dictionary containing prompt_tokens, completion_tokens, total_tokens
+            token_counts: Prompt, completion, and total token counts. A missing
+                or None total is estimated from the available component counts.
         """
-        self.prompt_tokens += token_counts.get("prompt_tokens", 0)
-        self.completion_tokens += token_counts.get("completion_tokens", 0)
+        prompt_tokens = token_counts.get("prompt_tokens") or 0
+        completion_tokens = token_counts.get("completion_tokens") or 0
+        total_tokens = token_counts.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = prompt_tokens + completion_tokens
 
-        # If total_tokens is provided, use it directly; otherwise calculate the sum
-        if "total_tokens" in token_counts:
-            self.total_tokens += token_counts["total_tokens"]
-        else:
-            self.total_tokens += token_counts.get(
-                "prompt_tokens", 0
-            ) + token_counts.get("completion_tokens", 0)
-
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens += total_tokens
         self.call_count += 1
 
     def get_usage(self):
@@ -6965,6 +7545,11 @@ async def apply_rerank_if_enabled(
             )
             document_texts.append(content)
 
+        # Custom rerank functions bypass generic_rerank_api's check, and the
+        # legacy-format slice below would treat a negative top_n as "drop N".
+        if top_n is not None and top_n < 0:
+            raise ValueError(f"top_n must be non-negative, got {top_n}")
+
         # Call the new rerank function that returns index-based results
         rerank_results = await rerank_func(
             query=query,
@@ -6981,7 +7566,11 @@ async def apply_rerank_if_enabled(
             # Check if results are in the new index-based format
             if first_object is not None and "index" in first_object:
                 # New format: [{"index": 0, "relevance_score": 0.85}, ...]
-                reranked_docs = []
+                # One entry per document: a repeated index would otherwise
+                # take several chunk_top_k slots. Keep its highest score,
+                # as chunk score aggregation does, because provider order
+                # is not trusted (see the sort below).
+                best_by_index: dict[int, dict] = {}
                 for result in rerank_results:
                     normalized_result, _ = normalize_rerank_result(
                         result, len(retrieved_docs)
@@ -6991,17 +7580,28 @@ async def apply_rerank_if_enabled(
 
                     index = normalized_result["index"]
                     relevance_score = normalized_result["relevance_score"]
+                    kept = best_by_index.get(index)
+                    if kept is not None and kept["rerank_score"] >= relevance_score:
+                        continue
 
                     # Get original document and add rerank score
                     doc = retrieved_docs[index].copy()
                     doc["rerank_score"] = relevance_score
-                    reranked_docs.append(doc)
+                    best_by_index[index] = doc
 
+                reranked_docs = list(best_by_index.values())
                 if not reranked_docs:
                     logger.warning(
                         "Rerank returned no usable results, using original chunks"
                     )
                     return retrieved_docs
+
+                # Sort by score instead of trusting the provider already
+                # returned results in relevance order: callers slice this
+                # list positionally (chunk_top_k truncation), so an
+                # unsorted response would silently keep the wrong chunks
+                # despite every chunk carrying a correct rerank_score.
+                reranked_docs.sort(key=lambda d: d["rerank_score"], reverse=True)
 
                 logger.info(
                     f"Successfully reranked: {len(reranked_docs)} chunks from {len(retrieved_docs)} original chunks"
@@ -7151,6 +7751,20 @@ async def process_chunks_unified(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
             f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
         )
+        if not unique_chunks:
+            # Every candidate survived rerank and top-k, so only the token
+            # budget can have emptied the list: make that visible.
+            hint = (
+                "raise max_total_tokens"
+                if source_type == "vector"
+                else "raise max_total_tokens or lower max_entity_tokens / "
+                "max_relation_tokens so the graph context leaves room for chunks"
+            )
+            logger.warning(
+                f"Token budget left no room for any of {original_count} retrieved "
+                f"chunks (available for chunks: {chunk_token_limit} tokens, "
+                f"source: {source_type}); {hint}"
+            )
 
     # 5. add id field to each chunk
     final_chunks = []
@@ -7874,6 +8488,141 @@ def _truncate_chunks_for_unified_context(
     return approx[:k]
 
 
+def validate_workspace_override(env_var: str, value: str | None) -> str | None:
+    """The workspace a ``*_WORKSPACE`` environment variable remaps TENANT data
+    to, stripped and validated, or ``None`` / the empty value when it sets
+    nothing.
+
+    The override is applied INSIDE a backend's constructor, after
+    ``validate_workspace()`` has already passed the constructor argument, so
+    the value a variable supplies would otherwise never be validated at all.
+    It is held to the same rules as a constructor argument here.
+
+    Nothing about the configuration container depends on this any more: its
+    container is named in code rather than by a workspace, and no backend in
+    the category consults an override for it. See
+    docs/design/ConfigurationStorageContract.md.
+
+    Raises:
+        ValueError: the override is not a legal workspace name.
+    """
+    if value is None:
+        return None
+    effective = str(value).strip()
+    if not effective:
+        return effective
+    try:
+        return validate_workspace(effective)
+    except ValueError as e:
+        raise ValueError(f"{env_var}: {e}") from None
+
+
+# Every ``*_WORKSPACE`` override, with the ``config.ini`` section that can set
+# it instead where one exists. Beside ``validate_workspace_override`` so a new
+# backend's override gets added to both at once.
+WORKSPACE_OVERRIDE_SOURCES: tuple[tuple[str, str | None], ...] = (
+    ("POSTGRES_WORKSPACE", "postgres"),
+    ("NEO4J_WORKSPACE", "neo4j"),
+    ("MEMGRAPH_WORKSPACE", None),
+    ("MILVUS_WORKSPACE", None),
+    ("MONGODB_WORKSPACE", None),
+    ("OPENSEARCH_WORKSPACE", None),
+    ("QDRANT_WORKSPACE", None),
+    ("REDIS_WORKSPACE", None),
+)
+
+_workspace_override_warning_emitted = False
+
+
+def warn_about_workspace_overrides() -> list[str]:
+    """Warn ONCE per process about every ``*_WORKSPACE`` override in effect.
+
+    These variables exist to keep LEGACY data reachable, and nothing above the
+    storage layer knows one is set: a backend applies it inside its own
+    constructor, so the workspace a caller asked for and the container its data
+    lands in can differ, and every record keyed by the caller's workspace --
+    the embedding baselines among them -- stays under the name the caller gave.
+
+    That is tolerable while the override never moves. Using one to MOVE data --
+    setting, changing or clearing it on a deployment that already has some --
+    points the same instance at a different container while those records stay
+    behind, and no check below can tell that apart from an ordinary start. So
+    the rule is stated where an operator will see it rather than enforced:
+    a storage's workspace follows the server's, and switching data location by
+    editing one of these is unsupported.
+
+    Called from the APPLICATION's startup, not from ``LightRAG``: the uvicorn
+    entry point (``lightrag_server.main``) and the Gunicorn master's
+    ``on_starting`` hook, which runs before it forks. That is once per server
+    start rather than once per worker or once per instance, which is what an
+    operator-facing deprecation wants. The once-per-process guard below only
+    keeps a second call quiet; it is not what makes the count right.
+
+    Returns the variables it warned about, so a caller can report them.
+    """
+    global _workspace_override_warning_emitted
+
+    file_config = configparser.ConfigParser()
+    try:
+        file_config.read("config.ini", "utf-8")
+    except (OSError, configparser.Error):  # pragma: no cover - unreadable file
+        pass
+
+    in_effect: list[str] = []
+    for env_var, section in WORKSPACE_OVERRIDE_SOURCES:
+        value = os.environ.get(env_var)
+        if (value is None or not value.strip()) and section is not None:
+            value = file_config.get(section, "workspace", fallback=None)
+        if value is not None and value.strip():
+            in_effect.append(env_var)
+
+    if in_effect and not _workspace_override_warning_emitted:
+        _workspace_override_warning_emitted = True
+        logger.warning(
+            f"Workspace override(s) in effect: {', '.join(in_effect)}. These "
+            f"exist only to keep legacy data reachable and are deprecated: a "
+            f"storage's workspace should follow the server's. They are applied "
+            f"inside the storage layer, so nothing above it sees one -- do NOT "
+            f"set, change or clear one to move an existing deployment's data. "
+            f"Doing so points this instance at a different container while the "
+            f"records keyed by the server's workspace, including the recorded "
+            f"embedding baselines, stay where they are."
+        )
+    return in_effect
+
+
+def server_workspace_spelling(workspace: str) -> str:
+    """The name the server would serve ``workspace`` under, without
+    validating or logging: every character outside ``[A-Za-z0-9_]`` becomes
+    ``_``. The rule ``normalize_server_workspace`` applies; use that one for
+    a ``WORKSPACE`` a start actually serves."""
+    return re.sub(r"[^a-zA-Z0-9_]", "_", workspace)
+
+
+def normalize_server_workspace(workspace: str | None) -> str | None:
+    """The workspace the server serves: only alphanumeric characters and
+    underscores survive, every other character becomes ``_``.
+    A leading ``$`` is reserved and rejected before normalization.
+
+    The one rule the server, the Gunicorn master (which claims the
+    workspace's JSON configuration directory before forking) and
+    ``lightrag-rebuild-vdb`` all apply to ``WORKSPACE``, so they resolve the
+    same workspace and the same directory.
+    """
+    if not workspace:
+        return workspace
+    if workspace.startswith("$"):
+        validate_workspace(workspace)
+    sanitized = server_workspace_spelling(workspace)
+    if sanitized != workspace:
+        logging.warning(
+            f"Workspace name '{workspace}' contains invalid characters. "
+            f"It has been sanitized to '{sanitized}'. "
+            "Only alphanumeric characters and underscores are allowed."
+        )
+    return sanitized
+
+
 def validate_workspace(workspace: str) -> str:
     """Validate a workspace name used to build per-workspace directories.
 
@@ -7887,6 +8636,16 @@ def validate_workspace(workspace: str) -> str:
     while unsafe names are rejected so the caller fails fast instead of
     silently reading or writing outside the intended directory.
 
+    Names starting with ``$`` are reserved for internal configuration keys.
+    A tenant may still be called ``_lightrag_config`` and
+    still shares nothing with the configuration container. Where a storage
+    keeps a workspace directory under ``working_dir``, ``LightRAG``
+    additionally applies ``config_shards.validate_config_workspace``
+    (through ``validate_deployment_workspace``), which refuses the five names
+    of the deployment-wide files directly under ``working_dir`` (a workspace
+    directory so named would collide with one of them). See
+    docs/design/ConfigurationStorageContract.md.
+
     Args:
         workspace: Workspace name from configuration or environment variables.
 
@@ -7894,8 +8653,8 @@ def validate_workspace(workspace: str) -> str:
         The workspace name unchanged when it is valid.
 
     Raises:
-        ValueError: If the workspace contains ``/`` or ``\\``, or is ``"."`` or
-            ``".."``.
+        ValueError: If the workspace starts with ``$``, contains ``/`` or
+            ``\\``, or is ``"."`` or ``".."``.
 
     Examples:
         >>> validate_workspace("my_workspace")
@@ -7907,6 +8666,11 @@ def validate_workspace(workspace: str) -> str:
             ...
         ValueError: Invalid workspace name '../../../etc': must not contain path separators ('/', '\\') or be a relative path reference ('.', '..')
     """
+    if workspace.startswith("$"):
+        raise ValueError(
+            f"Invalid workspace name {workspace!r}: names starting with '$' "
+            "are reserved for internal configuration keys"
+        )
     if "/" in workspace or "\\" in workspace or workspace in (".", ".."):
         raise ValueError(
             f"Invalid workspace name {workspace!r}: must not contain path "

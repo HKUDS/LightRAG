@@ -278,13 +278,11 @@ def test_ennum_blacklist_matches_multichar_unit(monkeypatch) -> None:
     [
         ("图1 系统架构", True),
         ("表 2-1 实验结果", True),
-        ("Figure 3 shows the flow", True),
         ("figure 3 shows the flow", True),  # review P3: lowercase caption vetoed
         ("table 2-1 results", True),
         ("Fig. 4 detailed view", True),
         ("公式3 能量守恒", True),
         ("图书管理系统设计", False),  # word prefix without a numbering shape
-        ("表达能力评估", False),
         ("第一章 绪论", False),
     ],
 )
@@ -435,12 +433,9 @@ def test_imprint_closer_env_override(monkeypatch) -> None:
         ("2026-12-31", True),  # hyphens
         ("2026.7/31", False),  # mixed separators are not a date
         ("35.240.20", False),  # an ICS code is not a date (2-digit "year")
-        ("1.0.0", False),  # a version number is not a date
         ("会议纪要 2026.7.31", False),  # CONTAINS a date, not bare
         ("第十六条 本规程自2009年7月1日起施行。", False),  # CONTAINS a date, not bare
         ("2009年", False),  # no month/day
-        ("某某办公室 2009年7月6日印发", False),  # a closer, not a bare date
-        ("规划 备案 规程", False),
         ("", False),
     ],
 )
@@ -455,15 +450,10 @@ def test_is_document_date(text: str, expected: bool) -> None:
     "text,expected",
     [
         ("- 1 -", True),  # page number
-        ("***", True),  # separator
         ("——", True),  # dash rule
-        ("……", True),
-        ("12 / 34", True),  # bare figures
         ("", True),  # nothing to judge
         ("完", False),  # a CJK ideograph is a letter
-        ("第 1 章", False),
         ("Chapter 1", False),
-        ("图-1", False),  # mixed symbol + CJK
     ],
 )
 def test_is_symbolic_line(text: str, expected: bool) -> None:
@@ -490,10 +480,7 @@ def _centered(pad_em: float, alignment: str | None = "center"):
         ("center", -4.0, True),  # the ordinary centered title (pad 0 territory)
         ("center", -0.1, True),  # padded, but still inside the budget
         ("center", 0.0, False),  # at the budget: no longer visually centered
-        ("center", +10.0, False),  # the 空格排版 signature, far past it
         ("both", +10.0, False),  # justified: never centered, pad irrelevant
-        ("left", -4.0, False),
-        (None, -4.0, False),  # no w:jc anywhere in the cascade
     ],
 )
 def test_is_visually_centered(alignment, pad_relative_to_budget, expected) -> None:

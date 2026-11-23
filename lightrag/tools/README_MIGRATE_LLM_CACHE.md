@@ -2,7 +2,7 @@
 
 ## Overview
 
-This tool migrates LightRAG's LLM response cache between different KV storage implementations. It specifically migrates caches generated during file extraction (mode `default`), including entity extraction, summary, and multimodal analysis caches.
+This tool migrates LightRAG's LLM response cache between different KV storage implementations. It specifically migrates every cache generated in mode `default`, including entity extraction, summary, multimodal analysis, and smart-heading judgment caches.
 
 ## Supported Storage Types
 
@@ -18,6 +18,7 @@ The tool migrates the following cache types:
 - `default:extract:*` - Entity and relationship extraction caches
 - `default:summary:*` - Entity and relationship summary caches
 - `default:analysis:*` - Multimodal image, table, and equation analysis caches
+- `default:smartheading:*` - Smart-heading judgment caches written by the parse stage
 
 **Note**: Query caches (modes like `mix`,`local`, `global`, etc.) are NOT migrated.
 
@@ -29,9 +30,11 @@ The LLM Cache Migration Tool reads the storage configuration of the LightRAG Ser
 
 ### Basic Usage
 
-Run from the LightRAG project root directory:
+Run from the directory that holds your `.env` (usually the LightRAG project root); the tool loads `.env` from the current directory:
 
 ```bash
+lightrag-migrate-llm-cache
+# or
 python -m lightrag.tools.migrate_llm_cache
 # or
 python lightrag/tools/migrate_llm_cache.py
@@ -395,7 +398,7 @@ MONGO_URI=mongodb://user:pass@prod-server:27017/
 MONGO_DATABASE=LightRAG
 
 # 2. Run tool
-python -m lightrag.tools.migrate_llm_cache
+lightrag-migrate-llm-cache
 
 # 3. Select: 1 (JsonKVStorage) -> 1 (MongoKVStorage - renumbered from 4)
 ```
@@ -413,7 +416,7 @@ POSTGRES_HOST=new-postgres-server
 # ... Other PostgreSQL configs
 
 # 2. Run tool
-python -m lightrag.tools.migrate_llm_cache
+lightrag-migrate-llm-cache
 
 # 3. Select: 2 (RedisKVStorage) -> 2 (PGKVStorage - renumbered from 3)
 ```
@@ -430,7 +433,7 @@ POSTGRES_WORKSPACE=dev_workspace  # For development environment
 MONGODB_WORKSPACE=prod_workspace  # For production environment
 
 # Run tool
-python -m lightrag.tools.migrate_llm_cache
+lightrag-migrate-llm-cache
 
 # Select: 3 (PGKVStorage with dev_workspace) -> 3 (MongoKVStorage with prod_workspace)
 ```

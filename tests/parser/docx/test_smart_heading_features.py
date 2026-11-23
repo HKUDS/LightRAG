@@ -344,21 +344,6 @@ def test_textbox_content_excluded_from_features(tmp_path) -> None:
     assert feats.visible_char_count == 4  # 宿主标题, textbox text excluded
 
 
-def test_visible_char_count_excludes_generated_text(tmp_path) -> None:
-    """``visible_char_count`` counts only source ``w:t`` characters.
-
-    Auto-numbering labels (prepended at read time) and <sup>/<equation>/
-    placeholder markup never enter run_features, so they cannot skew FS_base
-    weighting."""
-    doc = Document()
-    para = doc.add_paragraph()
-    para.add_run("正文内容").font.size = Pt(12)  # 4 visible source chars
-
-    path = _save(doc, tmp_path)
-    feats = _features_for(path, 0)
-    assert feats.visible_char_count == 4
-
-
 def test_first_line_size_restat_for_softbreak(tmp_path) -> None:
     doc = Document()
     para = doc.add_paragraph()
@@ -382,6 +367,118 @@ def test_first_line_size_restat_for_softbreak(tmp_path) -> None:
     assert feats.font_size_pt == 10.5
     # …but the first line re-stat sees only the heading run.
     assert half_points_to_pt(first_line_size_half_points(feats.run_features)) == 16.0
+
+
+# ---------------------------------------------------------------------------
+# run elements that stand for a character (w:cr, w:ptab, w:noBreakHyphen)
+# ---------------------------------------------------------------------------
+
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def _xml_para(body: str):
+    from lxml import etree
+
+    return etree.fromstring(f'<w:p xmlns:w="{_W_NS}">{body}</w:p>')
+
+
+@pytest.mark.parametrize(
+    "child_xml",
+    [
+        "<w:tab/>",
+        '<w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/>',
+        "<w:br/>",
+        '<w:br w:type="textWrapping"/>',
+        '<w:br w:type="page"/>',
+        "<w:cr/>",
+        "<w:noBreakHyphen/>",
+    ],
+)
+def test_run_text_matches_body_extractor(child_xml) -> None:
+    """The feature walk must read each run element as the same character the
+    body extractor emits: the soft-break heading split partitions the
+    extractor's text, and the first-line re-stat clips these runs."""
+    from lightrag.parser.docx.parse_document import extract_text_from_run
+    from lightrag.parser.docx.smart_heading.features import _run_visible_text
+
+    para = _xml_para(f"<w:r><w:t>left</w:t>{child_xml}<w:t>right</w:t></w:r>")
+    run = para[0]
+    assert _run_visible_text(run) == extract_text_from_run(run, {"w": _W_NS})
+
+
+def test_visible_char_count_counts_a_non_breaking_hyphen() -> None:
+    para = _xml_para("<w:r><w:t>COVID</w:t><w:noBreakHyphen/><w:t>19</w:t></w:r>")
+    feats = extract_paragraph_physical_features(para, StyleAttributes())
+    assert feats.run_features[0].text == "COVID-19"
+    assert feats.visible_char_count == 8
+
+
+def test_first_line_size_restat_stops_at_a_carriage_return() -> None:
+    from lightrag.parser.docx.smart_heading.features import (
+        first_line_size_half_points,
+    )
+
+    para = _xml_para(
+        '<w:r><w:rPr><w:sz w:val="32"/></w:rPr><w:t>Heading line</w:t><w:cr/></w:r>'
+        '<w:r><w:rPr><w:sz w:val="21"/></w:rPr>'
+        f"<w:t>{'body remainder ' * 5}</w:t></w:r>"
+    )
+    feats = extract_paragraph_physical_features(para, StyleAttributes())
+    assert feats.font_size_pt == 10.5
+    assert first_line_size_half_points(feats.run_features) == 32
+
+
+def test_softbreak_split_at_carriage_return_restats_the_heading_line(
+    tmp_path,
+) -> None:
+    """Record level: an over-long heading split at a ``w:cr`` takes its
+    candidate size from the heading line, not from the demoted remainder."""
+    from lightrag.constants import MAX_HEADING_LENGTH
+    from lightrag.parser.docx.numbering_resolver import NumberingResolver
+    from lightrag.parser.docx.parse_document import (
+        _read_document_records,
+        parse_styles_outline_levels,
+    )
+    from lightrag.parser.docx.smart_heading.features import effective_font_size_pt
+
+    doc = Document()
+    para = doc.add_paragraph(style="Heading 1")
+    head = para.add_run("Heading line")
+    head.font.size = Pt(16)
+    head._r.append(OxmlElement("w:cr"))
+    body = para.add_run("body remainder " * (MAX_HEADING_LENGTH // 10))
+    body.font.size = Pt(10.5)
+    path = _save(doc, tmp_path)
+
+    records = _read_document_records(
+        Document(str(path)),
+        NumberingResolver(str(path)),
+        parse_styles_outline_levels(str(path)),
+        None,
+        {},
+        style_attributes=parse_styles_attributes(str(path)),
+    )
+    rec = records[0]
+    assert rec.text == "Heading line"
+    assert rec.demoted_body_text is not None
+    assert rec.font_size_pt == 10.5
+    assert effective_font_size_pt(rec) == 16.0
+
+
+def test_leading_pad_em_reads_ptab_and_carriage_return() -> None:
+    ptab = '<w:ptab w:relativeTo="margin" w:alignment="left" w:leader="none"/>'
+    # An absolute position tab pads like a w:tab (2 em)…
+    assert leading_pad_em(
+        _xml_para(f"<w:r>{ptab}<w:t>署名</w:t></w:r>")
+    ) == pytest.approx(2.0)
+    # …and a w:cr ends the measured line like a soft w:br.
+    assert leading_pad_em(
+        _xml_para("<w:r><w:t>标题</w:t><w:cr/><w:tab/><w:tab/><w:t>续行</w:t></w:r>")
+    ) == pytest.approx(0.0)
+    # A non-breaking hyphen is visible text, so it ends the pad scan.
+    assert leading_pad_em(
+        _xml_para("<w:r><w:noBreakHyphen/><w:t>    1</w:t></w:r>")
+    ) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +511,22 @@ def test_page_break_evidence(tmp_path) -> None:
     p2 = _features_for(path, 2)
     assert p2.page_break_before is False
     assert p2.has_page_break_run is False
+
+
+def test_page_break_after_a_non_breaking_hyphen_is_not_leading() -> None:
+    """A w:noBreakHyphen is visible text: a page break after it in the same
+    run trails the paragraph's text, it does not lead it."""
+    from lxml import etree
+
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    para = etree.fromstring(
+        f'<w:p xmlns:w="{w}"><w:r><w:noBreakHyphen/>'
+        '<w:br w:type="page"/><w:t>1</w:t></w:r></w:p>'
+    )
+    feats = extract_paragraph_physical_features(para, StyleAttributes())
+    assert feats.has_page_break_run is True
+    assert feats.has_leading_page_break_run is False
+    assert feats.has_nonleading_page_break_run is True
 
 
 def test_toc_field_and_link_evidence(tmp_path) -> None:
@@ -719,13 +832,11 @@ def _zero_width_formula_paragraph(doc, tag: str, prefix: str):
     return para
 
 
-@pytest.mark.parametrize(
-    "zero_width", ZERO_WIDTH_CHARS, ids=lambda c: f"U+{ord(c):04X}"
-)
+# One zero-width character per placeholder tag: every character goes through
+# the same _has_visible_char predicate, swept in
+# test_visible_char_and_pad_scan_share_one_definition.
 @pytest.mark.parametrize("tag", ["w:drawing", "m:oMath"])
-def test_zero_width_prefix_does_not_hide_leading_placeholder(
-    zero_width, tag, tmp_path
-) -> None:
+def test_zero_width_prefix_does_not_hide_leading_placeholder(tag, tmp_path) -> None:
     """ZWSP → drawing/OMML → tabs → text: the invisible prefix must not read as
     "text came first".
 
@@ -736,7 +847,7 @@ def test_zero_width_prefix_does_not_hide_leading_placeholder(
     users actually hit (these characters arrive via web/PDF copy-paste).
     """
     doc = Document()
-    para = _zero_width_formula_paragraph(doc, tag, zero_width)
+    para = _zero_width_formula_paragraph(doc, tag, ZERO_WIDTH_CHARS[0])
     assert leading_nontext_content(para._p) is True
     assert _first_record_pad(doc, tmp_path) == ("center", 0.0)
 

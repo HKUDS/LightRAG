@@ -198,7 +198,12 @@ async def test_aedit_entity_non_rename_locks_single_entity_name():
 
 @pytest.mark.asyncio
 async def test_aedit_entity_locks_exact_and_normalized_name_candidates():
-    """Normalization resolution stays inside the complete candidate lock set."""
+    """Normalization resolution stays inside the complete candidate lock set.
+
+    The rename itself is refused -- a rename's source must be the stored name
+    -- but that decision is taken under the same lock, which is what this
+    pins.
+    """
     from lightrag import utils_graph
 
     spy, captured = _make_keyed_lock_spy()
@@ -206,10 +211,8 @@ async def test_aedit_entity_locks_exact_and_normalized_name_candidates():
     entities_vdb = _make_vdb_mock(workspace="ws1")
     relationships_vdb = _make_vdb_mock(workspace="ws1")
 
-    graph.upsert_node.side_effect = RuntimeError("stop after lock acquisition")
-
     with patch.object(utils_graph, "get_storage_keyed_lock", spy):
-        with pytest.raises(RuntimeError, match="stop after lock acquisition"):
+        with pytest.raises(ValueError, match="it is stored as 'A公司'"):
             await utils_graph.aedit_entity(
                 chunk_entity_relation_graph=graph,
                 entities_vdb=entities_vdb,
@@ -598,6 +601,40 @@ async def test_amerge_entities_takes_admin_lock_then_reservation_then_entity_key
     assert status["busy"] is False and status["busy_owner"] is None
 
 
+def _create_missing_relation(rag):
+    """``acreate_relation`` refuses an existing edge, so this one is absent."""
+    rag.chunk_entity_relation_graph.has_edge = AsyncMock(return_value=False)
+    return rag.acreate_relation("X", "Y", {"description": "d"})
+
+
+def _with_config_defaults(rag):
+    """``ainsert_custom_kg`` reads configuration fields the bare instance from
+    ``_make_gated_rag`` never set; give it the dataclass defaults."""
+    import dataclasses
+
+    from lightrag.lightrag import LightRAG
+
+    for field in dataclasses.fields(LightRAG):
+        if hasattr(rag, field.name):
+            continue
+        if field.default is not dataclasses.MISSING:
+            setattr(rag, field.name, field.default)
+        elif field.default_factory is not dataclasses.MISSING:
+            setattr(rag, field.name, field.default_factory())
+    rag._addon_params = dict(rag.addon_params)
+    graph = rag.chunk_entity_relation_graph
+    graph.get_nodes_batch = AsyncMock(return_value={})
+    graph.get_edges_batch = AsyncMock(return_value={})
+    for name in ("entity_chunks", "relation_chunks", "full_entities", "full_relations"):
+        if getattr(rag, name, None) is None:
+            kv = AsyncMock()
+            kv.global_config = {"workspace": rag.workspace}
+            kv.get_by_id = AsyncMock(return_value=None)
+            kv.get_by_ids = AsyncMock(side_effect=lambda ids: [None] * len(ids))
+            setattr(rag, name, kv)
+    return rag
+
+
 _PUBLIC_ADMIN_WRITERS = [
     pytest.param(
         lambda rag: rag.adelete_by_entity("X"),
@@ -628,16 +665,13 @@ _PUBLIC_ADMIN_WRITERS = [
         lambda rag: rag.acreate_entity("New", {"description": "d"}),
         id="acreate_entity",
     ),
-    pytest.param(
-        lambda rag: rag.acreate_relation("X", "Y", {"description": "d"}),
-        id="acreate_relation",
-    ),
+    pytest.param(_create_missing_relation, id="acreate_relation"),
     pytest.param(
         lambda rag: rag.amerge_entities(["X"], "Y"),
         id="amerge_entities",
     ),
     pytest.param(
-        lambda rag: rag.ainsert_custom_kg(
+        lambda rag: _with_config_defaults(rag).ainsert_custom_kg(
             {
                 "chunks": [],
                 "entities": [
@@ -680,12 +714,7 @@ async def test_no_public_admin_writer_re_enters_the_admin_lock(
         patch.object(lightrag_module, "get_storage_keyed_lock", recorder.keyed_lock),
         patch.object(utils_graph, "get_storage_keyed_lock", recorder.keyed_lock),
     ):
-        try:
-            await invoke(rag)
-        except Exception:
-            # A mock-induced failure deep in the body is fine: the property
-            # under test is decided by the acquisitions recorded before it.
-            pass
+        await invoke(rag)
 
     assert recorder.events[0] == ("lock", "ws1:GraphAdmin", ["admin"])
     assert len(recorder.admin_lock_events()) == 1
@@ -787,7 +816,9 @@ async def test_gate_is_scoped_by_the_graph_storage_declaration(ws1_pipeline_stat
     gated = _make_gated_rag("ws1")
     assert gated._admin_write_gate_required() is True
 
-    ungated = _make_gated_rag("ws1", graph=_ServerBackedGraphMock())
+    ungated = _make_gated_rag(
+        "ws1", graph=_admin_graph_mock(cls=_ServerBackedGraphMock)
+    )
     ungated.chunk_entity_relation_graph.has_node = AsyncMock(return_value=False)
     ungated.chunk_entity_relation_graph.upsert_node = AsyncMock(return_value=None)
     ungated.chunk_entity_relation_graph.index_done_callback = AsyncMock(
@@ -815,10 +846,7 @@ async def test_gate_is_scoped_by_the_graph_storage_declaration(ws1_pipeline_stat
             recorder.wrap_reservation(lightrag_module.acquire_reservation),
         ),
     ):
-        try:
-            await ungated.acreate_entity("New", {"description": "d"})
-        except Exception:
-            pass
+        await ungated.acreate_entity("New", {"description": "d"})
 
     assert recorder.admin_lock_events() == []
     assert ("reservation",) not in recorder.events
@@ -854,7 +882,7 @@ def test_requires_single_writer_is_a_class_declaration_not_a_dataclass_field():
             continue
         try:
             module = importlib.import_module(module_path, package="lightrag")
-        except Exception:
+        except ImportError:
             continue  # optional backend dependency not installed here
         cls = getattr(module, name)
         assert "requires_single_writer" not in {

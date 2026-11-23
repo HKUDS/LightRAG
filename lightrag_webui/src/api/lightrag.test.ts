@@ -325,7 +325,7 @@ describe('ai content notice flag', () => {
 
     apiModule.__setAxiosAdapterForTests(
       makeResponse({
-        auth_configured: false,
+        auth_configured: false, api_key_configured: false,
         access_token: 'guest-token',
         ai_content_notice_enabled: true
       })
@@ -334,6 +334,21 @@ describe('ai content notice flag', () => {
     await apiModule.getAuthStatus()
 
     expect(useAiContentNoticeStore.getState().enabled).toBe(true)
+  })
+
+  test('/login does not send a stale bearer token', async () => {
+    localStorage.setItem('LIGHTRAG-API-TOKEN', 'stale-token')
+    let loginHeaders: any
+    apiModule.__setAxiosAdapterForTests(async (config: any) => {
+      loginHeaders = config.headers.toJSON()
+      return makeResponse({ access_token: 'user-token', token_type: 'bearer' })(config)
+    })
+
+    await apiModule.loginToServer('user', 'password')
+
+    expect(loginHeaders.Authorization).toBeUndefined()
+    expect(loginHeaders['X-API-Key']).toBeUndefined()
+    expect(loginHeaders['X-Skip-Interceptor']).toBeUndefined()
   })
 
   test('/login carries the deployment flag into the store', async () => {
@@ -349,19 +364,6 @@ describe('ai content notice flag', () => {
     )
 
     await apiModule.loginToServer('user', 'password')
-
-    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
-  })
-
-  test('a server that omits the field does not turn an enabled notice off', async () => {
-    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
-    useAiContentNoticeStore.setState({ enabled: true })
-
-    apiModule.__setAxiosAdapterForTests(
-      makeResponse({ auth_configured: false, access_token: 'guest-token' })
-    )
-
-    await apiModule.getAuthStatus()
 
     expect(useAiContentNoticeStore.getState().enabled).toBe(true)
   })

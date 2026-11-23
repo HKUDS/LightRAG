@@ -17,7 +17,8 @@ InsertTextsRequest = _dr.InsertTextsRequest
 pytestmark = pytest.mark.offline
 
 
-@pytest.mark.parametrize("text", ["  ", "\n\n", "\t"])
+# One strip() branch; other whitespace only re-tests str.strip().
+@pytest.mark.parametrize("text", ["  "])
 def test_insert_text_rejects_whitespace_only(text):
     with pytest.raises(ValidationError):
         InsertTextRequest(text=text)
@@ -31,9 +32,7 @@ def test_insert_text_strips_surrounding_whitespace():
 @pytest.mark.parametrize(
     "texts",
     [
-        ["  "],
-        ["ok", "  "],
-        ["\n\n", "hi"],
+        ["ok", "  "],  # an offender after a valid entry
     ],
 )
 def test_insert_texts_rejects_whitespace_only_entries(texts):

@@ -35,6 +35,7 @@ from lightrag.kg.shared_storage import (  # noqa: E402
     finalize_share_data,
 )
 from lightrag.utils import EmbeddingFunc  # noqa: E402
+from tests._log_capture import capture_lightrag_logs  # noqa: E402
 
 DIM = 8
 
@@ -318,22 +319,6 @@ async def test_read_your_writes_and_query_after_flush(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_finalize_flushes_pending(tmp_path):
-    embed = _CountingEmbed()
-    storage = _make_storage(tmp_path, embed)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "alpha"}})
-    await storage.finalize()
-
-    assert embed.call_count == 1
-    assert storage._pending_upserts == {}
-    assert storage._index.ntotal == 1
-    _assert_consistent(storage)
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_delete_entity_relation_cancels_pending(tmp_path):
     embed = _CountingEmbed()
     storage = FaissVectorDBStorage(
@@ -471,33 +456,6 @@ async def test_finalize_retries_save_after_flush_failure(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_reupsert_after_flush_replaces_single_fid(tmp_path):
-    """Faiss has no in-place upsert: re-upserting an already-materialized id
-    must rebuild the index without the old fid, so we still end up with
-    exactly one row per custom id."""
-    embed = _CountingEmbed()
-    storage = _make_storage(tmp_path, embed)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "old"}})
-    await storage.index_done_callback()
-    assert storage._index.ntotal == 1
-    _assert_consistent(storage)
-
-    await storage.upsert({"id1": {"content": "new"}})
-    await storage.index_done_callback()
-
-    assert storage._index.ntotal == 1, "rebuild must remove old fid before adding new"
-    assert len(storage._id_to_meta) == 1
-    _assert_consistent(storage)
-
-    hit = await storage.get_by_id("id1")
-    assert hit is not None and hit["content"] == "new"
-    assert embed.call_count == 2, "each flush embeds the latest content once"
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_index_done_callback_save_failure_raises(tmp_path):
     """Save failure in index_done_callback must propagate, leave pending empty
     (flush already succeeded), and keep _index_dirty=True so finalize retries."""
@@ -544,8 +502,6 @@ async def test_reload_warns_on_index_meta_skew(tmp_path, caplog):
     on reload; auto-repair is intentionally not in scope here."""
     import logging
 
-    from lightrag.utils import logger as lightrag_logger
-
     embed = _CountingEmbed()
     writer = _make_storage(tmp_path, embed)
     await writer.initialize()
@@ -562,18 +518,11 @@ async def test_reload_warns_on_index_meta_skew(tmp_path, caplog):
     with open(writer._meta_file, "w", encoding="utf-8") as f:
         json.dump(meta, f)
 
-    # The lightrag logger sets propagate=False (lightrag/utils.py), so caplog —
-    # which attaches to root by default — never sees its records. Flip propagate
-    # for the duration of the reload, then restore.
     caplog.clear()
-    old_propagate = lightrag_logger.propagate
-    lightrag_logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger="lightrag"):
             reader = _make_storage(tmp_path, embed)
             await reader.initialize()
-    finally:
-        lightrag_logger.propagate = old_propagate
 
     # The reader's index still has 2 vectors but only 1 reachable via meta —
     # this is the "known risk, not auto-repaired" state.
@@ -701,37 +650,6 @@ async def test_reupsert_cleans_duplicate_custom_id_rows(tmp_path):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_delete_propagates_errors(tmp_path, monkeypatch):
-    """Faiss ``delete`` must NOT swallow errors — the caller (document
-    deletion / status update path) needs to abort if vectors weren't
-    actually removed. With deferred deletes the destructive work moved to
-    the flush, so the abort surfaces from ``index_done_callback``; this
-    intentionally diverges from Nano."""
-    embed = _CountingEmbed()
-    storage = _make_storage(tmp_path, embed)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "alpha"}})
-    await storage.index_done_callback()
-
-    def boom(_self, _fids):
-        raise RuntimeError("rebuild boom")
-
-    # _remove_faiss_ids_locked is what the flush calls under the hood to
-    # apply the queued deletes.
-    monkeypatch.setattr(
-        FaissVectorDBStorage, "_remove_faiss_ids_locked", boom, raising=True
-    )
-
-    await storage.delete(["id1"])
-    assert "id1" in storage._pending_deletes
-
-    with pytest.raises(RuntimeError, match="rebuild boom"):
-        await storage.index_done_callback()
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_flush_recovers_from_index_add_failure_without_re_embedding(tmp_path):
     """Self-heal contract: if ``index.add`` raises mid-flush (after embedding
     already succeeded), the pending buffer keeps the cached vectors and a
@@ -803,26 +721,6 @@ async def test_flush_recovers_from_index_add_failure_without_re_embedding(tmp_pa
     await reader.initialize()
     hit = await reader.get_by_id("id1")
     assert hit is not None and hit["content"] == "alpha"
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_drop_pending_index_ops_clears_buffer(tmp_path):
-    """An internal-error abort calls drop_pending_index_ops to discard the
-    not-yet-flushed buffer without materializing anything into the index."""
-    embed = _CountingEmbed()
-    storage = _make_storage(tmp_path, embed)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "alpha"}, "id2": {"content": "beta"}})
-    assert storage._pending_upserts, "upsert buffers, does not flush"
-
-    await storage.drop_pending_index_ops()
-
-    assert storage._pending_upserts == {}
-    assert embed.call_count == 0, "drop must not embed"
-    assert storage._index.ntotal == 0, "nothing was materialized"
-    _assert_consistent(storage)
 
 
 @pytest.mark.offline

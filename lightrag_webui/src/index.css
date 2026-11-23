@@ -1,4 +1,9 @@
-@import 'tailwindcss';
+/* Automatic source detection is off: it follows git ignore rules, so the
+   same tree scanned more files and emitted ~146 KB more utilities when it sat
+   under a path an ENCLOSING repository ignores, failing the first-load budget.
+   The `@source` lines below are the complete list of files whose classes
+   count; a new place that writes class names must be added there. */
+@import 'tailwindcss' source(none);
 
 @plugin 'tailwindcss-animate';
 @plugin 'tailwind-scrollbar';

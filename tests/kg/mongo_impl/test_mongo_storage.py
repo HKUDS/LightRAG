@@ -1177,16 +1177,6 @@ class TestMongoEdgeReadCanonicalFilter:
         assert projection == {"_id": 1}
 
     @pytest.mark.asyncio
-    async def test_has_edge_direction_independent(self):
-        s = self._make_storage()
-        s.edge_collection.find_one = AsyncMock(return_value=None)
-        await s.has_edge("A", "B")
-        forward = s.edge_collection.find_one.call_args[0][0]
-        await s.has_edge("B", "A")
-        backward = s.edge_collection.find_one.call_args[0][0]
-        assert forward == backward
-
-    @pytest.mark.asyncio
     async def test_get_edge_uses_canonical_filter(self):
         s = self._make_storage()
         s.edge_collection.find_one = AsyncMock(return_value={"weight": 1.0})

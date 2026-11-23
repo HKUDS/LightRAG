@@ -79,24 +79,39 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-# Conditional imports - will raise ImportError if dependencies not installed
+# Conditional imports. An ImportError here means "not installed" OR "installed
+# but broken" (e.g. a ragas/langchain version mismatch); keep the exception so
+# RAGEvaluator can report the real cause instead of a generic install hint.
+_RAGAS_IMPORT_ERROR: ImportError | None = None
 try:
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics import (
-        AnswerRelevancy,
-        ContextPrecision,
-        ContextRecall,
-        Faithfulness,
-    )
+
+    # ragas 0.4 deprecates these top-level exports in favour of
+    # ragas.metrics.collections, but the collections metrics are not accepted
+    # by ragas.evaluate() and reject LangchainLLMWrapper, so they are not a
+    # drop-in replacement. Silence only this import's notice, scoped locally.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Importing \w+ from 'ragas\.metrics' is deprecated",
+            category=DeprecationWarning,
+        )
+        from ragas.metrics import (
+            AnswerRelevancy,
+            ContextPrecision,
+            ContextRecall,
+            Faithfulness,
+        )
     from ragas.llms import LangchainLLMWrapper
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
     from tqdm.auto import tqdm
 
     RAGAS_AVAILABLE = True
 
-except ImportError:
+except ImportError as exc:
     RAGAS_AVAILABLE = False
+    _RAGAS_IMPORT_ERROR = exc
     Dataset = None
     evaluate = None
     LangchainLLMWrapper = None
@@ -144,15 +159,18 @@ class RAGEvaluator:
             EVAL_EMBEDDING_BINDING_HOST: Custom endpoint URL for embeddings (fallback: EVAL_LLM_BINDING_HOST)
 
         Raises:
-            ImportError: If ragas or datasets packages are not installed
+            ImportError: If the RAGAS stack (ragas, datasets, langchain-openai)
+                is not installed or fails to import; the message carries the
+                original import error
             EnvironmentError: If EVAL_LLM_BINDING_API_KEY and OPENAI_API_KEY are both not set
         """
         # Validate RAGAS dependencies are installed
         if not RAGAS_AVAILABLE:
             raise ImportError(
-                "RAGAS dependencies not installed. "
-                "Install with: pip install ragas datasets"
-            )
+                f"RAGAS dependencies are unavailable ({_RAGAS_IMPORT_ERROR}). "
+                "If they are not installed, install them with: "
+                'pip install "lightrag-hku[evaluation]"'
+            ) from _RAGAS_IMPORT_ERROR
 
         # Configure evaluation LLM (for RAGAS scoring)
         eval_llm_api_key = os.getenv("EVAL_LLM_BINDING_API_KEY") or os.getenv(

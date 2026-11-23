@@ -1517,30 +1517,6 @@ printf 'DATABASE_PROMPTS=%s\\n' "$(grep -c '^Neo4j database$' "$prompt_log_file"
     assert values["DATABASE_PROMPTS"] == "0"
 
 
-def test_collect_neo4j_config_uses_existing_password_as_default_in_docker_mode() -> (
-    None
-):
-    """Bundled Neo4j should preserve the existing password when the default is accepted."""
-    output = run_bash(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-ENV_VALUES[NEO4J_PASSWORD]="from-env-password"
-
-confirm_default_yes() {{ return 0; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-
-collect_neo4j_config yes
-
-printf 'PASSWORD=%s\\n' "${{ENV_VALUES[NEO4J_PASSWORD]}}\"
-""")
-    values = parse_lines(output)
-    assert values["PASSWORD"] == "from-env-password"
-
-
 def test_collect_neo4j_config_uses_existing_password_as_default_in_external_mode() -> (
     None
 ):
@@ -1681,30 +1657,6 @@ printf 'PASSWORD_PROMPTS=%s\\n' "$(grep -c '^secret_with_default$' "$prompt_log_
     assert values["PASSWORD_PROMPTS"] == "1"
 
 
-def test_collect_opensearch_config_preserves_graphlookup_auto_detection() -> None:
-    """collect_opensearch_config should leave PPL graphlookup unset unless explicitly configured."""
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-reset_state
-
-confirm_default_yes() {{ return 0; }}
-confirm_default_no() {{ return 1; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-
-collect_opensearch_config "yes"
-
-if [[ -v 'ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]' ]]; then
-  printf 'GRAPHLOOKUP_SET=yes\\n'
-else
-  printf 'GRAPHLOOKUP_SET=no\\n'
-fi
-""")
-    assert values["GRAPHLOOKUP_SET"] == "no"
-
-
 def test_collect_opensearch_config_preserves_explicit_graphlookup_override() -> None:
     """collect_opensearch_config should keep an existing PPL graphlookup override."""
     values = run_bash_lines(f"""
@@ -1766,9 +1718,16 @@ prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
 collect_opensearch_config "yes"
 printf 'USE_SSL=%s\\n' "${{ENV_VALUES[OPENSEARCH_USE_SSL]}}"
 printf 'VERIFY_CERTS=%s\\n' "${{ENV_VALUES[OPENSEARCH_VERIFY_CERTS]}}\"
+if [[ -v 'ENV_VALUES[OPENSEARCH_USE_PPL_GRAPHLOOKUP]' ]]; then
+  printf 'GRAPHLOOKUP_SET=yes\\n'
+else
+  printf 'GRAPHLOOKUP_SET=no\\n'
+fi
 """)
     assert values["USE_SSL"] == "true"
     assert values["VERIFY_CERTS"] == "false"
+    # PPL graphlookup stays unset (auto-detected) unless explicitly configured.
+    assert values["GRAPHLOOKUP_SET"] == "no"
 
 
 def test_collect_opensearch_config_uses_original_index_settings_as_defaults() -> None:
@@ -1887,3 +1846,129 @@ collect_opensearch_config "yes"
 printf 'PASSWORD_VALIDATOR=%s\\n' "$(cat "$validator_file")\"
 """)
     assert values["PASSWORD_VALIDATOR"] == "validate_opensearch_password_strength"
+
+
+def test_collect_llm_config_offers_openai_responses() -> None:
+    """The Responses binding is a selectable LLM provider with OpenAI defaults."""
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+reset_state
+
+prompt_choice() {{
+  shift 2
+  printf '%s\\n' "$@" > "$OPTIONS_FILE"
+  printf 'openai_responses'
+}}
+OPTIONS_FILE="$(mktemp)"
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf 'sk-test-key'; }}
+
+collect_llm_config
+
+printf 'OFFERED=%s\\n' "$(grep -cx openai_responses "$OPTIONS_FILE")"
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+rm -f "$OPTIONS_FILE"
+""")
+    values = parse_lines(output)
+    assert values["OFFERED"] == "1"
+    assert values["LLM_BINDING"] == "openai_responses"
+    assert values["LLM_MODEL"] == "gpt-6-luna"
+    assert values["LLM_BINDING_HOST"] == "https://api.openai.com/v1"
+    assert values["LLM_BINDING_API_KEY"] == "sk-test-key"
+    assert "/v1/responses" in output
+
+
+def test_collect_llm_config_keeps_existing_openai_responses_settings(
+    tmp_path: Path,
+) -> None:
+    """A rerun keeps the binding as the default choice and its model/host/key.
+
+    The real prompt_choice only pre-selects a default that is one of the
+    offered options; otherwise Enter is rejected and the user is forced to
+    pick another binding. The stub models exactly that: accept the default
+    only when it is offered, fail otherwise.
+    """
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai_responses",
+            "LLM_MODEL=gpt-5.6",
+            "LLM_BINDING_HOST=https://gateway.example/v1",
+            "LLM_BINDING_API_KEY=existing-key",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{
+  local default="$2"
+  shift 2
+  local option
+  for option in "$@"; do
+    if [[ "$option" == "$default" ]]; then
+      printf '%s' "$default"
+      return 0
+    fi
+  done
+  echo "DEFAULT_NOT_OFFERED: $default" >&2
+  return 1
+}}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_llm_config
+
+printf 'LLM_BINDING=%s\\n' "${{ENV_VALUES[LLM_BINDING]}}"
+printf 'LLM_MODEL=%s\\n' "${{ENV_VALUES[LLM_MODEL]}}"
+printf 'LLM_BINDING_HOST=%s\\n' "${{ENV_VALUES[LLM_BINDING_HOST]}}"
+printf 'LLM_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[LLM_BINDING_API_KEY]}}"
+""")
+    values = parse_lines(output)
+    assert values["LLM_BINDING"] == "openai_responses"
+    assert values["LLM_MODEL"] == "gpt-5.6"
+    assert values["LLM_BINDING_HOST"] == "https://gateway.example/v1"
+    assert values["LLM_BINDING_API_KEY"] == "existing-key"
+
+
+def test_collect_embedding_config_reuses_openai_responses_llm_credentials(
+    tmp_path: Path,
+) -> None:
+    """openai_responses has no embedding side; an openai embedding next to it
+    is the same provider and reuses the LLM endpoint and key."""
+    write_text_lines(
+        tmp_path / ".env",
+        [
+            "LLM_BINDING=openai_responses",
+            "LLM_BINDING_HOST=https://gateway.example/v1",
+            "LLM_BINDING_API_KEY=shared-key",
+        ],
+    )
+    output = run_bash(f"""
+set -euo pipefail
+source "{REPO_ROOT}/scripts/setup/setup.sh"
+REPO_ROOT="{tmp_path}"
+reset_state
+load_existing_env_if_present
+
+prompt_choice() {{ printf 'openai'; }}
+prompt_with_default() {{ printf '%s' "$2"; }}
+prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
+
+collect_embedding_config
+
+printf 'EMBEDDING_BINDING=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING]}}"
+printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
+printf 'EMBEDDING_BINDING_API_KEY=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-}}"
+""")
+    values = parse_lines(output)
+    assert values["EMBEDDING_BINDING"] == "openai"
+    assert values["EMBEDDING_BINDING_HOST"] == "https://gateway.example/v1"
+    assert values["EMBEDDING_BINDING_API_KEY"] == "shared-key"

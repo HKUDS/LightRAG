@@ -25,9 +25,7 @@ import type { QueryInputError } from './queryInput'
  * The two query entries (`/webui`'s RetrievalView and the workspace's
  * WorkspaceQueryView) must send the SAME request for the same input. This file
  * pins that by driving both of them through their real composer and reading the
- * request that reaches the API layer — `bypassEntryEquivalence.test.ts` replays
- * the three preparation steps in isolation, which cannot see an entry that
- * stopped taking them.
+ * request that reaches the API layer.
  *
  * The routing assertions at the bottom stay source-level on purpose: an entry
  * that reimplements prefix parsing IDENTICALLY is invisible to a behavioural
@@ -230,6 +228,36 @@ describe('query entry input handling', () => {
       expect(screen.queryAllByText('hello there')).toHaveLength(0)
     })
 
+    test(`${entry} sends /bypass with its own history and no RAG minimum`, async () => {
+      // `/bypass` is only useful with the conversation travelling along, and
+      // each entry must send ITS OWN transcript: this replaces a replay of the
+      // three preparation steps that could not see an entry skipping one.
+      const turns = [1, 2, 3, 4].flatMap((n) => [
+        { id: `${entry}-u${n}`, role: 'user' as const, content: `${entry} q${n}` },
+        { id: `${entry}-a${n}`, role: 'assistant' as const, content: `${entry} a${n}` }
+      ])
+      const historyStore = entry === 'webui'
+        ? useWebuiRetrievalHistoryStore
+        : useWorkspaceRetrievalHistoryStore
+      act(() => {
+        historyStore.getState().setHistory(turns)
+      })
+      setQuerySettings({ mode: 'mix', history_turns: 0 })
+
+      // One character: below the RAG minimum, which bypass does not apply.
+      await send(entry, '/bypass a')
+
+      expect(requests).toHaveLength(1)
+      expect({ mode: requests[0].mode, query: requests[0].query }).toEqual({
+        mode: 'bypass',
+        query: 'a'
+      })
+      // history_turns is 0, so bypass expands its own default window of three.
+      expect(requests[0].conversation_history).toEqual(
+        turns.slice(2).map(({ role, content }) => ({ role, content }))
+      )
+    })
+
     test(`${entry} falls back to the stored mode with no prefix`, async () => {
       setQuerySettings({ mode: 'naive' })
 
@@ -255,6 +283,9 @@ describe('query entry settings snapshot', () => {
       chunk_top_k: 3,
       user_prompt: 'be terse',
       enable_rerank: false,
+      // Non-default, so an entry that forced the prefix back on after the
+      // shared snapshot would show up as a third differing key.
+      disable_user_prompt_prefix: true,
       history_turns: 0
     })
 
@@ -287,6 +318,7 @@ describe('query entry settings snapshot', () => {
     expect(workspace.only_need_prompt).toBe(false)
     expect(admin.only_need_context).toBe(true)
     expect(admin.only_need_prompt).toBe(true)
+    expect(workspace.disable_user_prompt_prefix).toBe(true)
   })
 })
 
@@ -305,27 +337,11 @@ const ENTRY_SOURCES = [
 ] as const
 
 describe('query entry routing', () => {
-  test('workspace derives its snapshot through the shared policy', () => {
-    const workspace = ENTRY_SOURCES.find(([entry]) => entry === 'workspace')![1]
-
-    expect(workspace).toMatch(
-      /import\s*\{[^}]*\bworkspaceQuerySettingsSnapshot\b[^}]*\}\s*from/
-    )
-    expect(workspace).toMatch(/workspaceQuerySettingsSnapshot\(/)
-
-    // Any override belongs in WORKSPACE_CLAMPED_SETTINGS, where a test pins
-    // the size of the exemption list.
-    expect(workspace).not.toMatch(/only_need_context:\s*false/)
-    expect(workspace).not.toMatch(/only_need_prompt:\s*false/)
-    expect(workspace).not.toMatch(/disable_user_prompt_prefix:/)
-  })
-
-  test.each(ENTRY_SOURCES)('%s delegates prefix parsing to the shared helper', (_entry, source) => {
+  // The snapshot policy needs no source check: the rendered settings-snapshot
+  // test above fails on any override outside WORKSPACE_CLAMPED_SETTINGS.
+  test.each(ENTRY_SOURCES)('%s delegates prefix parsing and does not reimplement it', (_entry, source) => {
     expect(source).toMatch(/import\s*\{[^}]*\bprepareQueryInput\b[^}]*\}\s*from/)
     expect(source).toMatch(/prepareQueryInput\(\s*input\s*,/)
-  })
-
-  test.each(ENTRY_SOURCES)('%s does not reimplement prefix parsing', (_entry, source) => {
     // A local `/mode ` regex is how the two entries drifted apart before.
     expect(source).not.toMatch(/\/\^\\\/|match\(\s*\/\^/)
     expect(source).not.toContain('allowedModes')

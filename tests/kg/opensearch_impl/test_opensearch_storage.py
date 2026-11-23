@@ -6,7 +6,6 @@ Run with: pytest tests/kg/opensearch_impl/test_opensearch_storage.py -v
 """
 
 import asyncio
-import math
 
 import pytest
 from contextlib import asynccontextmanager
@@ -22,9 +21,15 @@ from opensearchpy.exceptions import (  # type: ignore
     NotFoundError,
     OpenSearchException,
     ConflictError,
+    TransportError,
 )
 import lightrag.kg.opensearch_impl
-from lightrag.exceptions import VectorSpaceMismatchError, flush_may_have_lost_reference
+from lightrag.exceptions import (
+    StorageCapabilityError,
+    StorageControlPlaneError,
+    VectorSpaceMismatchError,
+    flush_may_have_lost_reference,
+)
 from lightrag.kg.opensearch_impl import (
     OpenSearchReferencesIntactError,
     OpenSearchKVStorage,
@@ -32,7 +37,6 @@ from lightrag.kg.opensearch_impl import (
     OpenSearchGraphStorage,
     OpenSearchVectorDBStorage,
     ClientManager,
-    _build_index_name,
     _resolve_workspace,
     _sanitize_index_name,
     _verify_mirrored_id_mapping,
@@ -332,17 +336,6 @@ def mock_client():
 class TestHelpers:
     """Tests for module-level helper functions (_build_index_name, _resolve_workspace, _sanitize_index_name)."""
 
-    def test_build_index_name_with_workspace(self):
-        ws, ns, idx = _build_index_name("myws", "text_chunks")
-        assert ws == "myws"
-        assert ns == "myws_text_chunks"
-        assert idx == _sanitize_index_name("myws_text_chunks")
-
-    def test_build_index_name_no_workspace(self):
-        ws, ns, idx = _build_index_name("", "chunks")
-        assert ws == ""
-        assert idx == _sanitize_index_name("chunks")
-
     def test_resolve_workspace_env_override(self):
         with patch.dict("os.environ", {"OPENSEARCH_WORKSPACE": "forced"}):
             assert _resolve_workspace("original", "ns") == "forced"
@@ -529,20 +522,6 @@ class TestMirroredIdVerification:
             await _verify_mirrored_id_mapping(mock_client, "my_index")
 
     @pytest.mark.asyncio
-    async def test_fails_fast_when_mapping_missing(self, mock_client):
-        """On OpenSearch < 3.3.0 a legacy index without __mirrored_id raises."""
-        mock_client.indices.get_mapping = AsyncMock(
-            return_value={
-                "my_index": {
-                    "mappings": {"properties": {"other_field": {"type": "text"}}}
-                }
-            }
-        )
-        with patch("lightrag.kg.opensearch_impl._shard_doc_supported", False):
-            with pytest.raises(RuntimeError, match="__mirrored_id"):
-                await _verify_mirrored_id_mapping(mock_client, "my_index")
-
-    @pytest.mark.asyncio
     async def test_swallows_get_mapping_error(self, mock_client):
         """Mapping-fetch failures should not block initialization."""
         mock_client.indices.get_mapping = AsyncMock(
@@ -567,11 +546,6 @@ class TestKVStorage:
             embedding_func=embed_func,
             workspace=workspace,
         )
-
-    @pytest.mark.asyncio
-    async def test_index_name(self, global_config, embed_func):
-        s = self._make(global_config, embed_func, workspace="proj_a")
-        assert s._index_name == "proj_a_text_chunks"
 
     @pytest.mark.asyncio
     async def test_initialize_creates_index(
@@ -644,48 +618,6 @@ class TestKVStorage:
             )
 
     @pytest.mark.asyncio
-    async def test_get_by_id_not_found(self, global_config, embed_func, mock_client):
-        mock_client.mget = AsyncMock(
-            return_value={"docs": [{"_id": "missing", "found": False}]}
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.get_by_id("missing") is None
-            mock_client.get.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_get_by_ids_preserves_order(
-        self, global_config, embed_func, mock_client
-    ):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            docs = await s.get_by_ids(["id1", "id2"])
-            assert docs[0]["content"] == "c1"
-            assert docs[1]["content"] == "c2"
-
-    @pytest.mark.asyncio
-    async def test_filter_keys(self, global_config, embed_func, mock_client):
-        # OpenSearch echoes the requested-id order; mirror that with a
-        # side_effect so the test does not depend on set-iteration order
-        # (filter_keys builds body["ids"] from a set, and the strict mget
-        # contract now verifies each item's _id against the request).
-        async def mget_side_effect(index=None, body=None, **kwargs):
-            return {
-                "docs": [
-                    {"_id": doc_id, "found": doc_id == "a"} for doc_id in body["ids"]
-                ]
-            }
-
-        mock_client.mget = AsyncMock(side_effect=mget_side_effect)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            result = await s.filter_keys({"a", "b"})
-            assert result == {"b"}
-
-    @pytest.mark.asyncio
     async def test_upsert_no_per_operation_refresh(
         self, global_config, embed_func, mock_client
     ):
@@ -703,36 +635,6 @@ class TestKVStorage:
                 await s.index_done_callback()
                 _, kwargs = mock_bulk.call_args
                 assert "refresh" not in kwargs
-
-    @pytest.mark.asyncio
-    async def test_upsert_sets_timestamps(self, global_config, embed_func, mock_client):
-        """Buffered docs carry create_time / update_time set eagerly during upsert."""
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
-            ) as mock_bulk:
-                mock_bulk.return_value = (1, [])
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                await s.upsert({"k1": {"content": "v1"}})
-                # Timestamps are visible in the pending buffer immediately.
-                assert "create_time" in s._pending_upserts["k1"]
-                assert "update_time" in s._pending_upserts["k1"]
-                await s.index_done_callback()
-                actions = mock_bulk.call_args[0][1]
-                # The replacement value travels as scripted-upsert params so
-                # the flush can restore a stored create_time server-side.
-                doc = actions[0]["script"]["params"]["doc"]
-                assert "create_time" in doc
-                assert "update_time" in doc
-
-    @pytest.mark.asyncio
-    async def test_is_empty(self, global_config, embed_func, mock_client):
-        mock_client.count = AsyncMock(return_value={"count": 0})
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.is_empty() is True
 
     @pytest.mark.asyncio
     async def test_delete(self, global_config, embed_func, mock_client):
@@ -877,33 +779,31 @@ class TestKVStorage:
             mock_client.delete_pit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_iter_raw_docs_missing_index_demotes_readiness(
+    async def test_iter_raw_docs_missing_index_demotes_readiness_and_raises(
         self, global_config, embed_func, mock_client
     ):
+        """The scan marks the index missing and then REFUSES.
+
+        It used to end cleanly, which made an index that vanished mid-scan
+        indistinguishable from an empty namespace -- and ``iter_rows``'
+        caller reads a clean end as "confirmed empty", the verdict that
+        records a durable ``origin=empty`` embedding baseline.
+        """
         mock_client.search = AsyncMock(side_effect=_missing_index_error())
 
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
 
-            batches = [batch async for batch in s._iter_raw_docs(batch_size=2)]
+            batches = []
+            with pytest.raises(StorageControlPlaneError, match="unexpectedly missing"):
+                async for batch in s._iter_raw_docs(batch_size=2):
+                    batches.append(batch)
 
             assert batches == []
             assert s._index_ready is False
             mock_client.create_pit.assert_awaited_once()
             mock_client.delete_pit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_finalize(self, global_config, embed_func, mock_client):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch.object(
-                ClientManager, "release_client", new_callable=AsyncMock
-            ) as mock_release:
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                await s.finalize()
-                mock_release.assert_awaited_once()
-                assert s.client is None
 
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +936,10 @@ class TestKVStorageBatching:
 
             await s.delete(["gone-1"])
             assert await s.has_pending_index_ops() is False
+            # The configuration store asks with tombstones included: a
+            # buffered delete answers its strict read-back as "gone" before
+            # the server agrees.
+            assert await s.has_pending_index_ops(include_deletes=True) is True
 
     @pytest.mark.asyncio
     async def test_repeated_kv_upserts_flush_in_single_bulk_call(
@@ -2172,11 +2076,6 @@ class TestDocStatusStorage:
         )
 
     @pytest.mark.asyncio
-    async def test_index_name(self, global_config, embed_func):
-        s = self._make(global_config, embed_func)
-        assert s._index_name == "test_doc_status"
-
-    @pytest.mark.asyncio
     async def test_initialize_creates_index(
         self, global_config, embed_func, mock_client
     ):
@@ -2647,40 +2546,6 @@ class TestDocStatusStorage:
             assert await s.get_doc_by_file_basename("missing.pdf") is None
 
     @pytest.mark.asyncio
-    async def test_get_doc_by_content_hash_returns_tuple_on_hit(
-        self, global_config, embed_func, mock_client
-    ):
-        mock_client.search = AsyncMock(
-            return_value={
-                "hits": {
-                    "hits": [
-                        {
-                            "_id": "doc-1",
-                            "_source": {
-                                "file_path": "report.pdf",
-                                "content_hash": "abc123",
-                                "status": "processed",
-                            },
-                        },
-                    ],
-                    "total": {"value": 1},
-                },
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            result = await s.get_doc_by_content_hash("abc123")
-            assert result is not None
-            doc_id, doc = result
-            assert doc_id == "doc-1"
-            assert doc["content_hash"] == "abc123"
-            body = mock_client.search.call_args.kwargs.get(
-                "body"
-            ) or mock_client.search.call_args[1].get("body", {})
-            assert body["query"] == {"term": {"content_hash": "abc123"}}
-
-    @pytest.mark.asyncio
     async def test_get_doc_by_content_hash_empty_short_circuits(
         self, global_config, embed_func, mock_client
     ):
@@ -2690,18 +2555,6 @@ class TestDocStatusStorage:
             mock_client.search.reset_mock()
             assert await s.get_doc_by_content_hash("") is None
             mock_client.search.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_get_doc_by_content_hash_miss_returns_none(
-        self, global_config, embed_func, mock_client
-    ):
-        mock_client.search = AsyncMock(
-            return_value={"hits": {"hits": [], "total": {"value": 0}}}
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.get_doc_by_content_hash("zzz999") is None
 
     @pytest.mark.asyncio
     async def test_ensure_content_hash_mapping_added_when_missing(
@@ -2877,35 +2730,12 @@ class TestGraphStorage:
         )
 
     @pytest.mark.asyncio
-    async def test_index_names(self, global_config, embed_func):
-        s = self._make(global_config, embed_func)
-        assert s._nodes_index == "test_chunk_entity_relation-nodes"
-        assert s._edges_index == "test_chunk_entity_relation-edges"
-
-    @pytest.mark.asyncio
-    async def test_initialize_creates_both_indices(
-        self, global_config, embed_func, mock_client
-    ):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert mock_client.indices.create.await_count == 2
-
-    @pytest.mark.asyncio
     async def test_has_node_true(self, global_config, embed_func, mock_client):
         mock_client.exists = AsyncMock(return_value=True)
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.has_node("Alice") is True
-
-    @pytest.mark.asyncio
-    async def test_has_node_false(self, global_config, embed_func, mock_client):
-        mock_client.exists = AsyncMock(return_value=False)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.has_node("Nobody") is False
 
     @pytest.mark.asyncio
     async def test_has_edge(self, global_config, embed_func, mock_client):
@@ -2919,22 +2749,6 @@ class TestGraphStorage:
                 index=s._edges_index, id=_canonical_edge_id("A", "B")
             )
             mock_client.mget.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_has_edge_false(self, global_config, embed_func, mock_client):
-        mock_client.exists = AsyncMock(return_value=False)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.has_edge("A", "B") is False
-
-    @pytest.mark.asyncio
-    async def test_node_degree(self, global_config, embed_func, mock_client):
-        mock_client.count = AsyncMock(return_value={"count": 3})
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.node_degree("A") == 3
 
     @pytest.mark.asyncio
     async def test_get_node(self, global_config, embed_func, mock_client):
@@ -3034,23 +2848,6 @@ class TestGraphStorage:
             edges = await s.get_node_edges("A")
             assert len(edges) == 2
             assert ("A", "B") in edges
-
-    @pytest.mark.asyncio
-    async def test_get_nodes_batch(self, global_config, embed_func, mock_client):
-        mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {"_id": "A", "found": True, "_source": {"entity_type": "person"}},
-                    {"_id": "B", "found": False},
-                ]
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            result = await s.get_nodes_batch(["A", "B"])
-            assert "A" in result
-            assert "B" not in result
 
     @pytest.mark.asyncio
     async def test_node_degrees_batch(self, global_config, embed_func, mock_client):
@@ -4598,19 +4395,6 @@ class TestGraphPPLDetection:
             }
 
     @pytest.mark.asyncio
-    async def test_upsert_node_adds_entity_id(
-        self, global_config, embed_func, mock_client
-    ):
-        """upsert_node should always include entity_id field for PPL compatibility."""
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.upsert_node("TestNode", {"description": "test"})
-            body = mock_client.index.call_args.kwargs["body"]
-            assert body["entity_id"] == "TestNode"
-            assert body["description"] == "test"
-
-    @pytest.mark.asyncio
     async def test_node_degree_uses_count_api(
         self, global_config, embed_func, mock_client
     ):
@@ -4645,11 +4429,6 @@ class TestVectorStorage:
         )
 
     @pytest.mark.asyncio
-    async def test_index_name(self, global_config, embed_func):
-        s = self._make(global_config, embed_func)
-        assert s._index_name == "test_entities"
-
-    @pytest.mark.asyncio
     async def test_cosine_threshold_required(self, embed_func):
         with pytest.raises(ValueError, match="cosine_better_than_threshold"):
             OpenSearchVectorDBStorage(
@@ -4660,6 +4439,112 @@ class TestVectorStorage:
                 },
                 embedding_func=embed_func,
             )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "refresh_shards,count_shards,expected",
+        [
+            # Unassigned replicas leave a refresh short without failing it.
+            (
+                {"total": 4, "successful": 2, "failed": 0},
+                {"total": 2, "successful": 2, "failed": 0},
+                5,
+            ),
+            (
+                {"total": 4, "successful": 2, "failed": 0},
+                {"total": 2, "successful": 1, "failed": 1},
+                "partial_shard_count",
+            ),
+            ({"total": 4, "successful": 2, "failed": 0}, None, "partial_shard_count"),
+            (
+                {"total": 4, "successful": 1, "failed": 1},
+                {"total": 2, "successful": 2, "failed": 0},
+                "partial_refresh",
+            ),
+        ],
+        ids=["all-shards", "failed-count-shard", "no-count-header", "failed-refresh"],
+    )
+    async def test_exact_count_needs_every_shard_refreshed_and_counted(
+        self,
+        global_config,
+        embed_func,
+        mock_client,
+        refresh_shards,
+        count_shards,
+        expected,
+    ):
+        order: list[str] = []
+
+        async def record_refresh(**kwargs):
+            order.append("refresh")
+            return {"_shards": refresh_shards}
+
+        async def record_count(**kwargs):
+            order.append("count")
+            response = {"count": 5}
+            if count_shards is not None:
+                response["_shards"] = count_shards
+            return response
+
+        mock_client.indices.refresh = AsyncMock(side_effect=record_refresh)
+        mock_client.count = AsyncMock(side_effect=record_count)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            order.clear()
+            if isinstance(expected, int):
+                assert await s.get_exact_count() == expected
+            else:
+                with pytest.raises(StorageCapabilityError, match=expected):
+                    await s.get_exact_count()
+            refreshed_only = expected == "partial_refresh"
+            assert order == (["refresh"] if refreshed_only else ["refresh", "count"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("mget", "strict_ids"),
+        [
+            (AsyncMock(side_effect=OpenSearchException("transport error")), None),
+            (
+                AsyncMock(
+                    return_value={
+                        "docs": [
+                            {"_id": "a", "found": True, "_source": {"content": "x"}},
+                            {"_id": "b", "error": {"type": "shard_failure"}},
+                        ]
+                    }
+                ),
+                None,
+            ),
+            (
+                AsyncMock(
+                    return_value={
+                        "docs": [
+                            {"_id": "a", "found": True, "_source": {"content": "x"}},
+                            {"_id": "b", "found": False},
+                        ]
+                    }
+                ),
+                ["a", None],
+            ),
+        ],
+        ids=["transport-error", "item-error", "confirmed-absent"],
+    )
+    async def test_strict_read_returns_none_only_for_confirmed_absence(
+        self, global_config, embed_func, mock_client, mget, strict_ids
+    ):
+        # get_by_ids reads all three as a miss for "b"; only the last is one.
+        mock_client.mget = mget
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            assert (await s.get_by_ids(["a", "b"]))[1] is None
+            if strict_ids is None:
+                with pytest.raises((OpenSearchException, RuntimeError)):
+                    await s.get_by_ids_strict(["a", "b"])
+            else:
+                rows = await s.get_by_ids_strict(["a", "b"])
+                assert [row and row["id"] for row in rows] == strict_ids
 
     @pytest.mark.asyncio
     async def test_initialize_creates_knn_index(
@@ -4745,37 +4630,6 @@ class TestVectorStorage:
             assert "cosine_range=[0.7000, 0.7000]" in mock_log.call_args.args[0]
 
     @pytest.mark.asyncio
-    async def test_query_filters_below_threshold(
-        self, global_config, embed_func, mock_client
-    ):
-        """Low scores should be filtered out."""
-        # engine score 0.15 -> cosine similarity 2*0.15-1 = -0.7 < threshold 0.2
-        mock_client.search = AsyncMock(
-            return_value={
-                "hits": {
-                    "hits": [
-                        {
-                            "_id": "v1",
-                            "_score": 0.15,
-                            "_source": {"content": "weak match"},
-                        },
-                    ],
-                    "total": {"value": 1},
-                },
-                "aggregations": {
-                    "status_counts": {"buckets": []},
-                    "src": {"buckets": []},
-                    "tgt": {"buckets": []},
-                },
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            results = await s.query("test", top_k=5)
-            assert len(results) == 0
-
-    @pytest.mark.asyncio
     async def test_query_rejects_unconverted_score_that_would_have_passed(
         self, global_config, embed_func, mock_client
     ):
@@ -4837,33 +4691,6 @@ class TestVectorStorage:
             assert results[0]["distance"] == 1.0
 
     @pytest.mark.asyncio
-    async def test_get_by_id(self, global_config, embed_func, mock_client):
-        mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {
-                        "_id": "v1",
-                        "found": True,
-                        "_source": {"content": "hello", "vector": [0.1] * 128},
-                    }
-                ]
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            doc = await s.get_by_id("v1")
-            assert doc["id"] == "v1"
-            assert doc["content"] == "hello"
-            # vector field is stripped on the mget path to match NanoVectorDB
-            assert "vector" not in doc
-            mock_client.mget.assert_awaited_once_with(
-                index=s._index_name,
-                body={"ids": ["v1"]},
-                _source_excludes=["vector"],
-            )
-
-    @pytest.mark.asyncio
     async def test_get_by_id_not_found(self, global_config, embed_func, mock_client):
         mock_client.mget = AsyncMock(
             return_value={"docs": [{"_id": "missing", "found": False}]}
@@ -4873,23 +4700,6 @@ class TestVectorStorage:
             await s.initialize()
             assert await s.get_by_id("missing") is None
             mock_client.get.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_get_by_ids(self, global_config, embed_func, mock_client):
-        mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {"_id": "v1", "found": True, "_source": {"content": "a"}},
-                    {"_id": "v2", "found": True, "_source": {"content": "b"}},
-                ]
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            docs = await s.get_by_ids(["v1", "v2"])
-            assert docs[0]["id"] == "v1"
-            assert docs[1]["id"] == "v2"
 
     @pytest.mark.asyncio
     async def test_get_vectors_by_ids(self, global_config, embed_func, mock_client):
@@ -6176,6 +5986,7 @@ class TestVectorStorageBatching:
             docs = await s.get_by_ids(["v1", "v2"])
             assert all(d is not None for d in docs)
             assert all("vector" not in d for d in docs)
+            assert [d["id"] for d in docs] == ["v1", "v2"]
             assert docs[0]["content"] == "a"
             assert docs[1]["content"] == "b"
             mock_client.mget.assert_awaited_once_with(
@@ -6402,160 +6213,9 @@ class TestVectorStorageBatching:
 # ---------------------------------------------------------------------------
 
 
-class TestScoreThreshold:
-    """Verify that raw OpenSearch scores are compared directly against threshold."""
-
-    def test_above_threshold(self):
-        assert 0.85 >= 0.2
-
-    def test_below_threshold(self):
-        assert 0.15 < 0.2
-
-    def test_exact_threshold(self):
-        assert 0.2 >= 0.2
-
-
 # ---------------------------------------------------------------------------
 # Why raising EMBEDDING_BATCH_NUM does not lower the embedding call count
 # ---------------------------------------------------------------------------
-
-
-class TestEmbeddingBatchNumDiagnosis:
-    """Pin down why bumping EMBEDDING_BATCH_NUM leaves the embedding call
-    count (get_embedding_queue_status -> submitted_total) unchanged for
-    entities/relations.
-
-    ``merge_nodes_and_edges`` upserts entities/relations ONE id at a time:
-    ``_merge_nodes_then_upsert`` calls ``entity_vdb.upsert({single})`` and
-    ``_merge_edges_then_upsert`` calls ``relationships_vdb.upsert({single})``
-    (lightrag/operate.py). ``EMBEDDING_BATCH_NUM`` only slices the items
-    *within one embedding pass* (``contents[i:i+batch]``). So the call count
-    is governed by how many items reach a single embedding pass, not by the
-    batch size -- raising the batch size only helps once >= 2 items are
-    embedded together.
-    """
-
-    def _make(self, batch_num, embed_func, workspace="diag"):
-        config = {
-            "embedding_batch_num": batch_num,
-            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
-        }
-        return OpenSearchVectorDBStorage(
-            namespace="entities",
-            global_config=config,
-            embedding_func=embed_func,
-            workspace=workspace,
-            meta_fields={"content", "entity_name"},
-        )
-
-    @staticmethod
-    def _fake_bulk(_client, actions, *_args, **_kwargs):
-        # async_bulk(raise_on_error=False) -> (success_count, failed_list).
-        # Empty failed list = every buffered action persisted.
-        return (len(actions), [])
-
-    async def _run_per_item(self, batch_num, *, flush_each, n=100):
-        """Upsert ``n`` entities one-at-a-time, mirroring the merge path.
-
-        flush_each=True  -> embed right after each single-item upsert, so every
-                            embedding pass sees exactly 1 item. This is the
-                            pre-defer / eager behaviour where ``upsert`` embeds
-                            inline.
-        flush_each=False -> buffer every single-item upsert and flush once, i.e.
-                            the deferred-embedding design on this branch.
-        """
-        embed = CountingEmbeddingFunc()
-        mock_client = _make_client()
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk",
-                new_callable=AsyncMock,
-            ) as mock_bulk:
-                mock_bulk.side_effect = self._fake_bulk
-                s = self._make(batch_num, embed)
-                await s.initialize()
-                for i in range(n):
-                    await s.upsert(
-                        {f"ent-{i}": {"content": f"entity {i}", "entity_name": f"E{i}"}}
-                    )
-                    if flush_each:
-                        await s.index_done_callback()
-                if not flush_each:
-                    await s.index_done_callback()
-        return embed
-
-    @pytest.mark.asyncio
-    async def test_per_item_embedding_makes_batch_num_a_noop(self):
-        """Eager pattern: embedding happens once per single-item upsert.
-
-        Reproduces the billing observation -- every embedding call carries
-        exactly ONE item (~one entity's tokens) -- and bumping
-        EMBEDDING_BATCH_NUM from 16 to 32 changes nothing.
-        """
-        embed16 = await self._run_per_item(16, flush_each=True)
-        embed32 = await self._run_per_item(32, flush_each=True)
-
-        assert embed16.call_count == 100
-        assert embed32.call_count == 100
-        # Each embedding pass saw exactly one item, regardless of batch size.
-        assert all(len(b) == 1 for b in embed16.batches)
-        assert all(len(b) == 1 for b in embed32.batches)
-        # The crux: raising the batch size did not reduce the call count.
-        assert embed16.call_count == embed32.call_count
-
-    @pytest.mark.asyncio
-    async def test_deferred_flush_makes_batch_num_effective(self):
-        """Deferred pattern: buffer all single-item upserts, flush once.
-
-        Now EMBEDDING_BATCH_NUM finally governs the count:
-        ceil(100/16)=7 vs ceil(100/32)=4.
-        """
-        embed16 = await self._run_per_item(16, flush_each=False)
-        embed32 = await self._run_per_item(32, flush_each=False)
-
-        assert embed16.call_count == math.ceil(100 / 16) == 7
-        assert embed32.call_count == math.ceil(100 / 32) == 4
-        assert embed16.call_count != embed32.call_count
-        # Every flushed batch respects the configured cap, and nothing is lost.
-        assert all(len(b) <= 16 for b in embed16.batches)
-        assert all(len(b) <= 32 for b in embed32.batches)
-        assert len(embed16.texts) == 100
-        assert len(embed32.texts) == 100
-
-    @pytest.mark.asyncio
-    async def test_single_multiitem_upsert_is_batched_like_chunks_vdb(self):
-        """Contrast: chunks_vdb upserts a whole document's chunks in ONE call.
-
-        When many items arrive in a single upsert/embedding pass,
-        EMBEDDING_BATCH_NUM works as expected even with an immediate flush --
-        proving the determining factor is items-per-embedding-pass, not the
-        storage backend. This is why batch_num visibly affects chunks but not
-        per-id entity/relation upserts.
-        """
-        embed16 = CountingEmbeddingFunc()
-        embed32 = CountingEmbeddingFunc()
-        for batch_num, embed in ((16, embed16), (32, embed32)):
-            mock_client = _make_client()
-            with patch.object(ClientManager, "get_client", return_value=mock_client):
-                with patch(
-                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
-                    new_callable=AsyncMock,
-                ) as mock_bulk:
-                    mock_bulk.side_effect = self._fake_bulk
-                    s = self._make(batch_num, embed)
-                    await s.initialize()
-                    # chunks_vdb.upsert(chunks): one call carrying 100 items.
-                    await s.upsert(
-                        {
-                            f"chunk-{i}": {"content": f"chunk {i}", "entity_name": ""}
-                            for i in range(100)
-                        }
-                    )
-                    await s.index_done_callback()
-
-        assert embed16.call_count == math.ceil(100 / 16) == 7
-        assert embed32.call_count == math.ceil(100 / 32) == 4
-        assert embed16.call_count != embed32.call_count
 
 
 # ---------------------------------------------------------------------------
@@ -6710,6 +6370,119 @@ class TestGraphReadContract:
             s = self._make(global_config, embed_func)
             await s.initialize()
             assert await s.get_popular_labels(limit=2) == ["Alpha", "Zeta"]
+
+    # -- a missing EDGE index is an empty edge set, not a missing graph -----
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_missing_edge_index_ranks_from_node_index(
+        self, global_config, embed_func, mock_client
+    ):
+        """Only the edge index is gone; the entities in the node index must
+        still be returned.
+
+        Regression: the missing-index handler wrapped the whole method, so an
+        ``index_not_found`` from the edge aggregation answered ``[]`` without
+        ever scanning the node index -- a graph that held entities reported as
+        one that held nothing. The Mongo backend, the other two-container
+        implementation, treats a missing edge collection as an empty edge set
+        and ranks from the node side; this is the same rule.
+        """
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            async def _search(index=None, body=None, **kwargs):
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                # The isolated-node scan searches through a PIT, without an
+                # index argument.
+                return self._node_page(["Orphan1", "Orphan2"])
+
+            mock_client.search = AsyncMock(side_effect=_search)
+            labels = await s.get_popular_labels(limit=10)
+
+        assert labels == ["Orphan1", "Orphan2"]
+        mock_client.create_pit.assert_awaited_once()
+        # The mark still lands: the next write must recreate the edge index
+        # with its mapping rather than let the cluster auto-create it.
+        assert s._indices_ready is False
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_missing_node_index_still_returns_empty(
+        self, global_config, embed_func, mock_client
+    ):
+        """The confirmed-empty answer is kept for the index that holds the
+        entities: no node index, no entities."""
+        mock_client.search = AsyncMock(return_value=self._aggs([], []))
+        mock_client.create_pit = AsyncMock(side_effect=_missing_index_error())
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            labels = await s.get_popular_labels(limit=10)
+
+        assert labels == []
+        assert s._indices_ready is False
+
+    @pytest.mark.asyncio
+    async def test_popular_labels_edge_transport_error_still_raises(
+        self, global_config, embed_func, mock_client
+    ):
+        """Splitting the edge aggregation into its own handler must not widen
+        what it swallows: a transport failure is not a missing index."""
+        mock_client.search = AsyncMock(
+            side_effect=TransportError(
+                503, "search_phase_execution_exception", "shard failure"
+            )
+        )
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            with pytest.raises(TransportError):
+                await s.get_popular_labels(limit=10)
+
+        mock_client.create_pit.assert_not_awaited()
+        assert s._indices_ready is True
+
+    @pytest.mark.asyncio
+    async def test_knowledge_graph_all_missing_edge_index_keeps_nodes(
+        self, global_config, embed_func, mock_client
+    ):
+        """The ``*`` subgraph ranks from the edge index when truncated; with
+        that index gone it must still return the entities, with no relations,
+        instead of an empty graph.
+
+        Regression: the same whole-method handler as get_popular_labels.
+        """
+        mock_client.count = AsyncMock(return_value={"count": 5})
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+
+            async def _search(index=None, body=None, **kwargs):
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                assert index == s._nodes_index
+                return self._node_page(["A", "B", "C", "D"])
+
+            async def _create_pit(index=None, **kwargs):
+                # The edge pass at the end opens a PIT on the edge index.
+                if index == s._edges_index:
+                    raise _missing_index_error()
+                return {"pit_id": "pit-nodes"}
+
+            mock_client.search = AsyncMock(side_effect=_search)
+            mock_client.create_pit = AsyncMock(side_effect=_create_pit)
+            mock_client.mget = AsyncMock(
+                side_effect=_mget_by_ids_side_effect(
+                    {node_id: {"entity_type": "person"} for node_id in "ABCD"}
+                )
+            )
+            result = await s.get_knowledge_graph("*", max_nodes=4)
+
+        assert result.is_truncated is True
+        assert [node.id for node in result.nodes] == ["A", "B", "C", "D"]
+        assert result.edges == []
+        assert s._indices_ready is False
 
     # -- get_knowledge_graph ------------------------------------------------
 

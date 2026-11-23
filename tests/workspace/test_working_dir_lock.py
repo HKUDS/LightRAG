@@ -1,0 +1,247 @@
+"""One process tree at a time on a file-backed configuration directory.
+
+The in-process guard (``tests/kg/json_impl/test_json_init_claim.py``) cannot
+see another SERVER: each process tree has its own in-memory copy, so two of
+them on one ``working_dir`` each rewrite the whole configuration file from a
+private view. An overwritten baseline reads back as absent, and absent is what
+lets a start bootstrap -- so the protection disappears with nothing in any log.
+
+These tests cover cross-process exclusion, release on process death,
+reference counting, and path normalization. Every other process is a real
+subprocess running ``_working_dir_lock_probe.py`` in a fresh interpreter,
+so it cannot inherit this process's claim bookkeeping or lock descriptor.
+Foreign claim attempts go to one such interpreter per module, which releases
+every claim it is granted before the next attempt; only the death test
+needs an interpreter of its own.
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+from lightrag.kg import working_dir_lock as wdl
+from lightrag.kg.working_dir_lock import (
+    LOCK_FILENAME,
+    acquire_working_dir_lock,
+    holds_working_dir_lock,
+    release_working_dir_lock,
+    uses_working_dir,
+)
+
+pytestmark = pytest.mark.offline
+
+
+@pytest.fixture(autouse=True)
+def _no_claims_leak():
+    yield
+    for claim in list(wdl._claims.values()):
+        try:
+            if claim.handle is not None:
+                claim.handle.close()
+        except OSError:
+            pass
+    wdl._claims.clear()
+
+
+_PROBE = Path(__file__).with_name("_working_dir_lock_probe.py")
+# The probe runs as a script, so its sys.path starts at its own directory:
+# without the root on PYTHONPATH it imports whichever lightrag is installed,
+# which in a second checkout is not the code under test.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+_PROBE_ENV = {
+    **os.environ,
+    "PYTHONPATH": os.pathsep.join(
+        p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p
+    ),
+}
+
+
+def _probe(command: str, path) -> subprocess.CompletedProcess:
+    """Run one probe command in a fresh interpreter -- a process tree that did
+    NOT inherit this one's bookkeeping or its lock descriptor."""
+    result = subprocess.run(
+        [sys.executable, str(_PROBE), command, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_PROBE_ENV,
+    )
+    assert result.returncode == 0, (
+        f"probe '{command}' failed (rc={result.returncode})\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    return result
+
+
+class _ForeignTree:
+    """The ``serve`` probe: another process tree that answers claim attempts."""
+
+    def __init__(self) -> None:
+        self._proc = subprocess.Popen(
+            [sys.executable, str(_PROBE), "serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_PROBE_ENV,
+        )
+        self._answers: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        for line in self._proc.stdout:
+            self._answers.put(line.strip())
+        self._answers.put("")  # the probe exited
+
+    def attempt(self, path) -> str:
+        self._proc.stdin.write(f"{path}\n")
+        self._proc.stdin.flush()
+        try:
+            answer = self._answers.get(timeout=60)
+        except queue.Empty:
+            pytest.fail("the foreign probe did not answer within 60s")
+        if not answer:
+            self._proc.wait(timeout=10)
+            pytest.fail(f"the foreign probe exited: {self._proc.stderr.read()}")
+        return answer
+
+    def close(self) -> None:
+        self._proc.stdin.close()
+        rc = self._proc.wait(timeout=30)
+        assert rc == 0, self._proc.stderr.read()
+
+
+@pytest.fixture(scope="module")
+def foreign_tree():
+    tree = _ForeignTree()
+    yield tree
+    tree.close()
+
+
+@pytest.fixture
+def _foreign_attempt(foreign_tree):
+    return foreign_tree.attempt
+
+
+def test_only_a_file_backed_configuration_storage_claims_the_directory():
+    """A server-backed configuration keeps its rows on the server, so two
+    servers there share a container by design and nothing is claimed."""
+    assert uses_working_dir("JsonKVStorage") is True
+    assert uses_working_dir("RedisKVStorage") is False
+    assert uses_working_dir("PGKVStorage") is False
+    assert uses_working_dir(None) is False
+
+
+def test_a_second_process_tree_is_refused(tmp_path, _foreign_attempt):
+    acquire_working_dir_lock(str(tmp_path))
+    assert _foreign_attempt(tmp_path) == "REFUSED"
+
+
+def test_the_directory_is_free_once_the_holder_releases(tmp_path, _foreign_attempt):
+    acquire_working_dir_lock(str(tmp_path))
+    release_working_dir_lock(str(tmp_path))
+
+    assert holds_working_dir_lock(str(tmp_path)) is False
+    assert _foreign_attempt(tmp_path) == "ADMITTED"
+
+
+def test_a_holder_that_dies_leaves_nothing_to_reap(tmp_path):
+    """Why an OS lock and not a PID file: no stale-file cleanup, no
+    read-the-PID-then-probe-liveness race. The kernel releases it."""
+    _probe("dying", tmp_path)
+
+    # The lock file still exists; that is not what holds the lock.
+    assert (tmp_path / LOCK_FILENAME).exists()
+    acquire_working_dir_lock(str(tmp_path))
+    assert holds_working_dir_lock(str(tmp_path)) is True
+
+
+def test_a_second_instance_in_one_tree_counts_itself_in(tmp_path, _foreign_attempt):
+    """Several LightRAG instances in one process are legal, so the claim is
+    counted and released only by the last one."""
+    acquire_working_dir_lock(str(tmp_path))
+    acquire_working_dir_lock(str(tmp_path))
+
+    release_working_dir_lock(str(tmp_path))
+    assert holds_working_dir_lock(str(tmp_path)) is True
+    assert _foreign_attempt(tmp_path) == "REFUSED"
+
+    release_working_dir_lock(str(tmp_path))
+    assert holds_working_dir_lock(str(tmp_path)) is False
+
+
+def test_a_filesystem_that_cannot_lock_warns_and_proceeds(tmp_path, monkeypatch):
+    """NFSv3 without lockd, SMB/CIFS. Refusing there would break deployments
+    that work, to protect against a rarer failure -- so it fails OPEN."""
+    monkeypatch.setattr(
+        wdl, "_try_lock", lambda handle: (_ for _ in ()).throw(OSError("no locks"))
+    )
+
+    acquire_working_dir_lock(str(tmp_path))
+
+    assert holds_working_dir_lock(str(tmp_path)) is True
+    assert wdl._claims[wdl._lock_path(str(tmp_path))].enforced is False
+
+
+def test_a_lock_file_that_cannot_be_opened_warns_and_proceeds(
+    tmp_path, monkeypatch, lightrag_log_records
+):
+    """A lock file left by a run under another user, or a read-only
+    directory: the storages that worked before the claim existed must still
+    start, so it fails OPEN like a filesystem that cannot lock."""
+    import builtins
+
+    real_open = builtins.open
+
+    def _refuse(path, *args, **kwargs):
+        if str(path).endswith(LOCK_FILENAME):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _refuse)
+
+    acquire_working_dir_lock(str(tmp_path))
+
+    assert holds_working_dir_lock(str(tmp_path)) is True
+    assert wdl._claims[wdl._lock_path(str(tmp_path))].enforced is False
+    assert any(
+        "Could not open the lock file" in record.getMessage()
+        for record in lightrag_log_records
+    )
+    release_working_dir_lock(str(tmp_path))
+    assert holds_working_dir_lock(str(tmp_path)) is False
+
+
+def test_releasing_without_a_claim_is_a_no_op(tmp_path):
+    release_working_dir_lock(str(tmp_path))
+    assert holds_working_dir_lock(str(tmp_path)) is False
+
+
+def test_two_spellings_of_one_directory_are_one_claim(tmp_path, _foreign_attempt):
+    """``_lock_path`` resolves symlinks, and that is load bearing rather than
+    tidiness: a relative path and its absolute form, or a symlink and its
+    target, must produce ONE key. Two keys mean this tree opens a second
+    descriptor on the one file -- and ``flock`` belongs to the open file
+    description, so the process refuses ITSELF.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    acquire_working_dir_lock(str(real))
+    acquire_working_dir_lock(str(link))  # counts in; does not refuse itself
+
+    assert holds_working_dir_lock(str(link)) is True
+    release_working_dir_lock(str(link))
+    assert _foreign_attempt(real) == "REFUSED"
+
+    release_working_dir_lock(str(real))
+    assert _foreign_attempt(real) == "ADMITTED"

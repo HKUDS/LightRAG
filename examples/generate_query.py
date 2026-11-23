@@ -1,10 +1,12 @@
+import argparse
+
 from openai import OpenAI
 
-# os.environ["OPENAI_API_KEY"] = ""
+DEFAULT_MODEL = "gpt-6-luna"
 
 
 def openai_complete_if_cache(
-    model="gpt-4o-mini", prompt=None, system_prompt=None, history_messages=[], **kwargs
+    model=DEFAULT_MODEL, prompt=None, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     openai_client = OpenAI()
 
@@ -13,6 +15,9 @@ def openai_complete_if_cache(
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
+
+    if model == DEFAULT_MODEL:
+        kwargs.setdefault("reasoning_effort", "none")
 
     response = openai_client.chat.completions.create(
         model=model, messages=messages, **kwargs
@@ -23,6 +28,12 @@ def openai_complete_if_cache(
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Generate high-level evaluation queries."
+    )
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="OpenAI model to use")
+    args = parser.parse_args()
+
     description = ""
     prompt = f"""
     Given the following description of a dataset:
@@ -48,7 +59,7 @@ if __name__ == "__main__":
         ...
     """
 
-    result = openai_complete_if_cache(model="gpt-4o-mini", prompt=prompt)
+    result = openai_complete_if_cache(model=args.model, prompt=prompt)
 
     file_path = "./queries.txt"
     with open(file_path, "w") as file:

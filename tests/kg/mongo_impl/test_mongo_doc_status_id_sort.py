@@ -1,4 +1,5 @@
-"""Document pagination honors the public ID sort while retaining native sorts."""
+"""Document pagination: the public ID sort, the native sorts with their _id
+tie-breaker, and the indexes that serve them."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ pytest.importorskip("pymongo", reason="pymongo is required for Mongo storage tes
 
 from lightrag.base import DocStatus  # noqa: E402
 from lightrag.kg.mongo_impl import MongoDocStatusStorage  # noqa: E402
+from pymongo.errors import PyMongoError  # noqa: E402
 
 pytestmark = pytest.mark.offline
 
@@ -138,6 +140,11 @@ async def test_public_id_sort_respects_status_filter(storage):
             list(range(8, 13)) + list(range(8)),
             "file_path",
         ),
+        (
+            {"sort_field": "created_at", "sort_direction": "desc"},
+            list(range(12, -1, -1)),
+            "created_at",
+        ),
         ({}, list(range(13)), "updated_at"),
         ({"sort_field": "unknown"}, list(range(13)), "updated_at"),
     ],
@@ -152,9 +159,117 @@ async def test_existing_sort_options_remain_supported(
     ]
     assert total == 13
     direction = 1 if options.get("sort_direction") == "asc" else -1
-    assert storage._data.sorts == [[(mongo_field, direction)]]
+    expected_criteria = [(mongo_field, direction)]
+    if mongo_field != "_id":
+        # Non-unique fields get an _id tie-breaker in the SAME direction, so
+        # one (field, _id) index serves both asc and desc.
+        expected_criteria.append(("_id", direction))
+    assert storage._data.sorts == [expected_criteria]
     assert storage._data.collations == (
         [{"locale": "zh", "numericOrdering": True}]
         if mongo_field == "file_path"
         else []
     )
+
+
+async def test_tied_sort_values_do_not_skip_or_repeat_across_pages(storage):
+    """Documents tied on the sort field come back in an unspecified order,
+    which may differ between the page-1 and page-2 queries; the _id
+    tie-breaker must make the pages partition the result anyway."""
+    tied = [
+        {**doc, "updated_at": "2026-01-01T00:00:00+00:00"}
+        for doc in storage._data.documents
+    ]
+    storage._data.documents = tied
+    first, _ = await storage.get_docs_paginated(
+        page=1, page_size=10, sort_field="updated_at", sort_direction="asc"
+    )
+    # The natural order changes between the two queries.
+    storage._data.documents = list(reversed(tied))
+    second, _ = await storage.get_docs_paginated(
+        page=2, page_size=10, sort_field="updated_at", sort_direction="asc"
+    )
+
+    seen = [doc_id for doc_id, _ in first + second]
+    assert sorted(seen) == sorted(doc["_id"] for doc in tied)
+
+
+class _IndexCollection:
+    def __init__(self, existing, failing=()):
+        self.names = set(existing)
+        self.failing = set(failing)
+        self.created = {}
+        self.dropped = []
+
+    async def list_indexes(self):
+        names = sorted(self.names)
+
+        class _IndexCursor:
+            async def to_list(self, length=None):
+                return [{"name": name} for name in names]
+
+        return _IndexCursor()
+
+    async def create_index(self, keys, name, **kwargs):
+        if name in self.failing:
+            raise PyMongoError(f"cannot build {name}")
+        self.names.add(name)
+        self.created[name] = (keys, kwargs.get("collation"))
+
+    async def drop_index(self, name):
+        self.names.discard(name)
+        self.dropped.append(name)
+
+
+_PREVIOUS_SORT_INDEXES = [
+    "ws_status_updated_at",
+    "ws_status_created_at",
+    "ws_updated_at",
+    "ws_created_at",
+    "ws_file_path_zh_collation",
+    "ws_status_file_path_zh_collation",
+]
+
+
+@pytest.mark.parametrize("failing", [(), ("ws_file_path_id_zh_collation",)])
+async def test_sort_indexes_replace_superseded_ones_only_once_built(failing):
+    """Every get_docs_paginated sort shape gets a (field, _id) index, and an
+    index from an earlier version is dropped only after its replacement
+    exists, so no sort is left unindexed when a build fails."""
+    collection = _IndexCollection(
+        ["_id_", "ws_id", "ws_status_created_at_id_asc", *_PREVIOUS_SORT_INDEXES],
+        failing=failing,
+    )
+    instance = MongoDocStatusStorage.__new__(MongoDocStatusStorage)
+    instance.workspace = "ws"
+    instance._collection_name = "ws_doc_status"
+    instance._data = collection
+
+    await instance.create_and_migrate_indexes_if_not_exists()
+
+    zh = {"locale": "zh", "numericOrdering": True}
+    expected_created = {
+        "ws_updated_at_id": ([("updated_at", -1), ("_id", -1)], None),
+        "ws_status_updated_at_id": (
+            [("status", 1), ("updated_at", -1), ("_id", -1)],
+            None,
+        ),
+        "ws_created_at_id": ([("created_at", -1), ("_id", -1)], None),
+        "ws_file_path_id_zh_collation": ([("file_path", 1), ("_id", 1)], zh),
+        "ws_status_file_path_id_zh_collation": (
+            [("status", 1), ("file_path", 1), ("_id", 1)],
+            zh,
+        ),
+    }
+    for name in failing:
+        expected_created.pop(name)
+    sort_indexes = {
+        name: spec
+        for name, spec in collection.created.items()
+        if name in expected_created
+    }
+    assert sort_indexes == expected_created
+    expected_dropped = set(_PREVIOUS_SORT_INDEXES)
+    if failing:
+        expected_dropped.discard("ws_file_path_zh_collation")
+    assert set(collection.dropped) == expected_dropped

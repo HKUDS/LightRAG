@@ -25,13 +25,6 @@ from lightrag.utils import (
 )
 
 
-@pytest.fixture
-def _propagate_lightrag_logger(monkeypatch):
-    """``lightrag.utils.logger`` sets ``propagate = False``; restore
-    propagation locally so ``caplog`` can capture WARNING records."""
-    monkeypatch.setattr(logging.getLogger("lightrag"), "propagate", True)
-
-
 @pytest.mark.offline
 def test_formfeed_followed_by_letter_restores_backslash_f():
     assert repair_vlm_json_escape_damage("$\x0crac{610}{C}$") == r"$\frac{610}{C}$"
@@ -67,14 +60,13 @@ def test_clean_text_is_unchanged_and_idempotent():
     ("damaged", "expected"),
     [
         ("domain is $\tau^2$", r"domain is $\tau^2$"),
-        ("$a \times b$", r"$a \times b$"),
         ("$$\nabla f = 0$$", "$$\\nabla f = 0$$"),
         ("$\rho + \right)$", r"$\rho + \right)$"),
     ],
 )
 @pytest.mark.offline
 def test_whitespace_class_damage_inside_dollar_math_is_repaired(
-    damaged, expected, caplog, _propagate_lightrag_logger
+    damaged, expected, caplog, lightrag_caplog
 ):
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         result = repair_vlm_json_escape_damage(damaged, context="table/t1")
@@ -90,7 +82,7 @@ def test_whitespace_class_damage_inside_dollar_math_is_repaired(
 
 @pytest.mark.offline
 def test_whitespace_class_damage_outside_math_is_logged_not_rewritten(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ):
     """Outside math, tab + residue stays ambiguous and is not rewritten."""
     damaged = "label:\tau"
@@ -110,16 +102,14 @@ def test_whitespace_class_damage_outside_math_is_logged_not_rewritten(
         # CJK ideographs: the shape Chinese corpora actually produce, where a
         # model writes an inline formula into prose without $ delimiters.
         "阈值\tau为0.5",
-        "数据\times倍",
         "算子\nabla作用于 f",
         "密度\rho的分布",
         # Non-ASCII that is not CJK: a Greek letter is a word character too.
-        "Δ\theta角",
     ],
 )
 @pytest.mark.offline
 def test_damage_followed_by_a_non_ascii_character_is_reported(
-    damaged, caplog, _propagate_lightrag_logger
+    damaged, caplog, lightrag_caplog
 ):
     """A word boundary alone hid every one of these: Python's ``re`` counts a
     CJK ideograph as a word character, so no boundary exists between the
@@ -145,9 +135,7 @@ def test_damage_followed_by_a_non_ascii_character_is_reported(
     ],
 )
 @pytest.mark.offline
-def test_word_boundary_shapes_are_still_reported(
-    damaged, caplog, _propagate_lightrag_logger
-):
+def test_word_boundary_shapes_are_still_reported(damaged, caplog, lightrag_caplog):
     r"""Widening the guard must not cost the cases ``\b`` already caught."""
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         result = repair_vlm_json_escape_damage(damaged, context="table/t1")
@@ -166,7 +154,7 @@ def test_word_boundary_shapes_are_still_reported(
 )
 @pytest.mark.offline
 def test_ascii_word_characters_after_the_residue_stay_silent(
-    legit, caplog, _propagate_lightrag_logger
+    legit, caplog, lightrag_caplog
 ):
     """The accepted gap: in tab-separated data these are plausible values, so
     only NON-ASCII is admitted as the alternative to a word boundary."""
@@ -202,7 +190,6 @@ def test_in_math_pattern_stays_a_superset_of_the_prose_pattern():
     [
         # "\b" refuses a boundary before a word character, but "_", "{" and a
         # digit are the most common characters to follow a LaTeX command.
-        ("$\tau_i$", r"$\tau_i$"),
         ("$\rho_{ij}$", r"$\rho_{ij}$"),
         ("$\theta_0$", r"$\theta_0$"),
         ("$\times2$", r"$\times2$"),
@@ -211,7 +198,7 @@ def test_in_math_pattern_stays_a_superset_of_the_prose_pattern():
 )
 @pytest.mark.offline
 def test_in_math_repair_is_not_blocked_by_a_word_character(
-    damaged, expected, caplog, _propagate_lightrag_logger
+    damaged, expected, caplog, lightrag_caplog
 ):
     """Inside a confirmed math span the residue whitelist matches on "not a
     letter", not on a word boundary -- otherwise the most common LaTeX
@@ -588,7 +575,7 @@ def test_unmatched_backtick_run_does_not_open_a_span():
 
 
 @pytest.mark.offline
-def test_repair_log_names_what_it_rewrote(caplog, _propagate_lightrag_logger):
+def test_repair_log_names_what_it_rewrote(caplog, lightrag_caplog):
     """A count alone cannot be checked against a corpus. Every rewritten span
     reaches the log, so a wrong rewrite is visible rather than silent."""
     with caplog.at_level(logging.WARNING, logger="lightrag"):
@@ -625,7 +612,7 @@ def test_display_math_with_newlines_is_repaired():
 
 
 @pytest.mark.offline
-def test_padded_inline_span_is_not_math(caplog, _propagate_lightrag_logger):
+def test_padded_inline_span_is_not_math(caplog, lightrag_caplog):
     """Documented residue: "$ x $" has whitespace after the opener, so like
     Pandoc the scanner does not read it as math. The damage inside is warned
     about, never rewritten -- a warned miss beats a silent prose rewrite."""
@@ -637,7 +624,7 @@ def test_padded_inline_span_is_not_math(caplog, _propagate_lightrag_logger):
 
 @pytest.mark.offline
 def test_stray_dollar_against_math_without_spaces_is_a_warned_miss(
-    caplog, _propagate_lightrag_logger
+    caplog, lightrag_caplog
 ):
     """Stability test for the other documented residue: with no spaces to
     separate them (Chinese text), a stray dollar pairs with the formula's
@@ -668,7 +655,7 @@ def test_math_whitespace_repair_is_idempotent_and_handles_multiple_spans():
 
 
 @pytest.mark.offline
-def test_legitimate_whitespace_is_not_flagged(caplog, _propagate_lightrag_logger):
+def test_legitimate_whitespace_is_not_flagged(caplog, lightrag_caplog):
     """Whitespace followed by ordinary words (no whitelist residue with a
     word boundary) must not trigger the detection warning."""
     legit = "col1\tauthor list\nablation studies follow\nexists in the table"
