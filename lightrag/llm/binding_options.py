@@ -11,7 +11,12 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, ClassVar, List, Literal, Union, get_args, get_origin
 
-from lightrag.utils import ENV_BOOL_FALSE_WORDS, ENV_BOOL_TRUE_WORDS, get_env_value
+from lightrag.utils import (
+    ENV_BOOL_FALSE_WORDS,
+    ENV_BOOL_TRUE_WORDS,
+    get_env_value,
+    logger,
+)
 from lightrag.constants import DEFAULT_TEMPERATURE
 
 # Spellings accepted for boolean-valued options, shared with get_env_value so
@@ -19,8 +24,38 @@ from lightrag.constants import DEFAULT_TEMPERATURE
 _BOOL_TRUE_WORDS = ENV_BOOL_TRUE_WORDS
 _BOOL_FALSE_WORDS = ENV_BOOL_FALSE_WORDS
 
-# Marks "the env value was unusable" for paths that must leave a field unset.
-_UNSET = object()
+
+class _Unset:
+    """Marks "the env value was unusable" for paths that must leave a field unset.
+
+    Passed to ``get_env_value`` as the default, so its repr is what the
+    operator reads in the "using default ..." warning.
+    """
+
+    def __repr__(self) -> str:
+        return "<not set: base option or provider default>"
+
+
+_UNSET = _Unset()
+
+
+def _parse_role_json(env_name: str, raw: str, field_type: Any) -> Any:
+    """Parse a JSON role override, or warn and return ``_UNSET``."""
+    expected = dict if field_type is dict else list
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = _UNSET
+    if isinstance(parsed, expected):
+        return parsed
+    logger.warning(
+        "Environment variable %s=%r is not a valid JSON %s, using default %r",
+        env_name,
+        raw,
+        "object" if expected is dict else "array",
+        _UNSET,
+    )
+    return _UNSET
 
 
 def _resolve_optional_type(field_type: Any) -> Any:
@@ -473,12 +508,11 @@ class BindingOptions:
 
             field_type = _resolve_optional_type(arg_item["type"])
 
-            # Handled ahead of (and outside) the try below on purpose: that
-            # except clause turns a failed conversion into "store the raw
-            # string", which for a bool-or-literal option would smuggle e.g.
-            # "hgih" into the provider payload and fail at request time instead
-            # of here. ArgumentTypeError is not caught by it either way; the
-            # placement makes the intent explicit rather than incidental.
+            # A typed value that does not parse must never reach the provider
+            # payload as its raw string, where it would fail at request time
+            # far from the config. A bool-or-literal option raises (as its CLI
+            # flag does); every other typed option warns and stays unset, so
+            # the base option or the provider default applies.
             literal_choices = _bool_or_literal_choices(field_type)
             if literal_choices is not None:
                 base[field_name] = _make_bool_or_literal_parser(
@@ -486,26 +520,14 @@ class BindingOptions:
                 )(env_raw)
                 continue
 
-            try:
-                if field_type is bool:
-                    # get_env_value warns on a typo; leave the field unset
-                    # rather than silently reading it as False.
-                    parsed = get_env_value(role_env, _UNSET, bool)
-                    if parsed is _UNSET:
-                        continue
-                    base[field_name] = parsed
-                elif field_type in (list, List[str]):
-                    base[field_name] = json.loads(env_raw)
-                elif field_type is dict:
-                    base[field_name] = json.loads(env_raw)
-                elif field_type is int:
-                    base[field_name] = int(env_raw)
-                elif field_type is float:
-                    base[field_name] = float(env_raw)
-                else:
-                    base[field_name] = env_raw
-            except (ValueError, json.JSONDecodeError):
-                base[field_name] = env_raw
+            if field_type in (bool, int, float):
+                parsed = get_env_value(role_env, _UNSET, field_type)
+            elif field_type in (list, List[str], dict):
+                parsed = _parse_role_json(role_env, env_raw, field_type)
+            else:
+                parsed = env_raw
+            if parsed is not _UNSET:
+                base[field_name] = parsed
 
         return base
 
