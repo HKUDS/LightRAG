@@ -316,18 +316,19 @@ def test_oversized_chunk_is_encoded_only_once_for_the_full_content():
     assert underlying.full_content_encode_calls == 1
 
 
-def test_boundary_replacement_children_are_marked_unavailable_not_failed():
-    """A span recovered by stripping boundary U+FFFD is wider than the body
-    is not. Projecting children raises ChunkBlockMatchError; mark them
-    unavailable instead, and drop that marker before the chunk is stored."""
-    from lightrag.sidecar.backfill import backfill_chunk_sidecars
-    from lightrag.utils_pipeline import build_chunks_dict_from_chunking_result
-    import json
-    from pathlib import Path
-    import tempfile
-
-    source = "hello world this is a boundary chunk"
-    content = "\ufffd" + source
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Edge U+FFFD outside the span: not stripped to make the parent fit.
+        "\ufffdhello world this is a boundary chunk",
+        "\ufffdhello \ufffd world this is a boundary chunk\ufffd",
+    ],
+    ids=["edge", "edge-and-literal-interior"],
+)
+def test_replacement_parent_that_does_not_fit_its_span_raises(content: str):
+    """A parent whose content is its span text plus edge U+FFFD is a real
+    divergence like any other, not an artifact to degrade."""
+    source = content.strip("\ufffd")
     chunking_result = [
         {
             "content": content,
@@ -338,110 +339,14 @@ def test_boundary_replacement_children_are_marked_unavailable_not_failed():
         }
     ]
 
-    out = enforce_chunk_token_limit_before_embedding(
-        chunking_result,
-        _tok(),
-        max_tokens=5,
-        overlap_tokens=0,
-        source_content=source,
-    )
-
-    assert len(out) > 1
-    assert all(dp.get("_source_span_unavailable") is True for dp in out)
-    assert all("_source_span" not in dp for dp in out)
-    assert any("\ufffd" not in dp["content"] for dp in out)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "doc.blocks.jsonl"
-        path.write_text(
-            "\n".join(
-                [
-                    json.dumps(
-                        {"type": "meta", "format": "lightrag", "version": "1.0"}
-                    ),
-                    json.dumps(
-                        {
-                            "type": "content",
-                            "blockid": "b1",
-                            "content": source,
-                            "heading": "",
-                            "parent_headings": [],
-                            "level": 1,
-                        }
-                    ),
-                ]
-            )
-            + "\n",
-            encoding="utf-8",
+    with pytest.raises(ChunkBlockMatchError):
+        enforce_chunk_token_limit_before_embedding(
+            chunking_result,
+            _tok(),
+            max_tokens=5,
+            overlap_tokens=0,
+            source_content=source,
         )
-        backfill_chunk_sidecars(out, str(path))
-    assert all("sidecar" not in dp for dp in out)
-
-    stored = build_chunks_dict_from_chunking_result(
-        out, doc_id="doc", file_path="doc.txt"
-    )
-    assert stored
-    for record in stored.values():
-        assert "_source_span_unavailable" not in record
-        assert "_source_span" not in record
-
-
-def test_boundary_recovered_parent_with_literal_fffd_is_marked_not_raised():
-    """A source that itself contains U+FFFD, under a boundary-recovered span.
-
-    The parent's content minus its edge U+FFFD equals the source slice, so the
-    interior U+FFFD is the source's own character and the parent is a boundary
-    artifact like any other: mark the children, do not raise."""
-    source = "hello \ufffd world this is a boundary chunk"
-    content = "\ufffd" + source + "\ufffd"
-    chunking_result = [
-        {
-            "content": content,
-            "tokens": len(content),
-            "chunk_order_index": 0,
-            "chunk_id": "c0",
-            "_source_span": {"start": 0, "end": len(source)},
-        }
-    ]
-
-    out = enforce_chunk_token_limit_before_embedding(
-        chunking_result,
-        _tok(),
-        max_tokens=5,
-        overlap_tokens=0,
-        source_content=source,
-    )
-
-    assert len(out) > 1
-    assert all(dp.get("_source_span_unavailable") is True for dp in out)
-    assert all("_source_span" not in dp for dp in out)
-
-
-def test_spanless_replacement_parent_marks_clean_children_unavailable():
-    """Probe failure leaves no _source_span. Hard-split children that no
-    longer contain U+FFFD must still be marked, or backfill fails them."""
-    content = "abcdefghij\ufffdklmnopqrst"
-    chunking_result = [
-        {
-            "content": content,
-            "tokens": len(content),
-            "chunk_order_index": 0,
-            "chunk_id": "c0",
-        }
-    ]
-
-    out = enforce_chunk_token_limit_before_embedding(
-        chunking_result,
-        _tok(),
-        max_tokens=4,
-        overlap_tokens=0,
-        source_content=content.replace("\ufffd", ""),
-    )
-
-    assert len(out) > 1
-    assert any("\ufffd" not in dp["content"] for dp in out)
-    assert all(dp.get("_source_span_unavailable") is True for dp in out)
-    assert all("_source_span" not in dp for dp in out)
 
 
 def test_literal_replacement_divergence_still_raises():
@@ -468,8 +373,12 @@ def test_literal_replacement_divergence_still_raises():
         )
 
 
-def test_spanless_parent_without_replacement_is_not_marked_unavailable():
-    content = "abcdefghij"
+@pytest.mark.parametrize(
+    "content", ["abcdefghij", "abcdefghij\ufffdklmnopqrst"], ids=["plain", "fffd"]
+)
+def test_spanless_parent_children_carry_no_span_and_no_marker(content: str):
+    """A parent without a span gives its children none, and nothing else,
+    whatever its content holds: backfill then fails them loudly."""
     chunking_result = [
         {
             "content": content,
@@ -484,4 +393,7 @@ def test_spanless_parent_without_replacement_is_not_marked_unavailable():
     )
 
     assert len(out) > 1
-    assert all("_source_span_unavailable" not in dp for dp in out)
+    assert {key for dp in out for key in dp} == {
+        "content", "tokens", "chunk_order_index", "chunk_id",
+        "split_type", "split_part", "split_total",
+    }  # fmt: skip
