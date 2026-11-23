@@ -361,6 +361,8 @@ async def _ollama_model_if_cache(
     host = _coerce_host_for_cloud_model(host, model)
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
+    # This function closes the client on every exit except a successful stream
+    # setup, which hands it to inner(): that generator's finally closes it.
     stream_owns_client = False
     try:
         messages = []
@@ -486,11 +488,9 @@ async def _ollama_model_if_cache(
         if not stream_owns_client:
             try:
                 await ollama_client._client.aclose()
-                logger.debug("Successfully closed Ollama client before stream handoff")
+                logger.debug("Successfully closed Ollama client")
             except Exception as close_error:
-                logger.warning(
-                    f"Failed to close Ollama client in finally block: {close_error}"
-                )
+                logger.warning(f"Failed to close Ollama client: {close_error}")
 
 
 async def ollama_model_complete(
