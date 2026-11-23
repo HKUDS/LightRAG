@@ -152,10 +152,12 @@ class SnapshotSource:
 
     ``concurrency`` bounds parallel vector targets (1-3); batches stay sequential.
     """
+
     uri: str
     tag: str
     batch_size: int = DEFAULT_BATCH_SIZE
     concurrency: int = 3
+
 
 # Cap for listing missing items in the consistency report
 MAX_REPORTED_MISSING = 20
@@ -943,7 +945,9 @@ async def check_vdb_consistency(
 class RebuildTool:
     """Interactive CLI for the offline VDB rebuild."""
 
-    def __init__(self, *, workspace: str | None = None, snapshot: SnapshotSource | None = None):
+    def __init__(
+        self, *, workspace: str | None = None, snapshot: SnapshotSource | None = None
+    ):
         self._workspace_override = workspace
         self.snapshot = snapshot
         # Hard gate: the stub counts every embed attempt BEFORE raising, so a
@@ -1045,10 +1049,13 @@ class RebuildTool:
 
     def _snapshot_embedding_stub(self) -> EmbeddingFunc:
         """Counted fail-loud stub; env dim/model name the configured space."""
+
         async def _never_embed(*_args, **_kwargs):
             self.snapshot_embed_calls += 1
-            raise RuntimeError("rebuild-from-snapshot must not call the embedding function; "
-                               "vectors come from the snapshot's embedding columns")
+            raise RuntimeError(
+                "rebuild-from-snapshot must not call the embedding function; "
+                "vectors come from the snapshot's embedding columns"
+            )
 
         return EmbeddingFunc(
             embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
@@ -1181,7 +1188,9 @@ class RebuildTool:
                 self.embedding_func = EmbeddingFunc(
                     embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
                     func=_no_embedding,
-                    model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True),
+                    model_name=get_env_value(
+                        "EMBEDDING_MODEL", None, special_none=True
+                    ),
                 )
 
         self.global_config = self.build_global_config()
@@ -1227,8 +1236,10 @@ class RebuildTool:
         )
         if self.snapshot is not None:
             self.full_docs = kv_cls(
-                namespace=NameSpace.KV_STORE_FULL_DOCS, workspace=self.workspace,
-                global_config=self.global_config, embedding_func=self.embedding_func,
+                namespace=NameSpace.KV_STORE_FULL_DOCS,
+                workspace=self.workspace,
+                global_config=self.global_config,
+                embedding_func=self.embedding_func,
             )
         self.configuration_storage = create_configuration_storage(
             config_cls,
@@ -1894,38 +1905,60 @@ class RebuildTool:
         recovery as a normal rebuild before the restore drops them.
         """
         from lightrag.kg.lancedb_impl import storage_options_from_env
-        from lightrag.tools.snapshot_restore import open_snapshot, restore_workspace_snapshot
+        from lightrag.tools.snapshot_restore import (
+            open_snapshot,
+            restore_workspace_snapshot,
+        )
 
         snap = self.snapshot
         # dest selects the credential dialect: s3:// needs aws_* keys, oss://
         # the native OSS keys; calling without it returns the wrong dialect.
-        options = storage_options_from_env(snap.uri) if snap.uri.startswith(("s3://", "oss://")) else None
-        tables = open_snapshot(snap.uri, snap.tag,
-                               dim=self.embedding_func.embedding_dim,
-                               model_name=self.embedding_func.model_name,
-                               storage_options=options)
+        options = (
+            storage_options_from_env(snap.uri)
+            if snap.uri.startswith(("s3://", "oss://"))
+            else None
+        )
+        tables = open_snapshot(
+            snap.uri,
+            snap.tag,
+            dim=self.embedding_func.embedding_dim,
+            model_name=self.embedding_func.model_name,
+            storage_options=options,
+        )
         print(f"\nSnapshot: {snap.uri} (tag {snap.tag!r})")
         for name, table in tables.items():
             print(f"  {name}: {table.count_rows():,} rows")
-        print("\nVectors are restored WITHOUT re-embedding; vector storages are dropped")
-        print("and rewritten, KV/graph overwritten; doc_status and LLM cache stay empty")
+        print(
+            "\nVectors are restored WITHOUT re-embedding; vector storages are dropped"
+        )
+        print(
+            "and rewritten, KV/graph overwritten; doc_status and LLM cache stay empty"
+        )
         print("(README_REBUILD_VDB.md).")
         if self.corrupt_vdbs:
             print("Corrupt vector files will be backed up before they are dropped.")
-        confirm = input("\nProceed with the snapshot restore? (yes/no): ").strip().lower()
+        confirm = (
+            input("\nProceed with the snapshot restore? (yes/no): ").strip().lower()
+        )
         if confirm != "yes":
             print("\n✓ Restore cancelled")
             return True
         rag = SimpleNamespace(
-            full_docs=self.full_docs, text_chunks=self.text_chunks,
-            chunk_entity_relation_graph=self.graph, entities_vdb=self.entities_vdb,
-            relationships_vdb=self.relationships_vdb, chunks_vdb=self.chunks_vdb,
+            full_docs=self.full_docs,
+            text_chunks=self.text_chunks,
+            chunk_entity_relation_graph=self.graph,
+            entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            chunks_vdb=self.chunks_vdb,
             embedding_func=self.embedding_func,
         )
         start = time.time()
         stats = await restore_workspace_snapshot(
-            tables, rag, self.global_config,
-            batch_size=snap.batch_size, concurrency=snap.concurrency,
+            tables,
+            rag,
+            self.global_config,
+            batch_size=snap.batch_size,
+            concurrency=snap.concurrency,
             # Same backup/recovery flow as a normal rebuild: a corrupt or
             # refused container is preserved before the restore drops it.
             before_drop=lambda label: self.recover_incompatible([label]),
@@ -2048,7 +2081,9 @@ class RebuildTool:
             self.release_anchor_lock()
 
 
-async def async_main(*, workspace: str | None = None, snapshot: SnapshotSource | None = None) -> bool:
+async def async_main(
+    *, workspace: str | None = None, snapshot: SnapshotSource | None = None
+) -> bool:
     """Async main entry point. Returns True on success, False on failure."""
     tool = RebuildTool(workspace=workspace, snapshot=snapshot)
     return await tool.run()
@@ -2084,25 +2119,46 @@ def main(argv: list[str] | None = None):
         "for the default workspace. If omitted, WORKSPACE is normalized as by the server.",
     )
     parser.add_argument(
-        "--from-snapshot", default=None, metavar="URI",
+        "--from-snapshot",
+        default=None,
+        metavar="URI",
         help="Restore from a tagged Lance cold snapshot (local dir or s3:// URI); requires --tag, zero re-embedding.",
     )
-    parser.add_argument("--tag", default=None,
-                        help="Immutable snapshot tag to restore (required with --from-snapshot).")
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help=f"Rows per restore batch (snapshot mode only; default {DEFAULT_BATCH_SIZE}).")
-    parser.add_argument("--concurrency", type=int, default=None,
-                        help="Vector targets restored in parallel, 1-3 (snapshot mode only; default 3).")
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Immutable snapshot tag to restore (required with --from-snapshot).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=f"Rows per restore batch (snapshot mode only; default {DEFAULT_BATCH_SIZE}).",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="Vector targets restored in parallel, 1-3 (snapshot mode only; default 3).",
+    )
     args = parser.parse_args(argv)
     snapshot = None
     if args.from_snapshot is not None:
         if not args.tag:
             parser.error("--from-snapshot requires --tag")
         snapshot = SnapshotSource(
-            uri=args.from_snapshot, tag=args.tag,
-            batch_size=args.batch_size if args.batch_size is not None else DEFAULT_BATCH_SIZE,
-            concurrency=args.concurrency if args.concurrency is not None else 3)
-    elif args.tag is not None or args.batch_size is not None or args.concurrency is not None:
+            uri=args.from_snapshot,
+            tag=args.tag,
+            batch_size=args.batch_size
+            if args.batch_size is not None
+            else DEFAULT_BATCH_SIZE,
+            concurrency=args.concurrency if args.concurrency is not None else 3,
+        )
+    elif (
+        args.tag is not None
+        or args.batch_size is not None
+        or args.concurrency is not None
+    ):
         parser.error("--tag/--batch-size/--concurrency require --from-snapshot")
     # Load environment and configure logging only when run as a tool, never on import.
     load_dotenv(dotenv_path=".env", override=False)

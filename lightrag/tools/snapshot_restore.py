@@ -70,7 +70,11 @@ class RestoreError(RuntimeError):
 
 
 def open_snapshot(
-    dest: str, tag: str, *, dim: int, model_name: str | None = None,
+    dest: str,
+    tag: str,
+    *,
+    dim: int,
+    model_name: str | None = None,
     storage_options: dict[str, str] | None = None,
 ) -> dict[str, LanceTable]:
     """Open the four snapshot tables checked out at ``tag``, fully validated.
@@ -100,10 +104,14 @@ def open_snapshot(
     for name, null_filter in _NULL_VECTOR_FILTERS.items():
         field = tables[name].schema.field("embedding").type
         if field.list_size != dim:
-            raise RestoreError(f"snapshot table {name!r} stores dimension {field.list_size}, configured embedding dimension is {dim}")
+            raise RestoreError(
+                f"snapshot table {name!r} stores dimension {field.list_size}, configured embedding dimension is {dim}"
+            )
         missing = tables[name].count_rows(filter=null_filter)
         if missing:
-            raise RestoreError(f"snapshot table {name!r} has {missing} vector-eligible row(s) without a stored vector at tag {tag!r}")
+            raise RestoreError(
+                f"snapshot table {name!r} has {missing} vector-eligible row(s) without a stored vector at tag {tag!r}"
+            )
     for name, table in tables.items():
         recorded = (table.schema.metadata or {}).get(_EMBEDDING_MODEL_KEY, b"").decode()
         if recorded and model_name and recorded != model_name:
@@ -124,30 +132,63 @@ def open_snapshot(
 def _pages(table: LanceTable, batch_size: int) -> Iterator[list[dict[str, Any]]]:
     """Row pages of a checked-out (immutable) table, bounded by batch_size."""
     for start in range(0, table.count_rows(), batch_size):
-        yield table.take_offsets(list(range(start, start + batch_size))).to_arrow().to_pylist()
+        yield (
+            table.take_offsets(list(range(start, start + batch_size)))
+            .to_arrow()
+            .to_pylist()
+        )
 
 
-def _entity_payload(row: dict[str, Any], global_config: dict[str, Any]) -> dict[str, Any]:
+def _entity_payload(
+    row: dict[str, Any], global_config: dict[str, Any]
+) -> dict[str, Any]:
     name = row["entity_name"]
-    content = _truncate_vdb_content(f"{name}\n{row['description']}", global_config, f"entity:{name}")
-    return {"entity_name": name, "content": content,
-            **{key: row[key] for key in ("entity_type", "description", "source_id", "file_path")}}
+    content = _truncate_vdb_content(
+        f"{name}\n{row['description']}", global_config, f"entity:{name}"
+    )
+    return {
+        "entity_name": name,
+        "content": content,
+        **{
+            key: row[key]
+            for key in ("entity_type", "description", "source_id", "file_path")
+        },
+    }
 
 
-def _relation_payload(row: dict[str, Any], global_config: dict[str, Any]) -> dict[str, Any]:
+def _relation_payload(
+    row: dict[str, Any], global_config: dict[str, Any]
+) -> dict[str, Any]:
     src, tgt = row["src_id"], row["tgt_id"]
-    content = _truncate_vdb_content(f"{row['keywords']}\t{src}\n{tgt}\n{row['description']}", global_config, f"relationship:{src}-{tgt}")
-    return {"src_id": src, "tgt_id": tgt, "content": content,
-            **{key: row[key] for key in ("keywords", "description", "source_id", "weight", "file_path")}}
+    content = _truncate_vdb_content(
+        f"{row['keywords']}\t{src}\n{tgt}\n{row['description']}",
+        global_config,
+        f"relationship:{src}-{tgt}",
+    )
+    return {
+        "src_id": src,
+        "tgt_id": tgt,
+        "content": content,
+        **{
+            key: row[key]
+            for key in ("keywords", "description", "source_id", "weight", "file_path")
+        },
+    }
 
 
-def _chunk_payload(row: dict[str, Any], global_config: dict[str, Any]) -> dict[str, Any]:
+def _chunk_payload(
+    row: dict[str, Any], global_config: dict[str, Any]
+) -> dict[str, Any]:
     return {key: row[key] for key in _CHUNK_KEYS}
 
 
 async def restore_workspace_snapshot(
-    tables: dict[str, LanceTable], rag: LightRAG, global_config: dict[str, Any], *,
-    batch_size: int = 500, concurrency: int = 3,
+    tables: dict[str, LanceTable],
+    rag: LightRAG,
+    global_config: dict[str, Any],
+    *,
+    batch_size: int = 500,
+    concurrency: int = 3,
     before_drop: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Restore sources + the three vector targets; returns per-target stats.
@@ -159,55 +200,89 @@ async def restore_workspace_snapshot(
     is swallowed.
     """
     graph = rag.chunk_entity_relation_graph
-    storages = (rag.full_docs, rag.text_chunks, graph, rag.entities_vdb, rag.relationships_vdb, rag.chunks_vdb)
+    storages = (
+        rag.full_docs,
+        rag.text_chunks,
+        graph,
+        rag.entities_vdb,
+        rag.relationships_vdb,
+        rag.chunks_vdb,
+    )
     if any(storage is None for storage in storages):
-        raise RestoreError("target storages are missing; call await rag.initialize_storages() first")
+        raise RestoreError(
+            "target storages are missing; call await rag.initialize_storages() first"
+        )
     if batch_size < 1:
         raise RestoreError(f"batch_size must be >= 1, got {batch_size}")
     if concurrency < 1:
         raise RestoreError(f"concurrency must be >= 1, got {concurrency}")
     for vdb in (rag.entities_vdb, rag.relationships_vdb, rag.chunks_vdb):
-        if not getattr(vdb, "persists_vectors", True) or not isinstance(vdb, NanoVectorDBStorage):
-            raise StorageCapabilityError(f"{type(vdb).__name__} cannot restore precomputed vectors; snapshot restore supports NanoVectorDBStorage targets")
+        if not getattr(vdb, "persists_vectors", True) or not isinstance(
+            vdb, NanoVectorDBStorage
+        ):
+            raise StorageCapabilityError(
+                f"{type(vdb).__name__} cannot restore precomputed vectors; snapshot restore supports NanoVectorDBStorage targets"
+            )
 
     for rows in _pages(tables["docs"], batch_size):
         await rag.full_docs.upsert({r["id"]: {"content": r["content"]} for r in rows})
     for rows in _pages(tables["chunks"], batch_size):
-        await rag.text_chunks.upsert({r["id"]: _chunk_payload(r, global_config) for r in rows})
+        await rag.text_chunks.upsert(
+            {r["id"]: _chunk_payload(r, global_config) for r in rows}
+        )
     for rows in _pages(tables["entities"], batch_size):
-        await graph.upsert_nodes_batch([(r["entity_name"], {k: r[k] for k in _NODE_KEYS}) for r in rows])
+        await graph.upsert_nodes_batch(
+            [(r["entity_name"], {k: r[k] for k in _NODE_KEYS}) for r in rows]
+        )
     for rows in _pages(tables["relations"], batch_size):
-        await graph.upsert_edges_batch([(r["src_id"], r["tgt_id"], {k: r[k] for k in _EDGE_KEYS}) for r in rows])
+        await graph.upsert_edges_batch(
+            [(r["src_id"], r["tgt_id"], {k: r[k] for k in _EDGE_KEYS}) for r in rows]
+        )
     for storage in (rag.full_docs, rag.text_chunks, graph):
         await storage.index_done_callback()
 
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def restore_target(label: str, vdb: NanoVectorDBStorage, table: LanceTable,
-                             build_payload) -> dict[str, Any]:
+    async def restore_target(
+        label: str, vdb: NanoVectorDBStorage, table: LanceTable, build_payload
+    ) -> dict[str, Any]:
         async with semaphore:
             stats = _new_stats(label, table.count_rows())
             if before_drop is not None:
                 await before_drop(label)
             await _drop_vdb(vdb, label)
             for rows in _pages(table, batch_size):
-                vectors = {r["id"]: r["embedding"] for r in rows if r["embedding"] is not None}
+                vectors = {
+                    r["id"]: r["embedding"] for r in rows if r["embedding"] is not None
+                }
                 stats["skipped"] += len(rows) - len(vectors)
                 if not vectors:
                     continue
-                await vdb.upsert({r["id"]: build_payload(r, global_config)
-                                  for r in rows if r["embedding"] is not None})
+                await vdb.upsert(
+                    {
+                        r["id"]: build_payload(r, global_config)
+                        for r in rows
+                        if r["embedding"] is not None
+                    }
+                )
                 # The deferred-embedding protocol's vector cache: a pending doc
                 # whose vector is already set is materialized without embedding.
                 for rid, vector in vectors.items():
-                    vdb._pending_upserts[rid].vector = np.asarray(vector, dtype=np.float32)
+                    vdb._pending_upserts[rid].vector = np.asarray(
+                        vector, dtype=np.float32
+                    )
                 await vdb.index_done_callback()
                 stats["rebuilt"] += len(vectors)
             return stats
 
     targets = (
         ("entities", rag.entities_vdb, tables["entities"], _entity_payload),
-        ("relationships", rag.relationships_vdb, tables["relations"], _relation_payload),
+        (
+            "relationships",
+            rag.relationships_vdb,
+            tables["relations"],
+            _relation_payload,
+        ),
         ("chunks", rag.chunks_vdb, tables["chunks"], _chunk_payload),
     )
     # TaskGroup, not gather: a failing target cancels and awaits its siblings,
@@ -215,5 +290,8 @@ async def restore_workspace_snapshot(
     async with asyncio.TaskGroup() as tg:
         tasks = [tg.create_task(restore_target(*target)) for target in targets]
     stats = dict(zip((t[0] for t in targets), (task.result() for task in tasks)))
-    logger.info("Snapshot restore complete: " + ", ".join(f"{label}={s['rebuilt']} vectors" for label, s in stats.items()))
+    logger.info(
+        "Snapshot restore complete: "
+        + ", ".join(f"{label}={s['rebuilt']} vectors" for label, s in stats.items())
+    )
     return stats
