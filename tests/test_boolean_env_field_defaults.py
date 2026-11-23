@@ -69,3 +69,32 @@ print(json.dumps({"rerank": QueryParam().enable_rerank, "json_extraction": json_
         "json_extraction": expected_json,
     }
     assert f"WARNING: Environment variable {warn_key}='ture'" in result.stderr
+
+
+@pytest.mark.parametrize("alias", [" ON ", "1"])
+def test_utils_boolean_env_aliases(alias: str) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import lightrag.utils as utils
+
+print(json.dumps({"verbose": utils.VERBOSE_DEBUG, "timing": utils.PERFORMANCE_TIMING_LOGS}))
+""",
+        ],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "PYTHON_DOTENV_DISABLED": "1",
+            "VERBOSE": alias,
+            "LIGHTRAG_PERFORMANCE_TIMING_LOGS": alias,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert json.loads(result.stdout) == {"verbose": True, "timing": True}
