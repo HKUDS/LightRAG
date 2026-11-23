@@ -4541,8 +4541,9 @@ class TestVectorStorage:
             mock_client.indices.get_mapping.reset_mock()
 
             await s.query("test", top_k=5)
-            # A confirmed miss from the index reads as None.
+            # A confirmed miss from the index reads as None, through mget only.
             assert await s.get_by_id("v1") is None
+            mock_client.get.assert_not_awaited()
             await s.get_vectors_by_ids(["v1"])
 
             mock_client.indices.get_mapping.assert_not_awaited()
