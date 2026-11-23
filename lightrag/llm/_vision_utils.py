@@ -12,10 +12,10 @@ element may be:
 
 A declared MIME type (from a data URL or the dict's ``mime_type``) is
 lowercased, as MIME types are case-insensitive while provider APIs and the
-cache key expect the canonical lowercase form. A declared type that is a
-known non-standard alias (``image/jpg``) is further canonicalized
-(``image/jpeg``), since the Anthropic and Bedrock bindings pass the type
-straight into a provider enum that rejects the alias.
+cache key expect the canonical lowercase form. A known non-standard alias
+(``image/jpg``) is then mapped to its canonical type (``image/jpeg``): the
+Anthropic and Bedrock bindings pass the type into provider enums that reject
+the alias.
 
 The provider-specific binding code converts the normalized result to its own
 content-block format. The VLM pipeline uses :func:`image_cache_metadata` for
@@ -89,13 +89,7 @@ def _detect_mime(raw: bytes) -> str:
     return "image/png"
 
 
-# Non-standard MIME aliases that real-world callers declare (via a data URL
-# or the dict's mime_type) mapped to the canonical IANA type. "image/jpg" is
-# produced by extension-based guessers and some browsers/tools, but it is
-# not one of the four types Anthropic's media_type and Bedrock's
-# image.format enums accept, so a declared alias must be canonicalized the
-# same way :func:`_detect_mime`'s sniffing already always yields the
-# canonical form.
+# Declared non-standard aliases -> canonical type (see the module docstring).
 _MIME_ALIASES = {
     "image/jpg": "image/jpeg",
 }
