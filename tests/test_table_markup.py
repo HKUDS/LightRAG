@@ -14,9 +14,12 @@ import pytest
 
 from lightrag.table_markup import (
     TABLE_TAG_RE,
+    detect_table_format,
     dumps_json_table_body,
     escape_json_table_body,
+    extract_table_id,
     parse_table_tag,
+    split_html_rows,
 )
 
 pytestmark = pytest.mark.offline
@@ -154,3 +157,49 @@ def test_cell_markup_does_not_capture_a_later_real_tag() -> None:
     assert equation_line == '<equation format="latex">y</equation>'
     assert cite_line == "see Table 2"
     assert parse_table_tag(table_line) == ('format="json"', rows)
+
+
+def test_detect_table_format_explicit_attr() -> None:
+    assert detect_table_format('id="t1" format="json"', "[]") == "json"
+    assert detect_table_format("format='html'", "<tr></tr>") == "html"
+    # Unknown formats fall through (force the caller to use char fallback).
+    assert detect_table_format('format="markdown"', "...") is None
+
+
+def test_detect_table_format_sniff_when_attrs_silent() -> None:
+    assert detect_table_format("", '[{"a":1}]') == "json"
+    assert detect_table_format("", "<tr><td>x</td></tr>") == "html"
+    # Body that doesn't look like JSON or HTML → unknown.
+    assert detect_table_format("", "plain text rows") is None
+
+
+def test_split_html_rows_extracts_tr_elements() -> None:
+    body = (
+        "<thead><tr><th>h</th></tr></thead>"
+        "<tbody><tr><td>a</td></tr><tr><td>b</td></tr></tbody>"
+    )
+    rows = split_html_rows(body)
+    assert rows is not None
+    assert len(rows) == 3
+    # Each row carries its parent wrapper so the chunk serialiser can
+    # rebuild <thead>/<tbody> instead of dropping them silently.
+    assert [w for w, _ in rows] == ["thead", "tbody", "tbody"]
+    assert all(tr.startswith("<tr") and tr.endswith("</tr>") for _, tr in rows)
+
+
+def test_split_html_rows_no_tr_returns_none() -> None:
+    assert split_html_rows("just text, no rows") is None
+    assert split_html_rows("") is None
+
+
+def test_extract_table_id_variants() -> None:
+    assert extract_table_id('id="tb-1" format="json"') == "tb-1"
+    assert extract_table_id("format='html' id='tb-h'") == "tb-h"
+    assert extract_table_id('format="json"') is None
+    assert extract_table_id("") is None
+    # ``id`` that is only the tail of another attribute name must not match —
+    # neither a hyphen-joined one (``data-id``) nor a word-char prefix
+    # (``grid``); a standalone ``id`` alongside such an attribute still wins.
+    assert extract_table_id('data-id="x"') is None
+    assert extract_table_id('grid="y"') is None
+    assert extract_table_id('data-id="x" id="tb-9"') == "tb-9"
