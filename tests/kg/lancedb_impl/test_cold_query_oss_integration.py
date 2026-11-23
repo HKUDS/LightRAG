@@ -13,8 +13,9 @@ The export uses ``batch_size=500`` on purpose: DuckDB's bundled Lance 2.0.1
 decoder panics on a fragment that holds exactly one row, and N1's default test
 batch of 2 leaves such a fragment in the three-row chunks table. lancedb
 writes through the native oss:// provider; DuckDB reads the same objects
-through the S3 protocol (s3. endpoint, vhost style, STS SESSION_TOKEN), which
-``_s3_setup`` builds from the native storage options.
+through the S3 protocol: ``_s3_setup`` builds a TYPE LANCE secret with the
+bucket-prefixed s3. S3-compat endpoint, vhost style and STS SESSION_TOKEN
+(the bundled lance-io uses the endpoint host as-is).
 ``ColdQueryConfig.duckdb_setup`` is the override point if that is not enough.
 """
 

@@ -267,9 +267,15 @@ The shape and its constraints:
   with a batch size that leaves no single-row fragment. Both are accepted
   residues with a durable remedy below.
 - The extension is installed once (`INSTALL lance FROM core`); the job runs
-  `LOAD lance`. S3 destinations additionally need `httpfs` and a secret
-  built from `storage_options_from_env`. Missing table/tag, stale tag, wrong
-  dimension, non-finite query values or a failed execution raise
+  `LOAD lance`. S3/OSS destinations additionally need a `TYPE LANCE` secret
+  built from `storage_options_from_env` (the extension forwards it to Lance
+  as `storage_options`; a `TYPE S3` httpfs secret is NOT read by the lance
+  reader). For OSS the scan path is the `s3://` alias of the `oss://` lake
+  and the secret's endpoint is the bucket-prefixed S3-compat host
+  (`https://<bucket>.s3.oss-<region>-internal.aliyuncs.com`, vhost style,
+  STS `SESSION_TOKEN`): the bundled lance-io uses a custom endpoint host
+  as-is, so the bucket must already be prefixed. Missing table/tag, stale
+  tag, wrong dimension, non-finite query values or a failed execution raise
   `ColdQueryError` before any hit; a partial ranking is never returned.
 
 `lightrag/kg/lancedb_cold_recall.py` is the comparison harness: it takes
@@ -406,6 +412,17 @@ its rationale no longer holds.
    doc-status or config, and no correctness guarantee here depends on RTE.
    A doc-status role would require RTE to be non-experimental first; that is
    a future-wave precondition, not something this contract assumes.
+5. **DuckDB reading `oss://` through the extension's native OSS provider.**
+   Verified on real OSS (ECS, DuckDB 2.0.1 core lance extension, bundled
+   lance-io 12.0.0): the native provider fails at the first list with
+   `ConfigInvalid: call HttpTransporter::install_default before using HTTP
+   services` — the build never installs opendal's HTTP transport, so no
+   credential configuration can fix it. The working read path is the S3
+   protocol: scan the `s3://` alias with a `TYPE LANCE` secret whose endpoint
+   is the bucket-prefixed `s3.` S3-compat host (the bundled lance-io uses a
+   custom endpoint host as-is and does not prepend the bucket; an unprefixed
+   endpoint lists an empty `_versions/` and fails as "dataset not found").
+   Reopen only with a DuckDB build whose native OSS provider is fixed.
 
 ## Anchor map
 

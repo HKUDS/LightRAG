@@ -14,9 +14,8 @@ Caller rules:
   over the two columns the answer needs. A fragment with exactly one row still
   panics on DuckDB 1.4.4 (2.0.1 reads it), so export with a batch size that
   leaves no single-row fragment.
-- Install the extension once (``duckdb -c "INSTALL lance FROM core"``); the job
-  runs ``LOAD lance``. S3/OSS needs httpfs plus a secret from ``storage_options_from_env``;
-  DuckDB reads OSS via the S3 protocol (s3. endpoint, s3:// scan path).
+- Install the extension once (``duckdb -c "INSTALL lance FROM core"``); the job runs ``LOAD lance``.
+  S3/OSS needs a TYPE LANCE secret from ``storage_options_from_env`` (bucket-prefixed s3. endpoint).
 - Missing table/tag, stale tag, wrong dimension or non-finite values raise
   ``ColdQueryError`` before any hit.
 
@@ -129,26 +128,29 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _s3_setup(options: Mapping[str, str]) -> str:
+def _s3_setup(options: Mapping[str, str], dest: str) -> str:
     key = options.get("aws_access_key_id") or options.get("access_key_id")
     secret = options.get("aws_secret_access_key") or options.get("access_key_secret")
     if not key or not secret:
         return ""
+    bucket = dest.split("://", 1)[-1].split("/", 1)[0]
     raw = (options.get("aws_endpoint") or options.get("endpoint") or "").strip()
-    use_ssl = "false" if raw.startswith("http://") else "true"
-    endpoint = raw.removeprefix("https://").removeprefix("http://")
-    if options.get("access_key_id") and endpoint and not endpoint.startswith("s3."):
-        endpoint = f"s3.{endpoint}"  # DuckDB speaks S3; OSS S3-compat needs the s3. host
+    scheme = "http://" if raw.startswith("http://") else "https://"
+    host = raw.removeprefix("https://").removeprefix("http://")
+    if options.get("access_key_id") and host:
+        # The bundled lance-io uses a custom endpoint host as-is: OSS needs the s3. host with the bucket prefixed.
+        host = host if host.startswith("s3.") else f"s3.{host}"
+        host = host if host.startswith(f"{bucket}.") else f"{bucket}.{host}"
     token = options.get("aws_session_token") or options.get("security_token")
-    parts = [f"KEY_ID {_sql_literal(key)}", f"SECRET {_sql_literal(secret)}",
-             f"REGION {_sql_literal(options.get('aws_region') or options.get('region') or 'us-east-1')}",
-             "URL_STYLE 'vhost'", f"USE_SSL {use_ssl}"]
+    parts = ["PROVIDER config", f"SCOPE {_sql_literal('s3://' + bucket + '/')}", f"ACCESS_KEY_ID {_sql_literal(key)}",
+             f"SECRET_ACCESS_KEY {_sql_literal(secret)}", f"REGION {_sql_literal(options.get('aws_region') or options.get('region') or 'us-east-1')}",
+             "VIRTUAL_HOSTED_STYLE_REQUEST 'true'"]
     if token:
         parts.append(f"SESSION_TOKEN {_sql_literal(token)}")
-    if endpoint:
-        parts.append(f"ENDPOINT {_sql_literal(endpoint)}")
+    if host:
+        parts.append(f"ENDPOINT {_sql_literal(scheme + host)}")
     return ("INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET "
-            "(TYPE s3, " + ", ".join(parts) + ");")
+            "(TYPE LANCE, " + ", ".join(parts) + ");")
 
 
 def _build_sql(
@@ -223,7 +225,7 @@ def cold_search(
     _latest_tag_version(table, config)
     dim = _embedding_dim(table, config)
     values = _query_values(query_vector, dim)
-    setup = _s3_setup(config.storage_options or {}) if config.dest.startswith(("s3://", "oss://")) else ""
+    setup = _s3_setup(config.storage_options or {}, config.dest) if config.dest.startswith(("s3://", "oss://")) else ""
     rows = _query_rows(
         _duckdb_binary(config), _build_sql(config, values, dim, top_k, setup), config.timeout_s
     )
