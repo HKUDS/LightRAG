@@ -178,6 +178,9 @@ RETRY_ATTEMPTS = get_env_value("REDIS_RETRY_ATTEMPTS", 3, int)
 redis_retry = retry(
     stop=stop_after_attempt(RETRY_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=1, max=8),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so callers can still catch redis.exceptions.RedisError / ConnectionError
+    # and error messages carry Redis's text.
     reraise=True,
     retry=(
         retry_if_exception_type(ConnectionError)
