@@ -546,12 +546,13 @@ def _split_html_rows_by_tokens(
 
 
 # A ``<td>``/``<th>`` cell with its end tag, as the table writers emit it.
+# The attrs skip quoted values whole, so ``title="a > b"`` does not end the tag.
 _HTML_CELL_RE = re.compile(
-    r"<(?P<tag>td|th)\b(?P<attrs>[^>]*)>(?P<inner>.*?)</(?P=tag)\s*>",
+    r"""<(?P<tag>td|th)\b(?P<attrs>(?:[^>"']|"[^"]*"|'[^']*')*)>(?P<inner>.*?)</(?P=tag)\s*>""",
     re.DOTALL | re.IGNORECASE,
 )
 _HTML_TR_PARTS_RE = re.compile(
-    r"(?P<open><tr\b[^>]*>)(?P<inner>.*)(?P<close></tr\s*>)\s*\Z",
+    r"""(?P<open><tr\b(?:[^>"']|"[^"]*"|'[^']*')*>)(?P<inner>.*)(?P<close></tr\s*>)\s*\Z""",
     re.DOTALL | re.IGNORECASE,
 )
 # One attribute of a start tag, scanned left to right so a quoted value is

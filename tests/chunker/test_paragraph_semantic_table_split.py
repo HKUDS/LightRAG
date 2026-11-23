@@ -6,6 +6,7 @@ import logging
 import pytest
 
 from lightrag.chunker.paragraph_semantic import (
+    _HtmlRowspanSlicer,
     _detect_table_format,
     _expand_block_with_table_splits,
     _merge_small_blocks,
@@ -1608,3 +1609,18 @@ def test_rowspan_cells_are_local_to_each_slice(
     # The case really cuts through the span it names: a later slice opens on
     # a continuation row, which only a repeated spanned cell can complete.
     assert opens_on in [grid[0][: len(opens_on)] for grid in grids[1:]], pieces
+
+
+@pytest.mark.offline
+def test_rowspan_cell_with_quoted_gt_in_attribute_is_carried_whole():
+    rows = [
+        ("tbody", '<tr><td rowspan="3" title="a > b">L</td><td>x</td></tr>'),
+        ("tbody", "<tr><td>y</td></tr>"),
+        ("tbody", "<tr><td>z</td></tr>"),
+    ]
+    # The ``>`` inside the quoted title does not end the start tag, so the
+    # repeated label keeps its title and text and gets its new rowspan.
+    assert _HtmlRowspanSlicer(rows).slice(1, 3) == [
+        ("tbody", '<tr><td title="a > b" rowspan="2">L</td><td>y</td></tr>'),
+        ("tbody", "<tr><td>z</td></tr>"),
+    ]
