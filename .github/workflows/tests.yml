@@ -39,10 +39,16 @@ jobs:
       # nothing can fall between shards. To rebalance, move a directory
       # between variables (keep each SHARD_<name> in the matrix below);
       # per-shard durations are visible in the job timings. Measured split
-      # (serial test time): ~25% of the suite per shard.
-      SHARD_parser: tests/parser tests/chunker tests/utils
-      SHARD_pipeline: tests/pipeline tests/config_store tests/workspace
+      # (serial test time on 3.14, the slowest interpreter, from the -v
+      # timestamps): tests/parser ~47 s and tests/pipeline ~45 s are the two
+      # largest directories and get a shard each; api+llm ~47 s,
+      # kg+utils+chunker ~42 s, rest ~39 s. Each job adds ~10-20 s of
+      # collection on top. A sixth shard would split tests/parser itself and
+      # bring a push to 18 backend jobs, near the hosted concurrency limit.
+      SHARD_parser: tests/parser
+      SHARD_pipeline: tests/pipeline
       SHARD_api_llm: tests/api tests/llm
+      SHARD_kg: tests/kg tests/utils tests/chunker
 
     strategy:
       # Let every shard finish, so one failure shows all failing shards.
@@ -54,7 +60,7 @@ jobs:
         # interpreter), so a change that breaks only one of them is caught
         # right after it merges.
         python-version: ${{ fromJSON(github.event_name == 'push' && '["3.11", "3.12", "3.14"]' || '["3.12"]') }}
-        shard: [parser, pipeline, api_llm, rest]
+        shard: [parser, pipeline, api_llm, kg, rest]
 
     steps:
     - uses: actions/checkout@v7
@@ -108,7 +114,7 @@ jobs:
       run: |
         if [ "$SHARD" = rest ]; then
           args="tests/"
-          for dir in $SHARD_parser $SHARD_pipeline $SHARD_api_llm; do
+          for dir in $SHARD_parser $SHARD_pipeline $SHARD_api_llm $SHARD_kg; do
             args="$args --ignore=$dir"
           done
         else
