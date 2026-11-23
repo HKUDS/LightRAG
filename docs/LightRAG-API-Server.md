@@ -262,7 +262,7 @@ Using Docker Compose is the most convenient way to deploy and run the LightRAG S
 
 - Create a project directory.
 - Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
-- Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
+- Prepare the `.env` file: Duplicate the sample file [`env.example`](../env.example) to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
 - Start the LightRAG Server with the following command:
 
 ```shell

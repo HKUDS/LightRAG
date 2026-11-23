@@ -262,7 +262,7 @@ lightrag-server --port 9621
 
 - 创建一个项目目录。
 - 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
-- 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
+- 准备 `.env` 文件：复制示例文件 [`env.example`](../env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
 - 通过以下命令启动 LightRAG 服务器：
 
 ```shell
