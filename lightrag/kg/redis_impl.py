@@ -178,6 +178,7 @@ RETRY_ATTEMPTS = get_env_value("REDIS_RETRY_ATTEMPTS", 3, int)
 redis_retry = retry(
     stop=stop_after_attempt(RETRY_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=1, max=8),
+    reraise=True,
     retry=(
         retry_if_exception_type(ConnectionError)
         | retry_if_exception_type(TimeoutError)
