@@ -7460,6 +7460,7 @@ class TokenTracker:
 
     def reset(self):
         self.prompt_tokens = 0
+        self.cached_prompt_tokens: int | None = None
         self.completion_tokens = 0
         self.total_tokens = 0
         self.call_count = 0
@@ -7481,24 +7482,33 @@ class TokenTracker:
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
         self.call_count += 1
+        cached_tokens = token_counts.get("cached_prompt_tokens")
+        if cached_tokens is not None:
+            self.cached_prompt_tokens = (self.cached_prompt_tokens or 0) + cached_tokens
 
     def get_usage(self):
         """Get current usage statistics."""
-        return {
+        usage = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "call_count": self.call_count,
         }
+        if self.cached_prompt_tokens is not None:
+            usage["cached_prompt_tokens"] = self.cached_prompt_tokens
+        return usage
 
     def __str__(self):
         usage = self.get_usage()
-        return (
+        summary = (
             f"LLM call count: {usage['call_count']}, "
             f"Prompt tokens: {usage['prompt_tokens']}, "
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
+        if self.cached_prompt_tokens is not None:
+            summary += f", Cached prompt tokens: {self.cached_prompt_tokens}"
+        return summary
 
 
 async def apply_rerank_if_enabled(
