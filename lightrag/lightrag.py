@@ -1204,7 +1204,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     )
 
     entity_extraction_use_json: bool = field(
-        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "false").lower() == "true"
+        default=get_env_value("ENTITY_EXTRACTION_USE_JSON", False, bool)
     )
     """When True, entity extraction uses JSON structured output instead of delimiter-based text.
     JSON mode is slower but significantly improves extraction quality and compatibility with smaller models.
