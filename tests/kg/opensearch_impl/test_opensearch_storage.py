@@ -1823,15 +1823,6 @@ class TestDocStatusStorage:
         )
 
     @pytest.mark.asyncio
-    async def test_initialize_creates_index(
-        self, global_config, embed_func, mock_client
-    ):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            mock_client.indices.create.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_get_by_id(self, global_config, embed_func, mock_client):
         mock_client.mget = AsyncMock(
             return_value={
@@ -1991,9 +1982,14 @@ class TestDocStatusStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            result = await s.get_docs_by_statuses([DocStatus.PROCESSED])
+            result = await s.get_docs_by_statuses(
+                [DocStatus.PROCESSED, DocStatus.FAILED]
+            )
             assert "d1" in result
             assert isinstance(result["d1"], DocProcessingStatus)
+            # Every requested status reaches the query, not just the first.
+            body = mock_client.search.await_args.kwargs["body"]
+            assert body["query"] == {"terms": {"status": ["processed", "failed"]}}
 
     @pytest.mark.asyncio
     async def test_get_docs_paginated(self, global_config, embed_func, mock_client):
@@ -2129,6 +2125,8 @@ class TestDocStatusStorage:
             docs, total = await s.get_docs_paginated(page=100, page_size=10)
             assert total == 5
             assert docs == []
+            # Answered from the count alone: no PIT is opened to skip pages.
+            mock_client.create_pit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_docs_paginated_with_status_filter(
@@ -2410,24 +2408,6 @@ class TestDocStatusStorage:
                     mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_upsert_after_drop_recreates_index(
-        self, global_config, embed_func, mock_client
-    ):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
-            ) as mock_bulk:
-                mock_bulk.return_value = (1, [])
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                with patch.object(
-                    s, "_create_index_if_not_exists", new_callable=AsyncMock
-                ) as mock_create:
-                    await s.drop()
-                    await s.upsert({"d1": {"status": "pending"}})
-                    mock_create.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_reads_short_circuit_after_drop(
         self, global_config, embed_func, mock_client
     ):
@@ -2475,14 +2455,6 @@ class TestGraphStorage:
             embedding_func=embed_func,
             workspace=workspace,
         )
-
-    @pytest.mark.asyncio
-    async def test_has_node_true(self, global_config, embed_func, mock_client):
-        mock_client.exists = AsyncMock(return_value=True)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.has_node("Alice") is True
 
     @pytest.mark.asyncio
     async def test_has_edge(self, global_config, embed_func, mock_client):
@@ -2593,8 +2565,8 @@ class TestGraphStorage:
             s = self._make(global_config, embed_func)
             await s.initialize()
             edges = await s.get_node_edges("A")
-            assert len(edges) == 2
-            assert ("A", "B") in edges
+            # Both directions: an edge where the node is the TARGET counts too.
+            assert edges == [("A", "B"), ("C", "A")]
 
     @pytest.mark.asyncio
     async def test_node_degrees_batch(self, global_config, embed_func, mock_client):
@@ -2644,28 +2616,12 @@ class TestGraphStorage:
             assert body["entity_id"] == "Alice"
 
     @pytest.mark.asyncio
-    async def test_upsert_edge(self, global_config, embed_func, mock_client):
-        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.upsert_edge("A", "B", {"weight": "1.0", "description": "knows"})
-            # Three index calls: a placeholder for BOTH endpoints (neither
-            # exists here), then the edge. Materializing only the source would
-            # leave B with edges but no node document.
-            assert mock_client.index.await_count == 3
-            placeholder_ids = [
-                c.kwargs["id"]
-                for c in mock_client.index.await_args_list
-                if c.kwargs["index"] == s._nodes_index
-            ]
-            assert placeholder_ids == ["A", "B"]
-
-    @pytest.mark.asyncio
     async def test_upsert_edge_uses_canonical_id_without_reverse_lookup(
         self, global_config, embed_func, mock_client
     ):
-        """Reciprocal writes land on the same canonical _id, no exists(reverse)."""
+        """Reciprocal writes land on the same canonical _id, with no
+        exists(reverse) probe and no per-write reverse-orientation delete (the
+        fail-fast migration already made the index canonical)."""
         # Both endpoints already exist, so no placeholder writes.
         mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -2685,25 +2641,6 @@ class TestGraphStorage:
                 if c.kwargs["index"] == s._edges_index
             ]
             assert edge_ids[0] == edge_ids[1] == _canonical_edge_id("A", "B")
-
-    @pytest.mark.asyncio
-    async def test_upsert_edge_does_not_delete_on_write(
-        self, global_config, embed_func, mock_client
-    ):
-        """No per-write reverse-orientation cleanup — the fail-fast migration
-        already guarantees the index is canonical before any write."""
-        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A", "B"}))
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.upsert_edge("B", "A", {"weight": "1.0"})
-
-            edge_index_ids = [
-                c.kwargs["id"]
-                for c in mock_client.index.await_args_list
-                if c.kwargs["index"] == s._edges_index
-            ]
-            assert edge_index_ids == [_canonical_edge_id("B", "A")]
             mock_client.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2821,12 +2758,12 @@ class TestGraphStorage:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "create_errors, delete_errors, expect_raise",
+        # The clean run is pinned by
+        # test_migrate_edges_to_canonical_id_reindexes_legacy_docs, a failed
+        # create by test_migrate_edges_fail_fast_preserves_source_when_create_fails.
         [
-            ([], [], False),  # clean run → flag set
             # stale source already removed by another run — benign 404.
             ([], [{"delete": {"_id": "edge-old", "status": 404}}], False),
-            # busy cluster rejected the create — fail fast, no flag.
-            ([{"create": {"_id": "C", "status": 503}}], [], True),
             # delete genuinely failed — fail fast, no flag.
             ([], [{"delete": {"_id": "edge-old", "status": 500}}], True),
         ],
@@ -3375,24 +3312,6 @@ class TestGraphStorage:
         mock_client.indices.put_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_upsert_after_drop_recreates_indices(
-        self, global_config, embed_func, mock_client
-    ):
-        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect(set()))
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            with patch.object(
-                s, "_create_indices_if_not_exist", new_callable=AsyncMock
-            ) as mock_create:
-                await s.initialize()
-                mock_create.reset_mock()
-                await s.drop()
-                await s.upsert_edge("A", "B", {"weight": "1.0"})
-                mock_create.assert_awaited_once()
-                # Placeholder for both endpoints, then the edge.
-                assert mock_client.index.await_count == 3
-
-    @pytest.mark.asyncio
     async def test_reads_short_circuit_after_drop(
         self, global_config, embed_func, mock_client
     ):
@@ -3461,12 +3380,13 @@ class TestGraphStorage:
 
     @pytest.mark.asyncio
     async def test_remove_edges(self, global_config, embed_func, mock_client):
-        # remove_edges bulk-deletes one canonical _id per edge.
+        # remove_edges bulk-deletes one canonical _id per edge; (A,B) and (B,A)
+        # share a canonical _id, so they collapse to one op.
         mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            await s.remove_edges([("A", "B"), ("C", "D")])
+            await s.remove_edges([("A", "B"), ("B", "A"), ("C", "D")])
             # 2 distinct canonical edges = 2 delete actions in one bulk call
             mock_client.bulk.assert_awaited_once()
             call_body = mock_client.bulk.call_args.kwargs["body"]
@@ -3477,28 +3397,14 @@ class TestGraphStorage:
             }
 
     @pytest.mark.asyncio
-    async def test_remove_edges_dedups_reciprocal(
-        self, global_config, embed_func, mock_client
-    ):
-        # (A,B) and (B,A) share a canonical _id, so they collapse to one op.
-        mock_client.bulk = AsyncMock(return_value={"errors": False, "items": []})
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.remove_edges([("A", "B"), ("B", "A")])
-            mock_client.bulk.assert_awaited_once()
-            call_body = mock_client.bulk.call_args.kwargs["body"]
-            assert len(call_body) == 1
-            assert call_body[0]["delete"]["_id"] == _canonical_edge_id("A", "B")
-
-    @pytest.mark.asyncio
     async def test_get_all_labels(self, global_config, embed_func, mock_client):
         mock_client.search = AsyncMock(
             return_value={
                 "hits": {
+                    # Shard order, not label order: the result is re-sorted.
                     "hits": [
-                        {"_id": "Alice", "sort": ["Alice"]},
-                        {"_id": "Bob", "sort": ["Bob"]},
+                        {"_id": "Bob", "sort": [1]},
+                        {"_id": "Alice", "sort": [2]},
                     ],
                     "total": {"value": 2},
                 },
@@ -3518,11 +3424,11 @@ class TestGraphStorage:
                 "aggregations": {
                     "src": {
                         "buckets": [
-                            {"key": "A", "doc_count": 5},
-                            {"key": "B", "doc_count": 2},
+                            {"key": "B", "doc_count": 3},
+                            {"key": "A", "doc_count": 2},
                         ]
                     },
-                    "tgt": {"buckets": [{"key": "A", "doc_count": 3}]},
+                    "tgt": {"buckets": [{"key": "A", "doc_count": 2}]},
                     "status_counts": {"buckets": []},
                 },
             }
@@ -3530,8 +3436,9 @@ class TestGraphStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            labels = await s.get_popular_labels(limit=10)
-            assert labels[0] == "A"  # degree 8 > B degree 2
+            labels = await s.get_popular_labels(limit=2)
+            # Only the summed degree puts A first: 2 out + 2 in = 4 > B's 3.
+            assert labels == ["A", "B"]
 
     @pytest.mark.asyncio
     async def test_get_knowledge_graph_all_backfills_isolated_nodes_when_truncated(
@@ -3677,16 +3584,10 @@ class TestGraphStorage:
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             s = self._make(global_config, embed_func)
             await s.initialize()
-            assert await s.search_labels("") == []
-
-    @pytest.mark.asyncio
-    async def test_drop(self, global_config, embed_func, mock_client):
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            result = await s.drop()
-            assert result["status"] == "success"
-            assert mock_client.indices.delete.await_count == 2
+            assert await s.search_labels("  ") == []
+            # Short-circuited before any query (the default mock would also
+            # answer an empty list, so the result alone proves nothing).
+            mock_client.search.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_drop_partial_error_marks_indices_not_ready_and_next_upsert_recreates_indices(
