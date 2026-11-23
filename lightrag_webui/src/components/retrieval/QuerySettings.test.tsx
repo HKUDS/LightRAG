@@ -24,7 +24,7 @@ describe('QuerySettings scope notice', () => {
     cleanup()
   })
 
-  test('renders the scope notice as visible text', () => {
+  test('renders the scope notice as visible text beside a touch-sized help control', () => {
     renderWithProviders(<QuerySettings />)
 
     const notice = screen.getByText(strings.parametersScopeNotice)
@@ -32,6 +32,12 @@ describe('QuerySettings scope notice', () => {
     // Kept to a single line whatever the translation's length: the panel is
     // 280px wide and the controls below it must not be pushed down.
     expect(notice.className.includes('truncate')).toBe(true)
+
+    // The icon is 12px; on a touch-only device the button IS the tap path, so
+    // the padding that grows the hit box to 24x24 is load-bearing. Asserted as
+    // a class because happy-dom computes no layout.
+    const help = screen.getByRole('button', { name: strings.parametersScopeHelpLabel })
+    expect(help.className.split(/\s+/)).toContain('p-1.5')
   })
 
   /**
@@ -46,32 +52,11 @@ describe('QuerySettings scope notice', () => {
     fireEvent.click(element)
   }
 
-  test('the help control is a touch-sized target, not just the icon', () => {
-    renderWithProviders(<QuerySettings />)
-
-    // The icon is 12px; on a touch-only device the button IS the tap path, so
-    // the padding that grows the hit box to 24x24 is load-bearing. Asserted as
-    // a class because happy-dom computes no layout.
-    const help = screen.getByRole('button', { name: strings.parametersScopeHelpLabel })
-    expect(help.className.split(/\s+/)).toContain('p-1.5')
-  })
-
-  test('tapping the help control reveals the full explanation', async () => {
+  test('tapping the help control reveals the explanation, and tapping again hides it', async () => {
     renderWithProviders(<QuerySettings />)
 
     // Closed to begin with: Radix only mounts the content while open.
     expect(screen.queryAllByText(strings.parametersScopeTooltip)).toHaveLength(0)
-
-    tap(screen.getByRole('button', { name: strings.parametersScopeHelpLabel }))
-    await act(async () => {})
-
-    await waitFor(() => {
-      expect(screen.getAllByText(strings.parametersScopeTooltip).length).toBeGreaterThan(0)
-    })
-  })
-
-  test('tapping the help control again hides it', async () => {
-    renderWithProviders(<QuerySettings />)
 
     const help = screen.getByRole('button', { name: strings.parametersScopeHelpLabel })
     tap(help)

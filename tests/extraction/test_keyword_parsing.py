@@ -1,8 +1,16 @@
 import pytest
 from unittest.mock import patch
 
+import numpy as np
+
+from lightrag import LightRAG
 from lightrag.base import QueryParam
-from lightrag.operate import _parse_keywords_payload, extract_keywords_only
+from lightrag.operate import (
+    _is_unsupported_response_format_error,
+    _parse_keywords_payload,
+    extract_keywords_only,
+)
+from lightrag.utils import EmbeddingFunc, Tokenizer
 
 
 class _FakeKeywordModel:
@@ -110,6 +118,125 @@ def test_parse_keywords_payload_warns_when_json_repair_is_used():
     )
 
 
+_ANSWER = '{"high_level_keywords":["AI"],"low_level_keywords":["RAG","Graph"]}'
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(
+            '```json\n{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}\n```'
+            "\n\nWait, I need to correct my format - no markdown code fences"
+            f" allowed:\n\n{_ANSWER}\n```",
+            id="fence-prose-second-object",
+        ),
+        pytest.param(f"{_ANSWER}\n{_ANSWER}", id="two-bare-objects"),
+    ],
+)
+def test_parse_keywords_payload_accepts_repeated_objects(result):
+    """json_repair returns a list for a reply that repeats its object; the
+    first object carrying keywords is the answer."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords[0] == "RAG"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "leading_object",
+    [
+        pytest.param(
+            '{"high_level_keywords": ["<high_level_keyword>"],'
+            ' "low_level_keywords": ["<low_level_keyword>"]}',
+            id="echoed-format-template",
+        ),
+        pytest.param(
+            '{"high_level_keywords": [], "low_level_keywords": []}',
+            id="echoed-empty-example",
+        ),
+        pytest.param('{"note": "thinking"}', id="unrelated-object"),
+    ],
+)
+def test_parse_keywords_payload_skips_leading_object_without_keywords(leading_object):
+    """An object that carries no real keyword must not shadow the answer."""
+    result = f"The format is {leading_object}. Answer:\n{_ANSWER}"
+
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG", "Graph"]
+
+
+@pytest.mark.offline
+def test_parse_keywords_payload_keeps_empty_answer_valid_when_repeated():
+    empty = '{"high_level_keywords": [], "low_level_keywords": []}'
+
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(f"{empty}\n{empty}")
+
+    assert is_valid is True
+    assert hl_keywords == []
+    assert ll_keywords == []
+
+
+@pytest.mark.offline
+def test_parse_keywords_payload_drops_template_placeholders():
+    """An echoed placeholder is never a keyword, even in a single clean
+    object; a real angle-bracket keyword is kept."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(
+        '{"high_level_keywords": ["<high_level_keyword>", "HTML"],'
+        ' "low_level_keywords": ["<low_level_keyword_2>", "<div>"]}'
+    )
+
+    assert is_valid is True
+    assert hl_keywords == ["HTML"]
+    assert ll_keywords == ["<div>"]
+
+
+@pytest.mark.offline
+def test_keyword_template_placeholder_pattern_covers_the_prompt_template():
+    """Every keyword of the prompt's format template must be recognised as a
+    placeholder, or an echoed template comes back as keywords."""
+    import json
+
+    from lightrag.operate import _KEYWORD_TEMPLATE_PLACEHOLDER
+    from lightrag.prompt import PROMPTS
+
+    placeholders = [
+        keyword
+        for example in PROMPTS["keywords_extraction_examples"]
+        for keywords in json.loads(example).values()
+        for keyword in keywords
+    ]
+
+    assert placeholders
+    for placeholder in placeholders:
+        assert _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch(placeholder), placeholder
+    assert _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch("<low_level_keyword_2>")
+    assert not _KEYWORD_TEMPLATE_PLACEHOLDER.fullmatch("<div>")
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param('["AI", "RAG"]', id="array-of-strings"),
+        pytest.param(f"[{_ANSWER}]", id="array-of-one-object"),
+        pytest.param(f"[{_ANSWER},{_ANSWER}", id="truncated-array-of-objects"),
+        pytest.param(f"Result: [{_ANSWER},{_ANSWER}", id="prose-then-truncated-array"),
+    ],
+)
+def test_parse_keywords_payload_rejects_top_level_array(result):
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is False
+    assert hl_keywords == []
+    assert ll_keywords == []
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
 async def test_extract_keywords_only_accepts_empty_keyword_cache_without_requery():
@@ -172,3 +299,292 @@ async def test_extract_keywords_only_partitions_cache_by_keyword_llm_identity():
     assert second_ll == ["rag"]
     assert calls == 2
     assert len(cache._store) == 2
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_auto_sends_response_format_by_default():
+    """Supported providers must not be downgraded: the first attempt carries the
+    API-enforced JSON constraint unless the policy says otherwise."""
+    captured_kwargs = {}
+
+    async def keyword_model(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello",
+        QueryParam(),
+        _keyword_global_config("model-a", keyword_func=keyword_model),
+        hashing_kv=None,
+    )
+
+    assert captured_kwargs["response_format"] == {"type": "json_object"}
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_auto_retries_once_without_response_format_on_compat_error():
+    """The regression for servers such as LM Studio that reject response_format.
+
+    The first request dies with a 'response_format.type' must be 'json_schema' or
+    'text' style 400; auto mode retries the same prompt without the constraint and the
+    second response carries the keywords.
+    """
+    calls = []
+
+    async def keyword_model(*_args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("'response_format.type' must be 'json_schema' or 'text'")
+        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello",
+        QueryParam(),
+        _keyword_global_config("model-a", keyword_func=keyword_model),
+        hashing_kv=None,
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in calls[1]
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_auto_does_not_retry_unrelated_errors():
+    """The fallback is only for the compatibility error, never for a generic failure:
+    a transient transport error must surface, not silently degrade to a prompt-only
+    JSON request that may parse to nothing."""
+    calls = []
+
+    async def keyword_model(*_args, **kwargs):
+        calls.append(kwargs)
+        raise ConnectionResetError("connection reset by peer")
+
+    with pytest.raises(ConnectionResetError, match="connection reset"):
+        await extract_keywords_only(
+            "hello",
+            QueryParam(),
+            _keyword_global_config("model-a", keyword_func=keyword_model),
+            hashing_kv=None,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_object_always_sends_response_format():
+    captured_kwargs = {}
+
+    async def keyword_model(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return '{"high_level_keywords":[],"low_level_keywords":[]}'
+
+    global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
+    global_config["keyword_extraction_json_mode"] = "json_object"
+
+    await extract_keywords_only("hello", QueryParam(), global_config, hashing_kv=None)
+
+    assert captured_kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_none_never_sends_response_format():
+    captured_kwargs = {}
+
+    async def keyword_model(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+    global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
+    global_config["keyword_extraction_json_mode"] = "none"
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello", QueryParam(), global_config, hashing_kv=None
+    )
+
+    assert "response_format" not in captured_kwargs
+    # The tolerant parser reads plain JSON text as well as a JSON-mode response.
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_non_json_response_is_not_treated_as_valid_keyword_output():
+    """A provider that ignores the constraint and rambles must yield no keywords:
+    prose that merely mentions the topic is not structured keyword output, and
+    empty keywords — not fabricated ones — are what a caller can act on."""
+
+    async def keyword_model(*_args, **kwargs):
+        return "AI and RAG are two interesting topics for retrieval, graph and memory."
+
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        "hello",
+        QueryParam(),
+        _keyword_global_config("model-a", keyword_func=keyword_model),
+        hashing_kv=None,
+    )
+
+    assert hl_keywords == []
+    assert ll_keywords == []
+
+
+async def _unused_llm(*_args, **_kwargs) -> str:
+    return ""
+
+
+async def _unused_embedding(texts: list[str]) -> np.ndarray:
+    return np.zeros((len(texts), 8))
+
+
+def _build_rag(tmp_path, **kwargs) -> LightRAG:
+    return LightRAG(
+        working_dir=str(tmp_path),
+        llm_model_func=_unused_llm,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=8, max_token_size=8192, func=_unused_embedding
+        ),
+        tokenizer=Tokenizer("mock-tokenizer", _FakeTokenizer()),
+        **kwargs,
+    )
+
+
+@pytest.mark.offline
+def test_keyword_extraction_json_mode_is_rejected_at_construction(tmp_path):
+    """A mistyped policy must fail at startup, not at the first query."""
+    with pytest.raises(ValueError, match="KEYWORD_EXTRACTION_JSON_MODE"):
+        _build_rag(tmp_path, keyword_extraction_json_mode="sometimes")
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    # " JSON_Object " shows both the strip and the lower-casing.
+    [(" JSON_Object ", "json_object")],
+)
+def test_keyword_extraction_json_mode_is_canonicalized_at_construction(
+    tmp_path, given, expected
+):
+    rag = _build_rag(tmp_path, keyword_extraction_json_mode=given)
+
+    assert rag.keyword_extraction_json_mode == expected
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_keyword_extraction_json_mode_rejects_unknown_value():
+    global_config = _keyword_global_config("model-a", keyword_func=None)
+    global_config["keyword_extraction_json_mode"] = "sometimes"
+
+    with pytest.raises(ValueError, match="keyword_extraction_json_mode"):
+        await extract_keywords_only(
+            "hello", QueryParam(), global_config, hashing_kv=None
+        )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        # The field itself is rejected — retry without it is safe.
+        ("'response_format.type' must be 'json_schema' or 'text'", True),
+        ("Invalid response_format: json_object is not supported", True),
+        ("response_format json_schema is not supported by this model", True),
+        ("json_object mode is not allowed for this deployment", True),
+        # Anything without the field in the message must propagate.
+        ("Request timed out while waiting for response_format", False),
+        ("invalid JSON in prompt", False),
+        ("Unexpected end of stream while reading the json_object reply", False),
+        # The OpenAI SDK prints `invalid_request_error` as the type of every 400:
+        # that token alone must not turn a 400 naming the field into a rejection...
+        (
+            "Error code: 400 - {'error': {'message': \"'messages' must contain the "
+            "word 'json' in some form, to use 'response_format' of type "
+            "'json_object'.\", 'type': 'invalid_request_error'}}",
+            False,
+        ),
+        # ...while a real rejection wrapped the same way still qualifies.
+        (
+            "Error code: 400 - {'error': {'message': \"Invalid value: 'json_object'. "
+            "Supported values are: 'json_schema' and 'text'.\", "
+            "'type': 'invalid_request_error'}}",
+            True,
+        ),
+    ],
+)
+def test_is_unsupported_response_format_error(message, expected):
+    assert _is_unsupported_response_format_error(RuntimeError(message)) is expected
+
+
+_SHORT_ANSWER = '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(f"{_SHORT_ANSWER}\n[1]", id="bracket-citation"),
+        pytest.param(
+            f"{_SHORT_ANSWER}\n"
+            'Note: I followed the {"high_level_keywords": [...]} format.',
+            id="brace-prose",
+        ),
+        pytest.param(
+            f'{_SHORT_ANSWER}\n\n{{"note": "a second object"}}',
+            id="trailing-unrelated-object",
+        ),
+    ],
+)
+def test_parse_keywords_payload_keeps_object_before_bracketed_prose(result):
+    """Trailing prose carrying a bracket or a brace must not lose the keywords."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(f"Result #1: {_SHORT_ANSWER}", id="hash-label"),
+        pytest.param(f"# Keywords\n{_SHORT_ANSWER}", id="markdown-heading"),
+        pytest.param(f"Result #1: {_SHORT_ANSWER} [1]", id="hash-label-citation"),
+    ],
+)
+def test_parse_keywords_payload_recovers_object_after_hash_lead_in(result):
+    """json_repair reads '#' as a comment to the end of the line and repairs a
+    '#' lead-in to an empty string; the object after it is still the answer."""
+    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI"]
+    assert ll_keywords == ["RAG"]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param("no keywords here", id="plain-prose"),
+        pytest.param("Result #1: no keywords", id="hash-label-without-object"),
+        pytest.param(f"Result #1: [{_SHORT_ANSWER}]", id="hash-label-array"),
+    ],
+)
+def test_parse_keywords_payload_rejects_text_without_an_object(result):
+    with patch("lightrag.operate.logger.error") as mocked_error:
+        is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert (is_valid, hl_keywords, ll_keywords) == (False, [], [])
+    mocked_error.assert_called_once()

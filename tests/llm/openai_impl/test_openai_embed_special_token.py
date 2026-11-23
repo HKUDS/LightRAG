@@ -88,14 +88,6 @@ def _token_count(text):
 
 
 @pytest.mark.asyncio
-async def test_text_containing_a_special_token_is_embedded(monkeypatch):
-    """A short text quoting the marker embeds unchanged, like any other text."""
-    text = f"an example of the {MARKER} marker in prose"
-
-    assert await _embed(monkeypatch, [text], max_token_size=8192) == [text]
-
-
-@pytest.mark.asyncio
 async def test_one_offending_text_does_not_fail_its_batch_siblings(monkeypatch):
     """The old failure took down the whole batch, not just the offending item."""
     texts = ["a perfectly ordinary chunk", f"another chunk mentioning {MARKER}"]

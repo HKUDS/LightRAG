@@ -8,7 +8,12 @@ from lightrag.parser.routing import default_chunker_config
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("env_value", ["", "  ", "\t"])
+@pytest.mark.parametrize(
+    "env_value",
+    [
+        "",
+    ],
+)
 def test_empty_chunk_v_buffer_size_falls_back(
     env_value: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

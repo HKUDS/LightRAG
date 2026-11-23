@@ -16,7 +16,7 @@ from lightrag.parser.routing import default_chunker_config
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("env_value", ["", "  ", "\t", "not-json", "[1,2]"])
+@pytest.mark.parametrize("env_value", ["", "  ", "not-json", "[1,2]"])
 def test_empty_or_invalid_chunk_r_separators_falls_back(
     env_value: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

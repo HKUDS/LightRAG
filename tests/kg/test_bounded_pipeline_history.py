@@ -19,6 +19,7 @@ real if every write goes through the funnel, so a re-introduced raw
 
 from __future__ import annotations
 
+import copy
 import re
 from pathlib import Path
 
@@ -68,6 +69,9 @@ def test_a_writer_that_never_reaches_the_extraction_loop_is_still_bounded():
     # A ring, not a head-truncation: the newest line survives, the oldest is gone.
     assert history[-1] == f"deleting document {total - 1}"
     assert "deleting document 0" not in history
+    # ``history_messages`` is a Manager ListProxy that every worker appends to
+    # and that PipelineStatusLogger caches: the trim never rebinds it.
+    assert status["history_messages"] is history
 
 
 def test_a_group_write_advances_the_bound_by_its_own_length():
@@ -81,18 +85,6 @@ def test_a_group_write_advances_the_bound_by_its_own_length():
         append_pipeline_history(status, *[f"msg {i}.{k}" for k in range(group)])
 
     assert len(history) <= PIPELINE_HISTORY_MAX_MESSAGES + _INTERVAL
-
-
-def test_trimming_never_rebinds_the_shared_list_object():
-    """``history_messages`` is a Manager ListProxy that every worker appends to
-    and that PipelineStatusLogger caches; replacing it would orphan both."""
-    history = []
-    status = {"history_messages": history}
-
-    for i in range(PIPELINE_HISTORY_MAX_MESSAGES + 2 * _INTERVAL):
-        append_pipeline_history(status, f"line {i}")
-
-    assert status["history_messages"] is history
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +160,16 @@ def test_no_raw_history_append_survives_in_the_package():
 
 @pytest.mark.parametrize(
     "status",
-    [None, {}, {"history_messages": None}],
-    ids=["none-status", "missing-key", "late-initialized-key"],
+    [
+        None,
+        {},
+    ],
+    ids=["none-status", "missing-key"],
 )
 def test_a_missing_history_is_skipped_not_raised(status):
+    before = copy.deepcopy(status)
     append_pipeline_history(status, "message")
+    assert status == before  # skipped: nothing created or written
 
 
 def test_a_failing_extend_is_swallowed():
@@ -180,7 +177,9 @@ def test_a_failing_extend_is_swallowed():
         def extend(self, _iterable):
             raise ConnectionRefusedError("manager is gone")
 
-    append_pipeline_history({"history_messages": _DeadProxy()}, "message")
+    history = _DeadProxy()
+    append_pipeline_history({"history_messages": history}, "message")
+    assert history == []
 
 
 def test_a_failing_len_does_not_fail_the_append():

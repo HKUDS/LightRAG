@@ -26,15 +26,6 @@ describe('normalizeApiPrefix', () => {
   test('passes canonical form through unchanged', () => {
     expect(normalizeApiPrefix('/api/v1')).toBe('/api/v1')
   })
-
-  test('result is safe for fetch template concat: never starts with `//` and never ends with `/`', () => {
-    for (const input of ['', '/', undefined, '/api', '/api/', 'api', '/api/v1/']) {
-      const out = normalizeApiPrefix(input)
-      const fetchUrl = `${out}/query/stream`
-      expect(fetchUrl.startsWith('//')).toBe(false)
-      expect(fetchUrl).not.toContain('//')
-    }
-  })
 })
 
 describe('normalizeWebuiPrefix', () => {

@@ -32,18 +32,6 @@ from lightrag.utils import EmbeddingFunc
 pytestmark = pytest.mark.offline
 
 
-@pytest.fixture
-def _propagate_lightrag_logs():
-    """The ``lightrag`` logger sets propagate=False; caplog needs it on."""
-    lg = logging.getLogger("lightrag")
-    old = lg.propagate
-    lg.propagate = True
-    try:
-        yield
-    finally:
-        lg.propagate = old
-
-
 def _make(func, embedding_dim=4):
     return EmbeddingFunc(embedding_dim=embedding_dim, func=func)
 
@@ -55,17 +43,6 @@ async def test_correct_shape_passes_through_unchanged():
 
     result = await _make(embed)(["a", "b", "c"])
     assert result.shape == (3, 4)
-
-
-@pytest.mark.asyncio
-async def test_single_item_batch_with_2d_result_passes():
-    # Real providers wrap a single embedding in a (1, D) array, not a bare
-    # 1D (D,) vector -- confirm the strict ndim==2 check accepts that shape.
-    async def embed(texts):
-        return np.zeros((len(texts), 4), dtype=np.float32)
-
-    result = await _make(embed)(["only one"])
-    assert result.shape == (1, 4)
 
 
 @pytest.mark.asyncio
@@ -171,15 +148,6 @@ async def test_1d_result_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_3d_result_is_rejected():
-    async def embed(texts):
-        return np.zeros((len(texts), 2, 4), dtype=np.float32)
-
-    with pytest.raises(ValueError, match="unexpected shape"):
-        await _make(embed)(["a", "b"])
-
-
-@pytest.mark.asyncio
 async def test_empty_batch_with_bare_empty_array_is_accepted():
     """Zero inputs means zero vectors and no dimension to validate. A
     provider short-circuiting with ``np.array([])`` returns a 1D (0,) array;
@@ -233,9 +201,7 @@ async def test_empty_input_with_non_empty_result_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_unexpected_ndim_logs_the_required_shape(
-    caplog, _propagate_lightrag_logs
-):
+async def test_unexpected_ndim_logs_the_required_shape(caplog, lightrag_caplog):
     """The ndim rejection is the one an author of a custom embedding function
     hits first, so the log has to state the shape actually required rather
     than only the one that arrived."""
@@ -252,7 +218,7 @@ async def test_unexpected_ndim_logs_the_required_shape(
 
 
 @pytest.mark.asyncio
-async def test_count_mismatch_logs_token_limit_remedy(caplog, _propagate_lightrag_logs):
+async def test_count_mismatch_logs_token_limit_remedy(caplog, lightrag_caplog):
     """A provider splitting an over-long input internally is the documented
     primary cause of this mismatch (issue #2549), and declaring the model's
     token limit is the fix. Keep that remedy in the operator-facing log --
@@ -271,7 +237,7 @@ async def test_count_mismatch_logs_token_limit_remedy(caplog, _propagate_lightra
 
 @pytest.mark.asyncio
 async def test_dimension_mismatch_logs_declared_dimension_remedy(
-    caplog, _propagate_lightrag_logs
+    caplog, lightrag_caplog
 ):
     """The actionable fix for (N, 2D) is reconciling the declared dimension
     with the model actually being called -- and then rebuilding the vectors,

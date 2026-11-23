@@ -26,6 +26,9 @@ from lxml import etree
 from lightrag.parser.docx.numbering_resolver import NumberingResolver
 from lightrag.parser.docx.smart_heading.style_key import classify_numbering
 
+
+pytestmark = pytest.mark.offline
+
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 # One all-decimal abstractNum ("10"): ilvl i renders "1.1...."(i+1 components).
@@ -86,11 +89,12 @@ def _para(*, style: str | None = None, num_id: str | None = None, ilvl=None):
     inner = []
     if style is not None:
         inner.append(f'<w:pStyle w:val="{style}"/>')
-    if num_id is not None:
+    if num_id is not None or ilvl is not None:
         numpr = []
         if ilvl is not None:
             numpr.append(f'<w:ilvl w:val="{ilvl}"/>')
-        numpr.append(f'<w:numId w:val="{num_id}"/>')
+        if num_id is not None:
+            numpr.append(f'<w:numId w:val="{num_id}"/>')
         inner.append(f"<w:numPr>{''.join(numpr)}</w:numPr>")
     return etree.fromstring(
         f'<w:p xmlns:w="{W}"><w:pPr>{"".join(inner)}</w:pPr>'
@@ -126,6 +130,120 @@ def test_e_explicit_direct_ilvl_zero_is_preserved() -> None:
     # Explicit direct ilvl=0 must NOT be treated as "missing" (the `x or None`
     # truthy trap): it renders level 0 ("1"), NOT the chain's level 3.
     assert _resolver().get_label(_para(style="H4alt", num_id="100", ilvl=0)) == "1"
+
+
+@pytest.mark.parametrize(
+    ("style", "ilvl", "expected"),
+    [("H4alt", 0, "1"), ("H1", 2, "1.1.1"), ("PS", 1, "1.1")],
+)
+def test_direct_ilvl_without_numid_overrides_inherited_level(
+    style, ilvl, expected
+) -> None:
+    # A paragraph may override only the list level and inherit numId from its
+    # style. The direct level also takes precedence over an abstract pStyle link.
+    assert _resolver().get_label(_para(style=style, ilvl=ilvl)) == expected
+
+
+def test_direct_ilvl_without_any_numid_does_not_create_numbering() -> None:
+    assert _resolver().get_label(_para(ilvl=2)) == ""
+
+
+def _resolver_with_level_only_styles() -> NumberingResolver:
+    """``_resolver()`` plus styles whose numPr writes only w:ilvl.
+
+    LvlOnly   ilvl=1 only → basedOn H1 (numId=100, ilvl=0)
+    LvlNoNum  ilvl=2 only → basedOn Normal (no numId anywhere)
+    Mid       ilvl=1 only → basedOn H1
+    Leaf      ilvl=2 only → basedOn Mid
+    LeafBare  no numPr    → basedOn Mid
+    BadLvl    malformed ilvl (stored as _INVALID_ILVL) → basedOn H1
+    """
+    r = _resolver()
+    r.style_numpr.update(
+        {
+            "LvlOnly": {"numId": None, "ilvl": 1},
+            "LvlNoNum": {"numId": None, "ilvl": 2},
+            "Mid": {"numId": None, "ilvl": 1},
+            "Leaf": {"numId": None, "ilvl": 2},
+            "BadLvl": {"numId": None, "ilvl": -1},
+        }
+    )
+    r.style_based_on.update(
+        {
+            "LvlOnly": "H1",
+            "LvlNoNum": "Normal",
+            "Mid": "H1",
+            "Leaf": "Mid",
+            "LeafBare": "Mid",
+            "BadLvl": "H1",
+        }
+    )
+    return r
+
+
+@pytest.mark.parametrize(
+    ("styles", "expected"),
+    [
+        # Level-only child style keeps the parent's numId (Word: 1. a) b) 2.).
+        (["H1", "LvlOnly", "LvlOnly", "H1"], ["1", "1.1", "1.2", "2"]),
+        # Nearest explicit ilvl wins down a chain; a bare leaf inherits Mid's.
+        (["H1", "Mid", "Leaf", "LeafBare"], ["1", "1.1", "1.1.1", "1.2"]),
+    ],
+)
+def test_style_level_without_numid_inherits_parent_numid(styles, expected) -> None:
+    r = _resolver_with_level_only_styles()
+    assert [r.get_label(_para(style=s)) for s in styles] == expected
+
+
+def test_style_level_without_numid_applies_to_direct_numid() -> None:
+    r = _resolver_with_level_only_styles()
+    assert r.get_label(_para(style="LvlNoNum", num_id="100")) == "1.1.1"
+
+
+def test_style_level_without_any_numid_does_not_create_numbering() -> None:
+    assert _resolver_with_level_only_styles().get_label(_para(style="LvlNoNum")) == ""
+
+
+def test_direct_ilvl_overrides_level_only_style() -> None:
+    r = _resolver_with_level_only_styles()
+    assert r.get_label(_para(style="Mid", ilvl=0)) == "1"
+
+
+def test_malformed_style_ilvl_yields_no_label_unless_paragraph_sets_level() -> None:
+    r = _resolver_with_level_only_styles()
+    # The parent's ilvl=0 must not show through the malformed child's level.
+    assert r.get_label(_para(style="BadLvl")) == ""
+    assert r.get_label(_para(style="BadLvl", ilvl=1)) == "1.1"
+
+
+def test_styles_xml_records_level_only_numpr_and_survives_malformed_ilvl(
+    tmp_path,
+) -> None:
+    from docx import Document
+    from docx.enum.style import WD_STYLE_TYPE
+
+    from lightrag.parser.docx.numbering_resolver import _INVALID_ILVL
+
+    def numpr(inner: str):
+        return etree.fromstring(f'<w:numPr xmlns:w="{W}">{inner}</w:numPr>')
+
+    doc = Document()
+    # Order matters: the malformed style comes first, so a parse that aborted
+    # on it would lose every style after it.
+    for sid, inner in [
+        ("BadLvl", '<w:ilvl w:val="x"/>'),
+        ("LvlOnly", '<w:ilvl w:val="1"/>'),
+        ("WithNum", '<w:numId w:val="7"/>'),
+    ]:
+        style = doc.styles.add_style(sid, WD_STYLE_TYPE.PARAGRAPH)
+        style.element.get_or_add_pPr().append(numpr(inner))
+    path = tmp_path / "styles.docx"
+    doc.save(str(path))
+
+    numpr_by_style = NumberingResolver(str(path)).style_numpr
+    assert numpr_by_style["BadLvl"] == {"numId": None, "ilvl": _INVALID_ILVL}
+    assert numpr_by_style["LvlOnly"] == {"numId": None, "ilvl": 1}
+    assert numpr_by_style["WithNum"] == {"numId": "7", "ilvl": None}
 
 
 def test_get_numbering_from_style_merges_numid_and_explicit_ilvl() -> None:
@@ -165,8 +283,11 @@ def test_ilvl_outside_ooxml_domain_is_rejected_not_looped() -> None:
     assert r.last_abstract_id is None
 
 
-@pytest.mark.parametrize("ilvl", [-1, 9, 999999])
-def test_out_of_range_ilvl_values_are_rejected(ilvl) -> None:
+# One ``0 <= ilvl <= 8`` check; a large looped value is
+# test_ilvl_outside_ooxml_domain_is_rejected_not_looped.
+@pytest.mark.parametrize("ilvl", [-1, 9])
+@pytest.mark.parametrize("num_id", ["100", None])
+def test_out_of_range_ilvl_values_are_rejected(ilvl, num_id) -> None:
     r = _resolver()
     r.abstract_nums["10"][ilvl] = {
         "start": 1,
@@ -174,7 +295,14 @@ def test_out_of_range_ilvl_values_are_rejected(ilvl) -> None:
         "lvlText": "%1.",
         "isLgl": False,
     }
-    assert r.get_label(_para(num_id="100", ilvl=ilvl)) == ""
+    assert r.get_label(_para(style="H1", num_id=num_id, ilvl=ilvl)) == ""
+
+
+@pytest.mark.parametrize("num_id", ["100", None])
+def test_malformed_direct_ilvl_yields_no_label(num_id) -> None:
+    # By design: an unusable direct ilvl must not fall back to the style's level
+    # (H1 alone would render "1").
+    assert _resolver().get_label(_para(style="H1", num_id=num_id, ilvl="x")) == ""
 
 
 def test_boundary_ilvl_eight_still_renders() -> None:
@@ -258,9 +386,14 @@ def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text)
             assert label == lvl_text.replace("%1", letters)
 
 
-@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
-@pytest.mark.parametrize("count", [-1, 0, 79, 2147483647])
-@pytest.mark.parametrize("override", [False, True])
+# The start source only picks the counter before the shared range and
+# ``_to_alpha`` checks: every count on lowerLetter from the abstract start,
+# plus one case for the override source and one for upperLetter.
+@pytest.mark.parametrize(
+    ("num_fmt", "count", "override"),
+    [("lowerLetter", count, False) for count in (0, 79, 2147483647)]
+    + [("lowerLetter", 79, True), ("upperLetter", 79, False)],
+)
 def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
     """Every count here is outside ``_to_alpha``'s 1-78 domain — below it as well
     as above — so each falls back to decimal AND is recorded."""
@@ -395,9 +528,14 @@ def test_provenance_is_none_when_nothing_renders() -> None:
     assert r.last_label_format is None
 
 
-@pytest.mark.parametrize("lvl_text", ["(%1)", "%1)"])
-@pytest.mark.parametrize("num_fmt", ["lowerRoman", "upperRoman"])
-@pytest.mark.parametrize("count", [1, 2, 3])
+# The classifier's full 1-39 sweep over both formats and paren shapes is
+# test_parenthesized_roman_list_full_domain (test_smart_heading_style_key.py);
+# here, the resolver's wiring at 2 ("ii", which reads as alphabetic 35 without
+# the carried numFmt), once per format and per paren shape.
+@pytest.mark.parametrize(
+    ("lvl_text", "num_fmt", "count"),
+    [("(%1)", "lowerRoman", 2), ("%1)", "upperRoman", 2)],
+)
 def test_parenthesized_roman_lists_keep_roman_ordinals(lvl_text, num_fmt, count):
     """The widened paren patterns accept repeated letters, so "(ii)" from a
     Roman list reaches them. _P_ROMAN cannot claim it — it only matches a
@@ -435,10 +573,25 @@ def test_japanese_counting_renders_chinese_numerals() -> None:
     assert r.unsupported_formats == set()
 
 
-@pytest.mark.parametrize("num_fmt", _COUNTING_FORMATS)
+# All four families convert through the same ``_to_chinese``, so the values
+# are swept on japaneseCounting (the regression's format) and each other family
+# keeps 10, the value that tells positional counting from digit-by-digit.
 @pytest.mark.parametrize(
-    ("count", "expected"),
-    [(1, "一"), (2, "二"), (10, "十"), (11, "十一"), (20, "二十"), (99, "九十九")],
+    ("num_fmt", "count", "expected"),
+    [
+        ("japaneseCounting", count, expected)
+        # 1, 2 and 11 are test_japanese_counting_renders_chinese_numerals.
+        for count, expected in (
+            (10, "十"),
+            (20, "二十"),
+            (99, "九十九"),
+        )
+    ]
+    + [
+        (num_fmt, 10, "十")
+        for num_fmt in _COUNTING_FORMATS
+        if num_fmt != "japaneseCounting"
+    ],
 )
 def test_counting_families_are_positional(num_fmt, count, expected) -> None:
     """10 must render 十, not 一〇: only values past 9 tell a positional counting
@@ -451,26 +604,14 @@ def test_counting_families_are_positional(num_fmt, count, expected) -> None:
     [
         (1, "一"),
         (10, "一〇"),
-        (11, "一一"),
         (20, "二〇"),
         (99, "九九"),
-        (100, "一〇〇"),
     ],
 )
 def test_ideograph_digital_is_digit_by_digit(count, expected) -> None:
     """``ideographDigital`` is NOT a counting system: per [MS-DOCX] 1/10/100 are
     U+4E00 / U+4E00U+3007 / U+4E00U+3007U+3007 (一 / 一〇 / 一〇〇)."""
     assert _label(_fmt_resolver("ideographDigital", "%1"), count) == expected
-
-
-def test_ideograph_digital_does_not_reuse_the_counting_converter() -> None:
-    """Pins the two families apart, so ideographDigital cannot be "simplified"
-    into the counting table: they only diverge from 10 upward."""
-    assert NumberingResolver._to_ideograph_digital(10) == "一〇"
-    assert NumberingResolver._to_chinese(10) == "十"
-    assert NumberingResolver._to_ideograph_digital(10) != NumberingResolver._to_chinese(
-        10
-    )
 
 
 def test_unknown_format_degrades_to_decimal_but_is_reported() -> None:
@@ -579,7 +720,12 @@ def test_ideograph_traditional_renders_the_ten_stems() -> None:
     assert r.out_of_range_formats == set()
 
 
-@pytest.mark.parametrize("count", [-1, 0, 11, 21])
+@pytest.mark.parametrize(
+    "count",
+    [
+        11,
+    ],
+)
 def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
     """Regression for #3934: ``(n - 1) % 10`` made item 11 render 甲 like item 1,
     and kept zero / negative counts inside the stem string. Both directions
@@ -592,8 +738,13 @@ def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
     assert warnings == {"numbering_out_of_range_formats": 1}
 
 
-@pytest.mark.parametrize("num_fmt", sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS))
-@pytest.mark.parametrize("count", [0, -1])
+# The out-of-range check is one ``count < 1`` test shared by every format, so
+# every format is checked at 0 and the first one also at -1.
+@pytest.mark.parametrize(
+    ("num_fmt", "count"),
+    [(num_fmt, 0) for num_fmt in sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS)]
+    + [(sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS)[0], -1)],
+)
 def test_non_positive_counts_are_recorded_for_every_positive_domain_format(
     num_fmt, count
 ) -> None:

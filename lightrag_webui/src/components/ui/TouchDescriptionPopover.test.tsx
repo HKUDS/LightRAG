@@ -23,27 +23,14 @@ describe('touch description popover', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  test('names the control after what it does, not after the text it reveals', () => {
-    renderWithProviders(<TouchDescriptionPopover description={DESCRIPTION} />)
-
-    // A screen reader announces the button's purpose; the description itself
-    // is the CONTENT it opens, and using it as the label would read the whole
-    // deployment blurb out on focus.
-    const trigger = screen.getByRole('button', { name: 'Deployment information' })
-    expect(trigger).toBeInTheDocument()
-    expect(trigger).not.toHaveAccessibleName(DESCRIPTION)
-  })
-
-  test('keeps the description out of the tree until the trigger is used', () => {
-    renderWithProviders(<TouchDescriptionPopover description={DESCRIPTION} />)
-
-    expect(screen.queryAllByText(DESCRIPTION)).toHaveLength(0)
-  })
-
   test('reveals the description when the trigger is activated', async () => {
     const user = userEvent.setup()
     renderWithProviders(<TouchDescriptionPopover description={DESCRIPTION} />)
 
+    // Out of the tree until the trigger is used. The trigger is found by its
+    // purpose, not by the text it reveals: reading the whole deployment blurb
+    // out on focus is what naming it after the description would do.
+    expect(screen.queryAllByText(DESCRIPTION)).toHaveLength(0)
     await user.click(screen.getByRole('button', { name: 'Deployment information' }))
 
     // This is what the source-text assertion could never reach: that Radix's

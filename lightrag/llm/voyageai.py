@@ -22,7 +22,7 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-from lightrag.utils import wrap_embedding_func_with_attrs, logger
+from lightrag.utils import embedding_timeout, wrap_embedding_func_with_attrs, logger
 
 
 # Custom exceptions for VoyageAI errors
@@ -51,6 +51,10 @@ class VoyageAIError(Exception):
             TryAgain,
         )
     ),
+    # Surface the last attempt's own error, not a tenacity.RetryError, so
+    # callers can catch the real VoyageAI exception type and see its
+    # message (same convention as openai.py / ollama.py / gemini.py, etc.).
+    reraise=True,
 )
 async def voyageai_embed(
     texts: list[str],
@@ -60,6 +64,7 @@ async def voyageai_embed(
     input_type: str | None = None,
     truncation: bool | None = True,
     context: str | None = None,
+    timeout: float | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using VoyageAI's API.
 
@@ -89,6 +94,9 @@ async def voyageai_embed(
         context: Optional LightRAG embedding context. When ``input_type`` is not
             set, "query" maps to ``input_type="query"`` and "document" maps to
             ``input_type="document"``.
+        timeout: Request timeout in seconds. None (the default) uses LightRAG's
+            ``default_embedding_timeout`` inside a LightRAG embedding call; 0 or
+            a negative value, or None outside one, keeps the SDK default.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -113,7 +121,11 @@ async def voyageai_embed(
         input_type = context
 
     try:
-        client = voyageai.AsyncClient(api_key=api_key)
+        client_kwargs = {"api_key": api_key}
+        timeout = embedding_timeout(timeout)
+        if timeout is not None:
+            client_kwargs["timeout"] = timeout
+        client = voyageai.AsyncClient(**client_kwargs)
 
         total_chars = sum(len(t) for t in texts)
         avg_chars = total_chars / len(texts) if texts else 0

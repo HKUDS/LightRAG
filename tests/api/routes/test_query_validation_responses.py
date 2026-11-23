@@ -42,10 +42,6 @@ def client():
     async def _query(request: QueryRequest):  # pragma: no cover - never reached
         return {"response": "ok"}
 
-    @app.post("/query/stream")
-    async def _stream(request: QueryRequest):  # pragma: no cover - never reached
-        return {"response": "ok"}
-
     @app.post("/query/data")
     async def _data(request: QueryRequest):  # pragma: no cover - never reached
         return {"status": "success"}
@@ -55,18 +51,18 @@ def client():
     return TestClient(app, raise_server_exceptions=False)
 
 
-@pytest.mark.parametrize("path", ["/query", "/query/stream"])
+# One case per validator that raises: the model validator (the weighted RAG
+# minimum) and the field validator (empty after stripping). The real
+# /query/stream takes the same model and handler, so /query stands for both.
 @pytest.mark.parametrize(
     "body",
     [
         {"query": "中"},  # below the weighted RAG minimum
-        {"query": "ab"},  # below the plain minimum
         {"query": "   "},  # empty after stripping
-        {"query": "", "mode": "bypass"},  # empty on the direct-LLM path
     ],
 )
-def test_query_refusals_are_422_with_a_serializable_body(client, path, body):
-    response = client.post(path, json=body)
+def test_query_refusals_are_422_with_a_serializable_body(client, body):
+    response = client.post("/query", json=body)
 
     assert response.status_code == 422
     detail = response.json()["detail"]
@@ -76,9 +72,7 @@ def test_query_refusals_are_422_with_a_serializable_body(client, path, body):
     assert detail[0]["msg"].startswith("Value error, ")
 
 
-@pytest.mark.parametrize(
-    "body", [{"query": "中"}, {"query": "   "}, {"query": "", "mode": "bypass"}]
-)
+@pytest.mark.parametrize("body", [{"query": "中"}, {"query": "   "}])
 def test_query_data_refusals_keep_their_own_400_envelope(client, body):
     response = client.post("/query/data", json=body)
 

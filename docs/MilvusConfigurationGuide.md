@@ -13,11 +13,11 @@ Milvus index parameters can be configured through `vector_db_storage_cls_kwargs`
 
 ## Supported Parameters
 
-All 11 MilvusIndexConfig parameters can be configured via `vector_db_storage_cls_kwargs`:
+All MilvusIndexConfig parameters can be configured via `vector_db_storage_cls_kwargs`:
 
 ### Base Configuration
 - `index_type`: Index type (AUTOINDEX, HNSW, HNSW_SQ, IVF_FLAT, etc.)
-- `metric_type`: Distance metric (COSINE, L2, IP)
+- `metric_type`: **Deprecated and ignored.** The metric is always COSINE; see [Distance Metric](#distance-metric)
 
 ### HNSW Parameters
 - `hnsw_m`: Number of connections per layer (2-2048, default: 16)
@@ -54,7 +54,6 @@ rag = LightRAG(
     vector_db_storage_cls_kwargs={
         "cosine_better_than_threshold": 0.2,
         "index_type": "HNSW",
-        "metric_type": "COSINE",
         "hnsw_m": 32,
         "hnsw_ef_construction": 256,
         "hnsw_ef": 150,
@@ -96,7 +95,6 @@ rag = LightRAG(
     vector_db_storage_cls_kwargs={
         "cosine_better_than_threshold": 0.2,
         "index_type": "HNSW_SQ",  # Requires Milvus 2.6.8+
-        "metric_type": "COSINE",
         "hnsw_m": 48,
         "hnsw_ef_construction": 400,
         "hnsw_ef": 200,
@@ -117,12 +115,48 @@ rag = LightRAG(
     vector_db_storage_cls_kwargs={
         "cosine_better_than_threshold": 0.2,
         "index_type": "IVF_FLAT",
-        "metric_type": "L2",
         "ivf_nlist": 2048,
         "ivf_nprobe": 32,
     }
 )
 ```
+
+## Distance Metric
+
+LightRAG always builds and searches Milvus vector indexes with **COSINE**.
+`cosine_better_than_threshold` is a cosine similarity, and every query passes it
+to Milvus as the range-search `radius`. That is a similarity lower bound under
+COSINE (and IP), but a distance **upper** bound under L2: a threshold of `0.2`
+on an L2 index demanded a squared distance below `0.2` (cosine above `0.9` for
+unit vectors) and typically returned no results at all.
+
+`MILVUS_METRIC_TYPE` and the `metric_type` kwarg are therefore deprecated and
+ignored. A value other than COSINE logs a warning once per process; remove it
+from your configuration.
+
+### Upgrading a collection built with L2 or IP
+
+On startup, each Milvus vector storage reads its collection's vector index
+(`describe_index`). If the index was built with another metric, it is rebuilt
+in place: release the collection, drop the vector index, create it with COSINE,
+load. The rows are kept: a metric belongs to the index, not to the stored
+vectors, so nothing is re-embedded. For unit-length embeddings (most hosted
+models) the ranking is unchanged; for unnormalized embeddings it changes to
+cosine order, which is what LightRAG's threshold assumes.
+
+Accepted residues and their recovery:
+
+- **The collection is unavailable while its index is rebuilt.** This takes from
+  seconds to minutes depending on collection size, and happens once, during
+  initialization, before the storage serves queries.
+- **A crash between the drop and the new index** leaves the collection without
+  a vector index. The next start fails to load it, recognizes the missing
+  index, and creates the COSINE index (the existing missing-index repair).
+- **A failed rebuild fails initialization** with the error; restart to retry.
+- **Several hosts sharing one Milvus** are not coordinated: initialization is
+  serialized only between the workers of one host (the data-init lock), so
+  another host serving the same collection sees errors while it is released.
+  Upgrade one instance first, as for the automatic schema migration.
 
 ## Implementation Details
 

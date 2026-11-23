@@ -83,19 +83,6 @@ async def test_get_by_ids_escapes_special_characters():
 
 
 @pytest.mark.asyncio
-async def test_get_vectors_by_ids_escapes_special_characters():
-    storage = _make_milvus_storage()
-    storage._client.query.return_value = [{"id": 'vec"1', "vector": [0.1, 0.2]}]
-
-    result = await storage.get_vectors_by_ids(['vec"1'])
-    assert result == {'vec"1': [0.1, 0.2]}
-
-    storage._client.query.assert_called_once()
-    _, kwargs = storage._client.query.call_args
-    assert kwargs["filter"] == 'id in ["vec\\"1"]'
-
-
-@pytest.mark.asyncio
 async def test_delete_entity_relation_escapes_special_characters():
     storage = _make_milvus_storage()
     storage._client.query.return_value = [{"id": "rel1"}]

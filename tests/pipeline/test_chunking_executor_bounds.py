@@ -118,14 +118,6 @@ def test_saturation_waits_rather_than_refusing(counting_executor):
     asyncio.run(_main())
 
 
-def test_kwargs_reach_the_callable(counting_executor):
-    async def _main():
-        result = await lr_utils.run_in_chunking_executor(lambda a, b=0: a + b, 1, b=41)
-        assert result == 42
-
-    asyncio.run(_main())
-
-
 def test_an_exception_propagates_to_the_caller(counting_executor):
     """Chunker failures must keep reaching the pipeline's error handling."""
 

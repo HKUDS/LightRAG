@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync, existsSync } from 'fs'
-import { execSync } from 'child_process'
+import { sourceFiles } from '@/test/sourceScan'
 import { dirname, join, resolve } from 'path'
 
 /**
@@ -88,16 +88,16 @@ describe('migration module purity', () => {
     /\/services\/navigation/
   ]
 
-  test.each(['runSettingsStorageSplit.ts', 'legacySettingsChain.ts', 'splitSettingsStorage.ts'])(
-    'migrations/%s transitively imports no store, App, API client or navigation module',
-    (moduleFile) => {
-      const graph = transitiveGraph(join(SRC, 'migrations', moduleFile))
-      const offenders = [...graph].filter((file) =>
-        FORBIDDEN.some((pattern) => pattern.test(file))
-      )
-      expect(offenders).toEqual([])
-    }
-  )
+  // runSettingsStorageSplit imports splitSettingsStorage, which imports
+  // legacySettingsChain, so this one graph contains the other two modules'.
+  test('migrations/runSettingsStorageSplit.ts transitively imports no store, App, API client or navigation module', () => {
+    const graph = transitiveGraph(join(SRC, 'migrations', 'runSettingsStorageSplit.ts'))
+    expect([...graph].some((file) => file.endsWith('/legacySettingsChain.ts'))).toBe(true)
+    const offenders = [...graph].filter((file) =>
+      FORBIDDEN.some((pattern) => pattern.test(file))
+    )
+    expect(offenders).toEqual([])
+  })
 
   test('importing the pure chain module performs no localStorage access', async () => {
     const calls: string[] = []
@@ -116,7 +116,16 @@ describe('migration module purity', () => {
       configurable: true
     })
     try {
-      await import('./legacySettingsChain')
+      // A FRESH instance: by the time this runs in a full suite the module is
+      // already cached, and re-importing a cached module evaluates nothing.
+      // Bun keys its registry by the full specifier, query string included.
+      // A non-literal specifier keeps tsc from resolving the query string.
+      // Only this module is fresh; its one import (lib/queryDefaults) has no
+      // imports and touches no storage.
+      const freshSpecifier = `./legacySettingsChain?fresh=${Date.now()}`
+      const fresh = await import(freshSpecifier)
+      // Proof the import really evaluated the module rather than finding nothing.
+      expect(typeof fresh.migrateLegacySettingsState).toBe('function')
     } finally {
       if (original) {
         Object.defineProperty(globalThis, 'localStorage', original)
@@ -138,16 +147,9 @@ describe('navigation core stays graph-free', () => {
 
 describe('no path-rewriting hard navigation in the SPA', () => {
   test('frontend source contains no location.href= / location.replace( / location.assign(', () => {
-    const output = execSync(
-      String.raw`grep -rnE "location\.href\s*=|location\.replace\(|location\.assign\(" --include='*.ts' --include='*.tsx' . || true`,
-      { cwd: SRC, encoding: 'utf8' }
-    )
-    const offenders = output
-      .split('\n')
-      .filter(Boolean)
-      // window.location.reload() is allowed (same-URL reload, keeps entry);
-      // test files may reference these strings.
-      .filter((line) => !line.includes('.test.'))
+    // Use the shared platform-independent walker rather than a POSIX shell.
+    const offenders = sourceFiles(SRC, file => /\.tsx?$/.test(file) && !file.includes('.test.'))
+      .filter(file => /location\.href\s*=|location\.replace\(|location\.assign\(/.test(readFileSync(file, 'utf8')))
     expect(offenders).toEqual([])
   })
 })

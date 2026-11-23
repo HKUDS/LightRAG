@@ -66,6 +66,12 @@ SAFE = [
     "spaces are fine.txt",
 ]
 
+# The full table runs once, on the rule itself. Each ingress calls that one
+# rule, so it keeps two wiring cases: a control character, and the surrogate
+# that surrogateescape decoding produces.
+UNSAFE_WIRING = [p for p in UNSAFE if p.id in ("nul", "lone-surrogate")]
+SAFE_WIRING = ["报告 2026.docx"]
+
 
 class TestCharacterRule:
     @pytest.mark.parametrize("value, code", UNSAFE)
@@ -82,17 +88,10 @@ class TestCharacterRule:
 class TestTextEndpointRequests:
     """The one place /documents/text and /documents/texts both pass through."""
 
-    @pytest.mark.parametrize("value, code", UNSAFE)
+    @pytest.mark.parametrize("value, code", UNSAFE_WIRING)
     def test_text_request_rejects_unsafe_file_source(self, value, code):
         with pytest.raises(ValidationError) as excinfo:
             InsertTextRequest(text="hello", file_source=value)
-
-        assert code in str(excinfo.value)
-
-    @pytest.mark.parametrize("value, code", UNSAFE)
-    def test_texts_request_rejects_unsafe_file_source(self, value, code):
-        with pytest.raises(ValidationError) as excinfo:
-            InsertTextsRequest(texts=["hello"], file_sources=[value])
 
         assert code in str(excinfo.value)
 
@@ -103,7 +102,7 @@ class TestTextEndpointRequests:
                 file_sources=["ok.txt", "bad\x0b.txt", "also-ok.txt"],
             )
 
-    @pytest.mark.parametrize("value", SAFE)
+    @pytest.mark.parametrize("value", SAFE_WIRING)
     def test_ordinary_file_source_still_accepted(self, value):
         request = InsertTextRequest(text="hello", file_source=value)
 
@@ -135,20 +134,20 @@ class TestTextEndpointRequests:
 class TestUploadPath:
     """``sanitize_filename`` now shares the rule; its 400 contract is unchanged."""
 
-    @pytest.mark.parametrize("value, _code", UNSAFE)
+    @pytest.mark.parametrize("value, _code", UNSAFE_WIRING)
     def test_unsafe_filename_is_rejected(self, tmp_path, value, _code):
         with pytest.raises(_document_routes.HTTPException) as excinfo:
             _document_routes.sanitize_filename(value, tmp_path)
 
         assert excinfo.value.status_code == 400
 
-    @pytest.mark.parametrize("value", SAFE)
+    @pytest.mark.parametrize("value", SAFE_WIRING)
     def test_ordinary_filename_is_accepted(self, tmp_path, value):
         assert _document_routes.sanitize_filename(value, tmp_path) == value
 
 
 class TestReadPathsStayNonRaising:
-    @pytest.mark.parametrize("value, _code", UNSAFE)
+    @pytest.mark.parametrize("value, _code", UNSAFE_WIRING)
     def test_normalize_file_path_never_raises(self, value, _code):
         """A document already holding a bad source must stay listable.
 

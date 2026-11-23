@@ -19,6 +19,11 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
+from tests.api._cheap_bcrypt import CHEAP_DUMMY_SPEC
+
+
+pytestmark = pytest.mark.offline
+
 _ENV_VARS_TO_ISOLATE = (
     "LLM_BINDING",
     "EMBEDDING_BINDING",
@@ -120,6 +125,15 @@ def _build_server(monkeypatch):
     )
 
     app = lightrag_server.create_app(args)
+    # The accounts here are plaintext, so the only bcrypt a login runs is the
+    # timing-equalizing dummy: a cost-4 one keeps every path and call count.
+    # Patched where AuthHandler reads it: other tests reload lightrag.api.auth,
+    # so sys.modules may hold a newer module than the one the handler uses.
+    monkeypatch.setitem(
+        type(lightrag_server.auth_handler).verify_password.__globals__,
+        "_DUMMY_VERIFY_SPEC",
+        CHEAP_DUMMY_SPEC,
+    )
     return lightrag_server, app
 
 
@@ -294,3 +308,27 @@ async def test_login_concurrent_attempts_cannot_bypass_limit(monkeypatch):
     assert codes.count(401) <= 5
     assert codes.count(429) >= 35
     assert codes.count(401) + codes.count(429) == 40
+
+
+def test_failed_login_does_not_retain_the_submitted_username(monkeypatch):
+    """A failed login must not keep a request-body-sized username in memory.
+
+    Regression: the limiter stored ``client_ip:username`` verbatim, so an
+    anonymous caller could retain almost the whole request-body ceiling per
+    failed login, up to the key-count cap (memory exhaustion).
+    """
+    import inspect
+
+    _server, app = _build_server(monkeypatch)
+    monkeypatch.setattr(_server.auth_handler, "accounts", {"admin": "s3cret-plain"})
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/login")
+    limiter = inspect.getclosurevars(route.endpoint).nonlocals["login_rate_limiter"]
+    client = TestClient(app)
+
+    for i in range(3):
+        username = f"{i:04d}" + "A" * 500_000
+        resp = client.post("/login", data={"username": username, "password": "bad"})
+        assert resp.status_code == 401
+
+    assert len(limiter._entries) == 3
+    assert sum(len(slot) for slot in limiter._entries) == 3 * 32

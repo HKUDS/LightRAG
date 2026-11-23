@@ -27,6 +27,9 @@ from lightrag.parser.markdown import parser as md_parser
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
 
+
+pytestmark = pytest.mark.offline
+
 # How long the redirect handler holds its body open. Long enough that a client
 # which drains it cannot finish inside the assertion window.
 _BODY_HOLD_SECONDS = 10.0
@@ -92,7 +95,9 @@ def test_redirect_handler_never_reads_the_body(monkeypatch, code):
     assert fp.closes == 1
 
 
-@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+# 301/303/307/308 are rebound to http_error_302, which
+# test_redirect_handler_never_reads_the_body proves for all five codes.
+@pytest.mark.parametrize("code", [302])
 def test_redirect_to_ftp_is_refused_for_every_status_code(monkeypatch, code):
     monkeypatch.setattr(md_parser, "_host_is_public", lambda host: True)
     handler = md_parser._GuardedRedirectHandler()

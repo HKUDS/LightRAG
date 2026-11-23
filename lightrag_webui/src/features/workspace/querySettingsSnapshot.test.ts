@@ -6,7 +6,6 @@ import {
 } from './querySettingsSnapshot'
 import { defaultQuerySettings } from '@/stores/querySettings'
 import type { QuerySettings } from '@/stores/querySettings'
-import { serializeQueryRequest } from '@/features/retrieval/serializeQueryRequest'
 
 /**
  * The agreed contract: the workspace entry USES /webui's configuration.
@@ -50,15 +49,23 @@ describe('the NON_DEFAULT_SETTINGS fixture', () => {
     expect(Object.keys(NON_DEFAULT_SETTINGS).sort()).toEqual([...settingKeys].sort())
   })
 
-  test.each(settingKeys)('differs from the default for %s', (key) => {
-    expect(NON_DEFAULT_SETTINGS[key]).not.toEqual(defaultQuerySettings[key])
+  test('differs from the default for every setting', () => {
+    // The keys that do NOT differ, so a failure names them.
+    const sameAsDefault = settingKeys.filter(
+      (key) => JSON.stringify(NON_DEFAULT_SETTINGS[key]) === JSON.stringify(defaultQuerySettings[key])
+    )
+    expect(sameAsDefault).toEqual([])
   })
 })
 
 describe('workspace query settings snapshot', () => {
-  test.each(inheritedKeys)('inherits %s verbatim from /webui', (key) => {
+  test('inherits every other setting verbatim from /webui', () => {
     const snapshot = workspaceQuerySettingsSnapshot(NON_DEFAULT_SETTINGS)
-    expect(snapshot[key]).toEqual(NON_DEFAULT_SETTINGS[key])
+    // The keys that were NOT inherited, so a failure names them.
+    const notInherited = inheritedKeys.filter(
+      (key) => JSON.stringify(snapshot[key]) !== JSON.stringify(NON_DEFAULT_SETTINGS[key])
+    )
+    expect(notInherited).toEqual([])
   })
 
   test.each(clampedKeys)('overrides %s instead of inheriting it', (key) => {
@@ -77,37 +84,5 @@ describe('workspace query settings snapshot', () => {
     const stored = { ...NON_DEFAULT_SETTINGS }
     workspaceQuerySettingsSnapshot(stored)
     expect(stored).toEqual(NON_DEFAULT_SETTINGS)
-  })
-})
-
-describe('disable_user_prompt_prefix reaches the request body', () => {
-  // The end of the chain: inheriting the field is only useful if the shared
-  // serializer then forwards it, which is what the server reads.
-  test.each([true, false])('admin set %s, workspace request carries it', (value) => {
-    const snapshot = workspaceQuerySettingsSnapshot({
-      ...defaultQuerySettings,
-      disable_user_prompt_prefix: value
-    })
-    const body = serializeQueryRequest(snapshot, 'who is Tesla', [])
-    expect(body.disable_user_prompt_prefix).toBe(value)
-  })
-
-  test('survives alongside a clamped debug outlet', () => {
-    const snapshot = workspaceQuerySettingsSnapshot({
-      ...defaultQuerySettings,
-      only_need_context: true,
-      disable_user_prompt_prefix: true
-    })
-    const body = serializeQueryRequest(snapshot, 'who is Tesla', [])
-    expect(body.only_need_context).toBe(false)
-    expect(body.disable_user_prompt_prefix).toBe(true)
-  })
-
-  test('a workspace user who never opened /webui gets the server prefix', () => {
-    // The inheritance rides localStorage, so it is per-browser, not
-    // per-account. An untouched browser applies the operator's prefix.
-    const snapshot = workspaceQuerySettingsSnapshot({ ...defaultQuerySettings })
-    const body = serializeQueryRequest(snapshot, 'who is Tesla', [])
-    expect(body.disable_user_prompt_prefix).toBe(false)
   })
 })

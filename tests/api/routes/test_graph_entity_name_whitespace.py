@@ -21,7 +21,9 @@ DeleteEntityRequest = _gr.DeleteEntityRequest
 pytestmark = pytest.mark.offline
 
 
-@pytest.mark.parametrize("name", ["  ", "\t", "\n"])
+# One _require_nonempty_entity_name (str.strip()) per validator; the other
+# whitespace characters only re-test strip().
+@pytest.mark.parametrize("name", ["  "])
 def test_entity_create_rejects_whitespace_only_name(name):
     with pytest.raises(ValidationError):
         EntityCreateRequest(entity_name=name, entity_data={"description": "x"})
@@ -32,13 +34,13 @@ def test_entity_create_strips_surrounding_whitespace():
     assert req.entity_name == "Tesla"
 
 
-@pytest.mark.parametrize("name", ["  ", "\t"])
+@pytest.mark.parametrize("name", ["  "])
 def test_entity_update_rejects_whitespace_only_name(name):
     with pytest.raises(ValidationError):
         EntityUpdateRequest(entity_name=name, updated_data={"description": "x"})
 
 
-@pytest.mark.parametrize("name", ["  ", "\t", "\n"])
+@pytest.mark.parametrize("name", ["  "])
 def test_entity_update_rejects_whitespace_only_rename_target(name):
     with pytest.raises(ValidationError):
         EntityUpdateRequest(
@@ -60,7 +62,6 @@ def test_entity_update_strips_rename_target_name():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"entities_to_change": ["  "], "entity_to_change_into": "Keep"},
         {"entities_to_change": ["Keep"], "entity_to_change_into": "  "},
         {"entities_to_change": ["A", "  "], "entity_to_change_into": "Keep"},
     ],

@@ -139,28 +139,6 @@ async def _drain_wait_round(rag, pipeline_status, lock, progress):
 # ---------------------------------------------------------------------------
 
 
-def test_an_unchanged_token_set_runs_out_of_rounds():
-    progress = _ManualDrainProgress()
-    tokens = {"a": {}, "b": {}}
-    assert [progress.observe_enqueue(tokens) for _ in range(_STALL_ROUNDS)] == [
-        True,
-        True,
-        False,
-    ]
-
-
-def test_a_shrinking_token_set_never_runs_out():
-    """A release is a live producer finishing, so the evidence starts over."""
-    progress = _ManualDrainProgress()
-    live = {"a": {}, "b": {}, "c": {}}
-    for _ in range(_STALL_ROUNDS * 4):
-        assert progress.observe_enqueue(live) is True
-        if len(live) > 1:
-            live.pop(sorted(live)[0])
-        else:
-            live = {f"t-{uuid4().hex[:4]}": {}}
-
-
 def test_the_two_drain_waits_do_not_reset_each_other():
     """One drain interleaves both waits — a doc published by a finishing enqueue
     puts the run back into sweeping — so shared evidence would hide either

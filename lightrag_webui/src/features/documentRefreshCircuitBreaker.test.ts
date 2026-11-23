@@ -39,7 +39,7 @@ describe('documentRefreshCircuitBreaker', () => {
     expect(openBreaker(now).isOpen).toBe(true)
   })
 
-  test('backoff is capped instead of growing without bound', () => {
+  test('backoff and failure counter are capped instead of growing without bound', () => {
     const now = 1_000_000
     // The inline implementation this module replaced computed
     // `Math.pow(2, failureCount) * 1000` with no cap on the exponent or the
@@ -49,20 +49,13 @@ describe('documentRefreshCircuitBreaker', () => {
 
     expect(state.nextRetryTime).not.toBeNull()
     expect(state.nextRetryTime! - now).toBe(CIRCUIT_BREAKER_MAX_BACKOFF_MS)
-    expect(state.nextRetryTime! - now).not.toBe(2 ** 10 * 1000)
-  })
-
-  test('failure counter is capped', () => {
-    expect(failTimes(50, 1_000_000).failureCount).toBe(
-      CIRCUIT_BREAKER_MAX_FAILURE_COUNT
-    )
+    expect(failTimes(50, now).failureCount).toBe(CIRCUIT_BREAKER_MAX_FAILURE_COUNT)
   })
 
   test('backoff helper clamps at the max delay', () => {
     expect(circuitBreakerBackoffMs(3)).toBe(8_000)
     expect(circuitBreakerBackoffMs(5)).toBe(32_000)
     expect(circuitBreakerBackoffMs(6)).toBe(CIRCUIT_BREAKER_MAX_BACKOFF_MS)
-    expect(circuitBreakerBackoffMs(30)).toBe(CIRCUIT_BREAKER_MAX_BACKOFF_MS)
   })
 
   test('admits everything while closed', () => {

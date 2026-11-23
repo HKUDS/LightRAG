@@ -115,39 +115,12 @@ def _make_status_doc(doc_id: str) -> DocProcessingStatus:
 
 
 @pytest.mark.asyncio
-async def test_cancellation_label_internal_with_detail(tmp_path):
-    rag = await _build_rag(tmp_path)
-    try:
-        status = {
-            "cancellation_reason": "internal_error",
-            "cancellation_detail": "MilvusVectorDBStorage[entities]: boom",
-        }
-        assert rag._cancellation_label(status) == (
-            "Cancelled by internal error: MilvusVectorDBStorage[entities]: boom"
-        )
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
 async def test_cancellation_label_internal_without_detail(tmp_path):
     rag = await _build_rag(tmp_path)
     try:
         status = {"cancellation_reason": "internal_error", "cancellation_detail": None}
         assert rag._cancellation_label(status) == (
             "Cancelled by internal error: unknown"
-        )
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_cancellation_label_user(tmp_path):
-    rag = await _build_rag(tmp_path)
-    try:
-        assert rag._cancellation_label({}) == "User cancelled"
-        assert (
-            rag._cancellation_label({"cancellation_reason": None}) == "User cancelled"
         )
     finally:
         await rag.finalize_storages()

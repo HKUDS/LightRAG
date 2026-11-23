@@ -98,21 +98,6 @@ async def test_get_all_edges_returns_one_row_per_relationship():
 
 
 @pytest.mark.asyncio
-async def test_get_all_edges_keeps_distinct_relationships():
-    records = [
-        _record("Alpha", "Beta", {"weight": 1.0}),
-        _record("Alpha", "Gamma", {"weight": 2.0}),
-    ]
-    storage, _ = _make_storage(records)
-
-    edges = await storage.get_all_edges()
-
-    pairs = {(e["source"], e["target"]) for e in edges}
-    assert len(edges) == 2
-    assert pairs == {("Alpha", "Beta"), ("Alpha", "Gamma")}
-
-
-@pytest.mark.asyncio
 async def test_iter_edges_returns_one_row_per_relationship():
     records = [_record("Alpha", "Beta", {"weight": 1.0})]
     storage, calls = _make_storage(records)

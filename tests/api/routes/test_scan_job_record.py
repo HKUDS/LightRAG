@@ -284,13 +284,13 @@ def test_a_long_phase_does_not_lose_the_lease_under_a_live_owner(tmp_path, monke
     async def _run():
         rag = _StubRag()
         await initialize_pipeline_status(workspace=rag.workspace)
-        # Compressed timings (lease 0.3s, renewal 0.05s) keep the real-time
-        # window testable; the production ratio (renew = lease/3) is unchanged.
-        store = AsyncioScanJobStore(rag.workspace, lease_seconds=0.3)
+        # Compressed timings (lease 0.15s, renewal 0.025s) keep the real-time
+        # window testable; a renewal still has six chances per lease period.
+        store = AsyncioScanJobStore(rag.workspace, lease_seconds=0.15)
         monkeypatch.setattr(
             _document_routes, "_resolve_scan_job_store", lambda _rag: store
         )
-        monkeypatch.setattr(_document_routes, "_SCAN_JOB_RENEW_SECONDS", 0.05)
+        monkeypatch.setattr(_document_routes, "_SCAN_JOB_RENEW_SECONDS", 0.025)
 
         track_id, job_token = "scan-slow", uuid4().hex
         store.create(track_id, job_token)
@@ -308,7 +308,7 @@ def test_a_long_phase_does_not_lose_the_lease_under_a_live_owner(tmp_path, monke
                 job_owner_token=job_token,
             )
         )
-        await asyncio.sleep(0.9)
+        await asyncio.sleep(0.45)
         assert rag.process_calls == 1  # really parked in the drive
         assert store.get(track_id)["status"] == "running"
 
@@ -326,8 +326,8 @@ def test_the_lease_heartbeat_never_outlives_its_scan(monkeypatch):
     exit, not the only one."""
 
     async def _run():
-        monkeypatch.setattr(_document_routes, "_SCAN_JOB_RENEW_SECONDS", 0.02)
-        store = AsyncioScanJobStore("heartbeat-test", lease_seconds=0.2)
+        monkeypatch.setattr(_document_routes, "_SCAN_JOB_RENEW_SECONDS", 0.01)
+        store = AsyncioScanJobStore("heartbeat-test", lease_seconds=0.05)
         store.create("job", "owner")
         reporter = _document_routes._ScanJobReporter(store, "job", "owner")
 
@@ -344,7 +344,9 @@ def test_the_lease_heartbeat_never_outlives_its_scan(monkeypatch):
         await asyncio.wait_for(heartbeat, timeout=1.0)  # retires on its own
 
         # And the abandoned record is reapable, not held alive.
-        await asyncio.sleep(0.25)
+        # A slow runner only lengthens this wait, which cannot make it pass
+        # wrongly: a surviving heartbeat would keep renewing throughout.
+        await asyncio.sleep(0.08)
         assert store.get("job")["status"] == "abandoned"
 
     asyncio.run(_run())

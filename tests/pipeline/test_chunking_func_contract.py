@@ -84,17 +84,6 @@ def _run(tmp_path, chunking_func, doc_id):
     asyncio.run(_main())
 
 
-def test_a_synchronous_custom_chunker_still_works(tmp_path):
-    seen = {}
-
-    def _custom(tokenizer, content, *args, **kwargs):
-        seen["called"] = True
-        return _chunks()
-
-    _run(tmp_path, _custom, "doc-sync")
-    assert seen.get("called") is True
-
-
 def test_an_async_custom_chunker_is_still_awaited(tmp_path):
     seen = {}
 

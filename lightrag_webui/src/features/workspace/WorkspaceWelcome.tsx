@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/state'
 import { getAuthStatus } from '@/api/lightrag'
 import { activateLoginIdentityFromToken } from '@/lib/loginIdentity'
 import { markVersionCheckedFromLogin } from '@/lib/versionCheckCache'
+import { webuiAuthMode } from '@/lib/webuiAuthMode'
 
 /**
  * The workspace entry's public welcome page — the unauthenticated default of
@@ -45,8 +46,8 @@ export default function WorkspaceWelcome() {
     // useCustomizedContent fires on mount — no serial first-paint cost.
     getAuthStatus()
       .then((status) => {
-        // Read auth_configured ONLY; a piggybacked guest token is dropped.
-        setAuthConfigured(status.auth_configured)
+        // Discover capabilities only; a piggybacked guest token is dropped.
+        setAuthConfigured(webuiAuthMode(status) !== 'guest')
       })
       .catch(() => setAuthConfigured(true))
   }, [isAuthenticated])
@@ -64,7 +65,7 @@ export default function WorkspaceWelcome() {
     setEntering(true)
     try {
       const status = await getAuthStatus()
-      if (!status.auth_configured && status.access_token) {
+      if (webuiAuthMode(status) === 'guest' && status.access_token) {
         // Guest activation is an identity transition like any login: when the
         // browser was last used by a DIFFERENT identity (e.g. a named user
         // before auth was disabled), both entries' histories are cleared so
