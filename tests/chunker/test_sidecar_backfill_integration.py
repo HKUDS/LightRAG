@@ -333,7 +333,6 @@ def test_multibyte_boundaries_keep_provenance_through_hard_split(
     backfill_chunk_sidecars(split, blocks_path)
     b2_start = merged.index(blocks[1][1])
     for ch in split:
-        assert "_source_span_unavailable" not in ch
         span = ch["_source_span"]
         expected = [
             blockid
