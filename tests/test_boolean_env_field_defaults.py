@@ -14,11 +14,23 @@ pytestmark = pytest.mark.offline
 
 @pytest.mark.parametrize(
     ("rerank", "json_extraction", "expected_json", "warn_key"),
+    # Each case pins one field's alias parsing and the OTHER field's typo
+    # fallback, so a wrong fallback default on either field fails one case.
     [
         pytest.param(
-            " ON ", "ture", False, "ENTITY_EXTRACTION_USE_JSON", id="rerank-on"
+            " ON ",
+            "ture",
+            False,
+            "ENTITY_EXTRACTION_USE_JSON",
+            id="rerank-alias-json-typo-keeps-false",
         ),
-        pytest.param("ture", "yes", True, "RERANK_BY_DEFAULT", id="json-yes"),
+        pytest.param(
+            "ture",
+            "yes",
+            True,
+            "RERANK_BY_DEFAULT",
+            id="json-alias-rerank-typo-keeps-true",
+        ),
     ],
 )
 def test_boolean_env_field_defaults(
