@@ -9,13 +9,15 @@ Rules for callers:
 - Sources of truth: ``full_docs`` / ``text_chunks`` KV + the graph; vector rows join
   by the rebuild id scheme (``ent-`` / ``rel-`` hashes, chunk ids); rows with no
   source record are disposable. Every source must contribute >= 1 row and every
-  vector-eligible record a stored vector of the configured dimension; violations
-  raise ``ExportError`` BEFORE anything is written.
-- ``dest``: local directory, ``oss://`` or ``s3://`` URI (creds:
-  ``storage_options_from_env``). Each export writes a NEW version of all four
-  tables; embeddings are fixed-size-list float32 columns, so rebuilds never re-embed.
-- Tags are immutable: reusing a tag raises ``ExportError`` before any write; tags
-  land only after all four tables complete, so a re-run publishes cleanly.
+  vector-eligible record a stored vector of the configured dimension. Preflight covers
+  only the FIRST batch of each table; a later failure aborts mid-write and leaves
+  untagged versions (tiered-storage contract, interrupted-export residue), healed by a re-run.
+- ``dest``: local directory, ``oss://`` or ``s3://`` URI (creds: ``storage_options_from_env``).
+  Each export writes a NEW version of all four tables (fixed-size-list float32 embeddings); schema
+  metadata ``lightrag.embedding_model`` records the model identity (empty when unknown) for restore.
+- Tags are immutable: reusing a tag raises ``ExportError`` before any write. Tags land
+  only after all four tables complete; a partial tag failure refuses a same-tag retry,
+  so recover by publishing under a NEW tag.
 
 CLI: ``python -m lightrag.kg.lancedb_impl --working-dir DIR --dest DEST --tag TAG``
 """
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import os
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -48,30 +51,31 @@ _TABLES = ("docs", "chunks", "entities", "relations")
 
 
 class ExportError(RuntimeError):
-    """A snapshot was refused or could not be published; nothing is tagged."""
+    """A snapshot was refused or could not be published."""
 
 
 def storage_options_from_env(dest: str = "") -> dict[str, str]:
     """object_store options for ``dest``; {} when no credentials are set.
-    oss:// (or empty dest) + OSS creds -> native access_key_id/access_key_secret/security_token/endpoint/region
-    (the oss provider ignores aws_* keys); s3:// -> aws_* keys, virtual-hosted. Creds: OSS_DEFAULT_SECRET_ID/KEY/TOKEN
-    (STS), OSS_ACCESS_KEY_ID/SECRET, oss_access_ak/sk, AWS_*; the token key is security_token, never session_token."""
+    oss:// (or empty dest) + OSS key/secret -> native keys sourced ONLY from OSS env vars
+    (the oss provider ignores aws_* keys); s3:// -> aws_* keys with AWS_* fallbacks, virtual-hosted.
+    Creds: OSS_DEFAULT_SECRET_ID/KEY/TOKEN (STS), OSS_ACCESS_KEY_ID/SECRET, oss_access_ak/sk, AWS_*."""
     oss_key = os.getenv("OSS_DEFAULT_SECRET_ID") or os.getenv("OSS_ACCESS_KEY_ID") or os.getenv("oss_access_ak")
     oss_secret = os.getenv("OSS_DEFAULT_SECRET_KEY") or os.getenv("OSS_ACCESS_KEY_SECRET") or os.getenv("oss_access_sk")
-    key, secret = oss_key or os.getenv("AWS_ACCESS_KEY_ID"), oss_secret or os.getenv("AWS_SECRET_ACCESS_KEY")
-    if not key or not secret:
-        return {}
-    token = os.getenv("OSS_DEFAULT_SECRET_TOKEN") or os.getenv("AWS_SESSION_TOKEN")
-    endpoint = os.getenv("OSS_ENDPOINT") or os.getenv("oss_endpoint") or os.getenv("AWS_ENDPOINT_URL") or os.getenv("AWS_ENDPOINT")
-    region = os.getenv("OSS_REGION") or os.getenv("AWS_REGION")
-    if oss_key and not dest.startswith("s3://"):
-        options = {"access_key_id": key, "access_key_secret": secret, "region": region or (endpoint or "").split("://")[-1].split(".")[0].removeprefix("oss-").removesuffix("-internal") or "cn-hangzhou"}
+    if oss_key and oss_secret and not dest.startswith("s3://"):
+        token = os.getenv("OSS_DEFAULT_SECRET_TOKEN")
+        endpoint = os.getenv("OSS_ENDPOINT") or os.getenv("oss_endpoint")
+        options = {"access_key_id": oss_key, "access_key_secret": oss_secret, "region": os.getenv("OSS_REGION") or (endpoint or "").split("://")[-1].split(".")[0].removeprefix("oss-").removesuffix("-internal") or "cn-hangzhou"}
         if token:
             options["security_token"] = token
         if endpoint:
             options["endpoint"] = endpoint
         return options
-    options = {"aws_access_key_id": key, "aws_secret_access_key": secret, "virtual_hosted_style_request": "true", "aws_region": region or "us-east-1"}
+    key, secret = oss_key or os.getenv("AWS_ACCESS_KEY_ID"), oss_secret or os.getenv("AWS_SECRET_ACCESS_KEY")
+    if not key or not secret:
+        return {}
+    token = os.getenv("OSS_DEFAULT_SECRET_TOKEN") or os.getenv("AWS_SESSION_TOKEN")
+    endpoint = os.getenv("OSS_ENDPOINT") or os.getenv("oss_endpoint") or os.getenv("AWS_ENDPOINT_URL") or os.getenv("AWS_ENDPOINT")
+    options = {"aws_access_key_id": key, "aws_secret_access_key": secret, "virtual_hosted_style_request": "true", "aws_region": (os.getenv("OSS_REGION") or os.getenv("AWS_REGION")) or "us-east-1"}
     if token:
         options["aws_session_token"] = token
     if endpoint:
@@ -80,23 +84,24 @@ def storage_options_from_env(dest: str = "") -> dict[str, str]:
     return options
 
 
-def _schemas(dim: int) -> dict[str, pa.Schema]:
+def _schemas(dim: int, model_name: str) -> dict[str, pa.Schema]:
     vec = pa.field("embedding", pa.list_(pa.float32(), dim), nullable=True)
+    meta = {b"lightrag.embedding_model": model_name.encode()}
     return {
-        "docs": pa.schema([("id", pa.string()), ("content", pa.string())]),
+        "docs": pa.schema([("id", pa.string()), ("content", pa.string())], metadata=meta),
         "chunks": pa.schema(
             [("id", pa.string()), ("content", pa.string()), ("full_doc_id", pa.string()),
              ("chunk_order_index", pa.int64()), ("tokens", pa.int64()),
-             ("file_path", pa.string()), vec]),
+             ("file_path", pa.string()), vec], metadata=meta),
         "entities": pa.schema(
             [("id", pa.string()), ("entity_name", pa.string()), ("entity_type", pa.string()),
              ("description", pa.string()), ("source_id", pa.string()),
-             ("file_path", pa.string()), vec]),
+             ("file_path", pa.string()), vec], metadata=meta),
         "relations": pa.schema(
             [("id", pa.string()), ("src_id", pa.string()), ("tgt_id", pa.string()),
              ("keywords", pa.string()), ("description", pa.string()),
              ("source_id", pa.string()), ("weight", pa.float64()),
-             ("file_path", pa.string()), vec]),
+             ("file_path", pa.string()), vec], metadata=meta),
     }
 
 
@@ -152,15 +157,15 @@ async def _raw_entities(rag: LightRAG, size: int) -> AsyncIterator[list[dict[str
 
 
 async def _raw_relations(rag: LightRAG, size: int) -> AsyncIterator[list[dict[str, Any]]]:
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     async for edges in rag.chunk_entity_relation_graph.iter_edges(size):
         rows = []
         for edge in edges:
             src, tgt = sorted((str(edge["source"]), str(edge["target"])))
             norm = compute_mdhash_id(src + tgt, prefix="rel-")
-            if norm in seen:
+            if (src, tgt) in seen:
                 continue  # backends may list an undirected edge once per direction
-            seen.add(norm)
+            seen.add((src, tgt))
             rows.append(
                 {"id": norm, "src_id": src, "tgt_id": tgt,
                  "keywords": edge.get("keywords") or "",
@@ -217,7 +222,7 @@ async def export_snapshot(
         if name in existing and tag in db.open_table(name).tags.list():
             raise ExportError(f"tag {tag!r} already exists on table {name!r}; tags are immutable, pick a new name")
     dim = rag.embedding_func.embedding_dim
-    schemas = _schemas(dim)
+    schemas = _schemas(dim, rag.embedding_func.model_name or "")
     raws = {"docs": _raw_docs(rag, batch_size), "chunks": _raw_chunks(rag, batch_size),
             "entities": _raw_entities(rag, batch_size), "relations": _raw_relations(rag, batch_size)}
     vdbs = {"docs": None, "chunks": rag.chunks_vdb,
@@ -245,6 +250,24 @@ async def export_snapshot(
     return report
 
 
+def _resolve_embedding_config() -> tuple[int, str | None]:
+    """EMBEDDING_DIM/MODEL as the server resolves them: explicit env wins, else the binding's provider default."""
+    dim = get_env_value("EMBEDDING_DIM", 0, int)
+    model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
+    if dim:
+        return dim, model
+    binding = os.getenv("EMBEDDING_BINDING", "openai")
+    try:
+        provider = getattr(importlib.import_module(f"lightrag.llm.{binding}"), f"{binding}_embed")
+    except (ImportError, AttributeError) as exc:
+        raise ExportError(f"cannot import the {binding!r} embedding provider; set EMBEDDING_DIM explicitly") from exc
+    default_model = provider.model_name
+    effective = (os.getenv("AZURE_EMBEDDING_DEPLOYMENT") or model) if binding == "azure_openai" else model
+    if effective and binding != "lollms" and (binding == "azure_openai" or effective.removesuffix(":latest") != (default_model or "").removesuffix(":latest")):
+        raise ExportError(f"EMBEDDING_DIM must be set for model {effective!r}; the {binding!r} provider default only covers {default_model!r}")
+    return provider.embedding_dim, model or default_model
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Export a LightRAG workspace as a tagged Lance cold snapshot.")
     p.add_argument("--working-dir", default=os.getenv("WORKING_DIR", "./rag_storage"))
@@ -264,15 +287,14 @@ async def _run(args: argparse.Namespace) -> None:
     async def _never_llm(*_args, **_kwargs):
         raise RuntimeError("cold export must not call the LLM")
 
+    dim, model_name = _resolve_embedding_config()
     rag = LightRAG(
         working_dir=args.working_dir, workspace=args.workspace,
         kv_storage=os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
         vector_storage=os.getenv("LIGHTRAG_VECTOR_STORAGE", "NanoVectorDBStorage"),
         graph_storage=os.getenv("LIGHTRAG_GRAPH_STORAGE", "NetworkXStorage"),
         doc_status_storage=os.getenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage"),
-        embedding_func=EmbeddingFunc(
-            embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int), func=_never_embed,
-            model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True)),
+        embedding_func=EmbeddingFunc(embedding_dim=dim, func=_never_embed, model_name=model_name),
         llm_model_func=_never_llm,
     )
     await rag.initialize_storages()

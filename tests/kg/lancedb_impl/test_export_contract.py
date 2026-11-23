@@ -8,7 +8,8 @@ recovery path. The CLI test drives the real ``main()`` entry point.
 """
 
 import asyncio
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import lancedb
 import lancedb.table
@@ -21,12 +22,14 @@ from lightrag.kg.lancedb_impl import (
     storage_options_from_env,
 )
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.utils import compute_mdhash_id
+from lightrag.utils import EmbeddingFunc, compute_mdhash_id
 
 from .conftest import (
     CHUNKS,
+    DIM,
     DOCS,
     EDGES,
+    MODEL_NAME,
     NODES,
     entity_content,
     expected_vector,
@@ -91,6 +94,7 @@ async def test_export_publishes_tagged_snapshot_with_stored_vectors(tmp_path, se
         table = db.open_table(name)
         assert table.tags.get_version("snap-1") == table.version
         assert report["tables"][name] == {"rows": table.count_rows(), "version": table.version}
+        assert table.schema.metadata[b"lightrag.embedding_model"] == MODEL_NAME.encode()
 
 
 async def test_reexport_creates_new_version_and_keeps_old_tag(tmp_path, seeded):
@@ -309,10 +313,23 @@ _STS_ENV = {
             id="s3-compat-sts",
         ),
         pytest.param(
-            {"AWS_ACCESS_KEY_ID": "AKIA-test", "AWS_SECRET_ACCESS_KEY": "aws-secret"},
+            {"OSS_DEFAULT_SECRET_ID": "STS.test-id", "OSS_DEFAULT_SECRET_KEY": "test-secret",
+             "OSS_REGION": "cn-beijing", "AWS_SESSION_TOKEN": "aws-token",
+             "AWS_ENDPOINT_URL": "https://s3.us-west-2.amazonaws.com", "AWS_REGION": "us-west-2"},
+            "oss://bucket/prefix",
+            {"access_key_id": "STS.test-id", "access_key_secret": "test-secret",
+             "region": "cn-beijing"},
+            id="native-oss-ignores-aws-fallbacks",
+        ),
+        pytest.param(
+            {"AWS_ACCESS_KEY_ID": "AKIA-test", "AWS_SECRET_ACCESS_KEY": "aws-secret",
+             "AWS_SESSION_TOKEN": "aws-token", "AWS_ENDPOINT_URL": "http://localhost:9000",
+             "AWS_REGION": "eu-west-1"},
             "s3://bucket/prefix",
             {"aws_access_key_id": "AKIA-test", "aws_secret_access_key": "aws-secret",
-             "virtual_hosted_style_request": "true", "aws_region": "us-east-1"},
+             "aws_session_token": "aws-token", "virtual_hosted_style_request": "true",
+             "aws_endpoint": "http://localhost:9000", "aws_allow_http": "true",
+             "aws_region": "eu-west-1"},
             id="aws-only-s3",
         ),
         pytest.param({}, "oss://bucket/prefix", {}, id="no-creds"),
@@ -326,3 +343,141 @@ def test_storage_options_shape_follows_dest_scheme(monkeypatch, env, dest, expec
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     assert storage_options_from_env(dest) == expected
+
+
+async def test_concat_collision_edges_both_archived(tmp_path, seeded):
+    """Edges ('A','BC') and ('AB','C') concatenate to the same 'ABC' hash;
+    dedup must key on the endpoint tuple so both survive as distinct rows."""
+    rag, embedder = seeded
+    graph = rag.chunk_entity_relation_graph
+    names = ("A", "BC", "AB", "C")
+    for name in names:
+        await graph.upsert_node(name, {"entity_type": "person", "description": "x",
+                                       "source_id": "chunk-1", "file_path": "a.txt"})
+    await graph.upsert_edge("A", "BC", {"keywords": "k1", "description": "d1",
+                                        "source_id": "chunk-1", "weight": 1.0, "file_path": "a.txt"})
+    await graph.upsert_edge("AB", "C", {"keywords": "k2", "description": "d2",
+                                        "source_id": "chunk-1", "weight": 1.0, "file_path": "a.txt"})
+    await rag.entities_vdb.upsert({
+        compute_mdhash_id(name, prefix="ent-"): {
+            "entity_name": name, "content": f"{name}\nx",
+            "source_id": "chunk-1", "file_path": "a.txt"}
+        for name in names
+    })
+    await rag.relationships_vdb.upsert({
+        compute_mdhash_id("ABC", prefix="rel-"): {
+            "src_id": "A", "tgt_id": "BC", "content": "k1\tA\nBC\nd1",
+            "source_id": "chunk-1", "file_path": "a.txt"}})
+    for storage in (graph, rag.entities_vdb, rag.relationships_vdb):
+        await storage.index_done_callback()
+    embedder.armed = True
+
+    dest = str(tmp_path / "lake")
+    report = await export_snapshot(rag, dest, "snap")
+
+    assert embedder.export_calls == 0
+    relations = lancedb.connect(dest).open_table("relations").to_arrow().to_pylist()
+    assert len(relations) == len(EDGES) + 2
+    pairs = {(r["src_id"], r["tgt_id"]) for r in relations}
+    assert {("A", "BC"), ("AB", "C")} <= pairs
+    colliding_ids = {r["id"] for r in relations if r["src_id"] in ("A", "AB")}
+    assert colliding_ids == {compute_mdhash_id("ABC", prefix="rel-")}
+    assert report["tables"]["relations"]["rows"] == len(EDGES) + 2
+
+
+def test_cli_resolves_provider_default_dim_and_model(tmp_path, monkeypatch):
+    """With EMBEDDING_DIM/MODEL unset the CLI must resolve the binding's
+    provider defaults (dim != 1024 here), not a hard-coded dimension."""
+    asyncio.run(seed_rag(tmp_path))
+    finalize_share_data()
+    calls = []
+
+    async def _unused_provider(texts, **kwargs):
+        calls.append(texts)
+        raise AssertionError("export must never call the provider embedder")
+
+    fake = ModuleType("lightrag.llm.fakebind")
+    fake.fakebind_embed = EmbeddingFunc(
+        embedding_dim=DIM, func=_unused_provider, model_name=MODEL_NAME)
+    monkeypatch.setitem(sys.modules, "lightrag.llm.fakebind", fake)
+    monkeypatch.setenv("EMBEDDING_BINDING", "fakebind")
+    monkeypatch.delenv("EMBEDDING_DIM", raising=False)
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    dest = str(tmp_path / "cli-lake")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["lancedb_impl", "--dest", dest, "--tag", "cli-snap", "--batch-size", "2"],
+    )
+
+    main()
+
+    assert calls == []
+    db = lancedb.connect(dest)
+    for name in _TABLES:
+        table = db.open_table(name)
+        assert table.tags.get_version("cli-snap") == table.version
+        assert table.schema.metadata[b"lightrag.embedding_model"] == MODEL_NAME.encode()
+    assert db.open_table("chunks").count_rows() == len(CHUNKS)
+
+
+@pytest.mark.parametrize(
+    ("binding", "extra_env", "model"),
+    [
+        pytest.param("openai", {"EMBEDDING_MODEL": "custom-embed-model"},
+                     "custom-embed-model", id="openai-custom-model"),
+        pytest.param("azure_openai", {"AZURE_EMBEDDING_DEPLOYMENT": "my-deployment"},
+                     "my-deployment", id="azure-deployment"),
+    ],
+)
+def test_cli_custom_model_without_dim_refused(tmp_path, monkeypatch, binding, extra_env, model):
+    """A non-default model with no EMBEDDING_DIM must fail loud like the
+    server's dimension guard, not silently export under the provider default."""
+    monkeypatch.setenv("EMBEDDING_BINDING", binding)
+    monkeypatch.delenv("EMBEDDING_DIM", raising=False)
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("AZURE_EMBEDDING_DEPLOYMENT", raising=False)
+    for name, value in extra_env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["lancedb_impl", "--dest", str(tmp_path / "lake"), "--tag", "snap"],
+    )
+
+    with pytest.raises(ExportError, match=rf"EMBEDDING_DIM must be set for model '{model}'"):
+        main()
+    assert list(lancedb.connect(str(tmp_path / "lake")).list_tables()) == []
+
+
+async def test_partial_tag_failure_recovers_with_new_tag(tmp_path, seeded, monkeypatch):
+    """A tag loop that fails after >= 1 tag leaves a partial tag set: a
+    same-tag retry is refused (tags immutable) and a NEW tag publishes cleanly."""
+    rag, _ = seeded
+    dest = str(tmp_path / "lake")
+    original = lancedb.table.Tags.create
+    calls = {"n": 0}
+
+    def flaky_create(self, tag, version):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated interruption mid-tagging")
+        return original(self, tag, version)
+
+    with monkeypatch.context() as m:
+        m.setattr(lancedb.table.Tags, "create", flaky_create)
+        with pytest.raises(RuntimeError, match="mid-tagging"):
+            await export_snapshot(rag, dest, "snap")
+    assert calls["n"] == 2
+
+    db = lancedb.connect(dest)
+    assert "snap" in db.open_table("docs").tags.list()
+    assert "snap" not in db.open_table("chunks").tags.list()
+
+    with pytest.raises(ExportError, match="already exists"):
+        await export_snapshot(rag, dest, "snap")
+
+    report = await export_snapshot(rag, dest, "snap-2")
+    db = lancedb.connect(dest)
+    for name, info in report["tables"].items():
+        table = db.open_table(name)
+        assert table.tags.get_version("snap-2") == info["version"]
+        assert table.count_rows() == info["rows"]
