@@ -783,6 +783,77 @@ def test_inject_header_skips_html_slice_that_already_has_thead():
 
 
 @pytest.mark.offline
+def test_full_pipeline_injects_html_thead_into_split_html_table(tmp_path):
+    """End-to-end through chunking_by_paragraph_semantic: an oversized HTML table
+    whose tables.json carries a raw <thead> header has that header re-injected
+    (verbatim, spans preserved) into every non-first table chunk."""
+    html_header = (
+        '<thead><tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr></thead>'
+    )
+    head_row = '<tr><th rowspan="2">Metric</th><th colspan="2">Group</th></tr>'
+    data_rows = "".join(f"<tr><td>{'d' * 160}{i}</td></tr>" for i in range(6))
+    table = (
+        '<table id="tb-h" format="html">'
+        f"<thead>{head_row}</thead><tbody>{data_rows}</tbody></table>"
+    )
+    body = "\n".join(["lead paragraph", table, "trailing paragraph"])
+
+    # tables.json sidecar with an HTML-format header.
+    (tmp_path / "doc.tables.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "tables": {
+                    "tb-h": {
+                        "id": "tb-h",
+                        "format": "html",
+                        "content": table,
+                        "caption": "",
+                        "table_header": html_header,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    blocks_path = tmp_path / "doc.blocks.jsonl"
+    blocks_path.write_text(
+        json.dumps(
+            {
+                "type": "content",
+                "heading": "Section",
+                "parent_headings": [],
+                "level": 2,
+                "content": body,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    tokenizer = _make_tokenizer()
+    chunks = chunking_by_paragraph_semantic(
+        tokenizer,
+        body,
+        chunk_token_size=900,
+        blocks_path=str(blocks_path),
+        chunk_overlap_token_size=0,
+    )
+
+    table_chunks = [c for c in chunks if '<table id="tb-h"' in c["content"]]
+    assert len(table_chunks) >= 2  # the table was split
+    # Every table chunk carries exactly one <thead> with spans intact; the
+    # first keeps its own, later ones got the sidecar header spliced in.
+    for chunk in table_chunks:
+        assert chunk["content"].count("<thead>") == 1, chunk["content"]
+        assert 'rowspan="2"' in chunk["content"]
+        assert 'colspan="2"' in chunk["content"]
+    # At least one non-first chunk literally contains the injected header.
+    assert any(html_header in c["content"] for c in table_chunks[1:])
+
+
+@pytest.mark.offline
 def test_split_table_text_multi_row_header_pinned_not_duplicated():
     # A multi-row header is pinned out of the split body, so every slice gets
     # the full header exactly once — never a cut remnant duplicated into a
