@@ -95,15 +95,28 @@ def _token_window_source_span(
 
 def _make_chunk(
     *,
+    tokenizer: Tokenizer,
     content: str,
     tokens: int,
     order: int,
     source_span: dict[str, int] | None,
     emit_source_span: bool,
 ) -> dict[str, Any]:
+    """Build one chunk dict.
+
+    The stored content is the stripped text, so ``tokens`` must describe
+    the stripped text too: a padded segment otherwise over-reports tokens
+    (e.g. ``"  alpha  "`` counted 3 tokens for 1 token of content), and a
+    whitespace-only segment reports a nonzero count for empty content.
+    The recount only runs when stripping changed the text, so unpadded
+    chunks keep their caller-supplied count with no extra encode.
+    """
+    stripped = content.strip()
+    if stripped != content:
+        tokens = len(tokenizer.encode(stripped))
     item: dict[str, Any] = {
         "tokens": tokens,
-        "content": content.strip(),
+        "content": stripped,
         "chunk_order_index": order,
     }
     if emit_source_span and source_span is not None:
@@ -235,6 +248,7 @@ def chunking_by_token_size(
         for index, (_len, chunk, span) in enumerate(new_chunks):
             results.append(
                 _make_chunk(
+                    tokenizer=tokenizer,
                     content=chunk,
                     tokens=_len,
                     order=index,
@@ -265,6 +279,7 @@ def chunking_by_token_size(
                 )
             results.append(
                 _make_chunk(
+                    tokenizer=tokenizer,
                     content=chunk_content,
                     tokens=min(chunk_token_size, len(tokens) - start),
                     order=index,

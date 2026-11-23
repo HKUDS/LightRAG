@@ -900,6 +900,61 @@ def test_whitespace_handling():
 
 
 @pytest.mark.offline
+def test_chunk_tokens_match_stripped_content():
+    """`tokens` must count the stored (stripped) content, not the raw segment.
+
+    A padded segment previously over-reported tokens ("  alpha  " counted 9
+    tokens for 5 tokens of content).
+    """
+    tokenizer = make_tokenizer()
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        "  alpha  \n\n  beta  ",
+        split_by_character="\n\n",
+        split_by_character_only=True,
+        chunk_token_size=20,
+    )
+
+    assert [c["content"] for c in chunks] == ["alpha", "beta"]
+    assert chunks[0]["tokens"] == len(tokenizer.encode("alpha"))
+    assert chunks[1]["tokens"] == len(tokenizer.encode("beta"))
+
+
+@pytest.mark.offline
+def test_whitespace_only_segment_reports_zero_tokens():
+    """A segment that strips to empty content reports 0 tokens."""
+    tokenizer = make_tokenizer()
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        "hello\n\n   \n\nworld",
+        split_by_character="\n\n",
+        split_by_character_only=True,
+        chunk_token_size=20,
+    )
+
+    assert [c["content"] for c in chunks] == ["hello", "", "world"]
+    assert chunks[1]["tokens"] == 0
+
+
+@pytest.mark.offline
+def test_fixed_window_tokens_match_stripped_content():
+    """Same token-count agreement on the fixed-window path."""
+    tokenizer = make_tokenizer()
+
+    chunks = chunking_by_token_size(
+        tokenizer,
+        "  abcdefghij  ",
+        chunk_token_size=4,
+        chunk_overlap_token_size=0,
+    )
+
+    assert [c["content"] for c in chunks] == ["ab", "cdef", "ghij", ""]
+    assert [c["tokens"] for c in chunks] == [2, 4, 4, 0]
+
+
+@pytest.mark.offline
 def test_consecutive_delimiters():
     """Test handling of consecutive delimiters."""
     tokenizer = make_tokenizer()
