@@ -23,7 +23,6 @@ from opensearchpy.exceptions import (  # type: ignore
     ConflictError,
     TransportError,
 )
-import lightrag.kg.opensearch_impl
 from lightrag.exceptions import (
     StorageCapabilityError,
     StorageControlPlaneError,
@@ -5010,35 +5009,11 @@ class TestVectorStorageBatching:
         )
 
     @pytest.mark.asyncio
-    async def test_repeated_upserts_flush_in_single_bulk_call(
+    async def test_repeated_upserts_flush_in_one_bulk_with_batched_embeddings(
         self, global_config, embed_func, mock_client
     ):
-        """Many small upsert() calls collapse to one async_bulk on flush."""
-        embed_func = CountingEmbeddingFunc()
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
-            ) as mock_bulk:
-                mock_bulk.return_value = (5, [])
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                for i in range(5):
-                    await s.upsert({f"v{i}": {"content": f"doc {i}"}})
-                mock_bulk.assert_not_awaited()
-                assert embed_func.call_count == 0
-                await s.index_done_callback()
-                assert embed_func.call_count == 1
-                assert embed_func.batches == [[f"doc {i}" for i in range(5)]]
-                mock_bulk.assert_awaited_once()
-                actions = mock_bulk.call_args[0][1]
-                assert len(actions) == 5
-                assert {a["_id"] for a in actions} == {f"v{i}" for i in range(5)}
-
-    @pytest.mark.asyncio
-    async def test_deferred_embeddings_respect_batch_size(
-        self, global_config, embed_func, mock_client
-    ):
-        """Flush batches deferred embeddings by embedding_batch_num."""
+        """Many small upsert() calls are buffered untouched, then flushed as one
+        async_bulk whose deferred embeddings are batched by embedding_batch_num."""
         embed_func = CountingEmbeddingFunc()
         config = {**global_config, "embedding_batch_num": 2}
         with patch.object(ClientManager, "get_client", return_value=mock_client):
@@ -5050,6 +5025,8 @@ class TestVectorStorageBatching:
                 await s.initialize()
                 for i in range(5):
                     await s.upsert({f"v{i}": {"content": f"doc {i}"}})
+                mock_bulk.assert_not_awaited()
+                assert embed_func.call_count == 0
                 await s.index_done_callback()
                 assert embed_func.batches == [
                     ["doc 0", "doc 1"],
@@ -5057,6 +5034,9 @@ class TestVectorStorageBatching:
                     ["doc 4"],
                 ]
                 mock_bulk.assert_awaited_once()
+                actions = mock_bulk.call_args[0][1]
+                assert len(actions) == 5
+                assert {a["_id"] for a in actions} == {f"v{i}" for i in range(5)}
 
     @pytest.mark.asyncio
     async def test_upsert_overwrites_pending_doc_for_same_id(
@@ -5161,7 +5141,13 @@ class TestVectorStorageBatching:
         mock_client.mget = AsyncMock(
             return_value={
                 "docs": [
-                    {"_id": "v2", "found": True, "_source": {"content": "from_index"}},
+                    {
+                        "_id": "v2",
+                        "found": True,
+                        # defensive: server-side excludes might be ignored;
+                        # the vector is still popped client-side.
+                        "_source": {"content": "from_index", "vector": [0.2] * 128},
+                    },
                 ]
             }
         )
@@ -5170,8 +5156,10 @@ class TestVectorStorageBatching:
             await s.initialize()
             await s.upsert({"v1": {"content": "buffered"}})
             docs = await s.get_by_ids(["v1", "v2"])
+            assert [d["id"] for d in docs] == ["v1", "v2"]
             assert docs[0]["content"] == "buffered"
             assert docs[1]["content"] == "from_index"
+            assert all("vector" not in d for d in docs)
             # Only the unbuffered id is requested from OpenSearch,
             # and vector is excluded server-side.
             mock_client.mget.assert_awaited_once_with(
@@ -5181,28 +5169,11 @@ class TestVectorStorageBatching:
             )
 
     @pytest.mark.asyncio
-    async def test_get_vectors_by_ids_uses_buffer(
+    async def test_get_vectors_by_ids_embeds_buffer_once_and_flush_reuses_it(
         self, global_config, embed_func, mock_client
     ):
-        """get_vectors_by_ids returns buffered embeddings without an mget roundtrip."""
-        embed_func = CountingEmbeddingFunc()
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            await s.upsert({"v1": {"content": "x"}})
-            assert embed_func.call_count == 0
-            vecs = await s.get_vectors_by_ids(["v1"])
-            assert "v1" in vecs
-            assert len(vecs["v1"]) == 128
-            assert embed_func.call_count == 1
-            assert s._pending_vector_docs["v1"].vector == vecs["v1"]
-            mock_client.mget.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_lazy_get_vectors_cache_is_reused_by_flush(
-        self, global_config, embed_func, mock_client
-    ):
-        """A lazy pending-vector read should not force a second embedding during flush."""
+        """get_vectors_by_ids lazily embeds a buffered doc without an mget
+        roundtrip, and the flush reuses that embedding instead of a second one."""
         embed_func = CountingEmbeddingFunc()
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
@@ -5212,7 +5183,11 @@ class TestVectorStorageBatching:
                 s = self._make(global_config, embed_func)
                 await s.initialize()
                 await s.upsert({"v1": {"content": "x"}})
+                assert embed_func.call_count == 0
                 vecs = await s.get_vectors_by_ids(["v1"])
+                assert len(vecs["v1"]) == 128
+                assert embed_func.call_count == 1
+                mock_client.mget.assert_not_awaited()
                 await s.index_done_callback()
                 assert embed_func.call_count == 1
                 actions = mock_bulk.call_args[0][1]
@@ -5401,31 +5376,6 @@ class TestVectorStorageBatching:
                 assert embed_func.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_finalize_wraps_embedding_failure(
-        self, global_config, embed_func, mock_client
-    ):
-        """finalize() reports pending buffers when deferred embedding fails."""
-        embed_func = CountingEmbeddingFunc(fail_times=1)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch.object(
-                ClientManager, "release_client", new_callable=AsyncMock
-            ) as mock_release:
-                with patch(
-                    "lightrag.kg.opensearch_impl.helpers.async_bulk",
-                    new_callable=AsyncMock,
-                ) as mock_bulk:
-                    s = self._make(global_config, embed_func)
-                    await s.initialize()
-                    await s.upsert({"v1": {"content": "stuck"}})
-                    with pytest.raises(RuntimeError, match="pending upserts"):
-                        await s.finalize()
-                    mock_bulk.assert_not_awaited()
-                    mock_release.assert_awaited_once()
-                    assert s.client is None
-                    assert "v1" in s._pending_vector_docs
-                    assert s._pending_vector_docs["v1"].vector is None
-
-    @pytest.mark.asyncio
     async def test_delete_entity_relation_prunes_pending_buffer(
         self, global_config, embed_func, mock_client
     ):
@@ -5469,10 +5419,13 @@ class TestVectorStorageBatching:
 
         retryable, non_retryable = _extract_bulk_failed_ids(
             [
-                # Retryable: 5xx server error.
-                {"index": {"_id": "r-500", "status": 500}},
-                # Retryable: rate-limited.
+                # Retryable: every member of _RETRYABLE_BULK_STATUSES.
+                {"index": {"_id": "r-408", "status": 408}},
                 {"index": {"_id": "r-429", "status": 429}},
+                {"index": {"_id": "r-500", "status": 500}},
+                {"index": {"_id": "r-502", "status": 502}},
+                {"index": {"_id": "r-503", "status": 503}},
+                {"index": {"_id": "r-504", "status": 504}},
                 # Retryable: missing status (network / parse failure).
                 {"create": {"_id": "r-none"}},
                 # Non-retryable: bad request with dict-shape error.
@@ -5496,7 +5449,15 @@ class TestVectorStorageBatching:
                 {"update": {}},
             ]
         )
-        assert retryable == {"r-500", "r-429", "r-none"}
+        assert retryable == {
+            "r-408",
+            "r-429",
+            "r-500",
+            "r-502",
+            "r-503",
+            "r-504",
+            "r-none",
+        }
 
         non_retryable_ids = {op.doc_id for op in non_retryable}
         assert non_retryable_ids == {"n-400", "n-404"}
@@ -5540,31 +5501,44 @@ class TestVectorStorageBatching:
         """4xx (non-429) permanent failures must raise so the pipeline aborts
         instead of marking the document PROCESSED; the failed op is dropped
         from the buffer (it can never land — keeping it would replay-and-refail
-        on every later flush), while the retryable op stays for retry."""
+        on every later flush), while the retryable op stays for retry. The
+        error carries a sample with id/status/error so the abort is
+        diagnosable."""
+        # v0..v5 fail permanently (400 mapping error); v6 fails transiently.
+        failed = [
+            {
+                "index": {
+                    "_id": f"v{i}",
+                    "status": 400,
+                    "error": {
+                        "type": "mapper_parsing_exception",
+                        "reason": f"bad field {i}",
+                    },
+                }
+            }
+            for i in range(6)
+        ] + [{"index": {"_id": "v6", "status": 503, "error": "down"}}]
         with patch.object(ClientManager, "get_client", return_value=mock_client):
             with patch(
                 "lightrag.kg.opensearch_impl.helpers.async_bulk", new_callable=AsyncMock
             ) as mock_bulk:
-                # v1 fails permanently (400 mapping error); v2 fails
-                # transiently (503).
-                mock_bulk.return_value = (
-                    0,
-                    [
-                        {"index": {"_id": "v1", "status": 400, "error": "bad mapping"}},
-                        {"index": {"_id": "v2", "status": 503, "error": "down"}},
-                    ],
-                )
+                mock_bulk.return_value = (0, failed)
                 s = self._make(global_config, embed_func)
                 await s.initialize()
-                await s.upsert(
-                    {"v1": {"content": "bad"}, "v2": {"content": "transient"}}
-                )
-                with pytest.raises(RuntimeError, match="failed permanently"):
+                await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(7)})
+                with pytest.raises(RuntimeError, match="failed permanently") as excinfo:
                     await s.index_done_callback()
-                # v1 (non-retryable) dropped (can never land; not replayed);
-                # v2 (retryable) retained for the next flush.
-                assert "v1" not in s._pending_vector_docs
-                assert "v2" in s._pending_vector_docs
+                # Non-retryable ops dropped (can never land; not replayed);
+                # the retryable one retained for the next flush.
+                assert set(s._pending_vector_docs) == {"v6"}
+        error_text = str(excinfo.value)
+        # Sample contains the first 5 ids with op/status/reason text.
+        for i in range(5):
+            assert f"v{i}" in error_text
+        assert "status=400" in error_text
+        assert "bad field" in error_text
+        # 6 permanent failures reported in aggregate.
+        assert "6 vector ops" in error_text
 
     @pytest.mark.asyncio
     async def test_drop_pending_index_ops_clears_buffers(
@@ -5717,82 +5691,6 @@ class TestVectorStorageBatching:
                 body={"ids": ["v1"]},
                 _source_excludes=["vector"],
             )
-
-    @pytest.mark.asyncio
-    async def test_get_by_ids_strips_vector_from_mget_path(
-        self, global_config, embed_func, mock_client
-    ):
-        """get_by_ids strips vector on the fallback path and forwards
-        _source_excludes to mget."""
-        mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {
-                        "_id": "v1",
-                        "found": True,
-                        "_source": {"content": "a", "vector": [0.1] * 128},
-                    },
-                    {
-                        "_id": "v2",
-                        "found": True,
-                        "_source": {"content": "b", "vector": [0.2] * 128},
-                    },
-                ]
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            docs = await s.get_by_ids(["v1", "v2"])
-            assert all(d is not None for d in docs)
-            assert all("vector" not in d for d in docs)
-            assert [d["id"] for d in docs] == ["v1", "v2"]
-            assert docs[0]["content"] == "a"
-            assert docs[1]["content"] == "b"
-            mock_client.mget.assert_awaited_once_with(
-                index=s._index_name,
-                body={"ids": ["v1", "v2"]},
-                _source_excludes=["vector"],
-            )
-
-    @pytest.mark.asyncio
-    async def test_non_retryable_raises_with_sample_ids(
-        self, global_config, embed_func, mock_client
-    ):
-        """Non-retryable bulk failures raise an error carrying a sample with
-        id/status/error so the abort is diagnosable."""
-        failed = [
-            {
-                "index": {
-                    "_id": f"v{i}",
-                    "status": 400,
-                    "error": {
-                        "type": "mapper_parsing_exception",
-                        "reason": f"bad field {i}",
-                    },
-                }
-            }
-            for i in range(6)
-        ]
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            with patch(
-                "lightrag.kg.opensearch_impl.helpers.async_bulk",
-                new_callable=AsyncMock,
-            ) as mock_bulk:
-                mock_bulk.return_value = (0, failed)
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                await s.upsert({f"v{i}": {"content": f"d{i}"} for i in range(6)})
-                with pytest.raises(RuntimeError) as excinfo:
-                    await s.index_done_callback()
-        error_text = str(excinfo.value)
-        # Sample contains the first 5 ids with op/status/reason text.
-        for i in range(5):
-            assert f"v{i}" in error_text
-        assert "status=400" in error_text
-        assert "bad field" in error_text
-        # 6 permanent failures reported in aggregate.
-        assert "6 vector ops" in error_text
 
     @pytest.mark.asyncio
     async def test_index_done_callback_flushes_when_index_recreated(
@@ -6032,6 +5930,15 @@ class TestGraphReadContract:
         Regression: the ranking came only from the edge index aggregation, so a
         graph of entities with no relations reported an empty popular-label
         list even though every one of those entities exists.
+
+        The isolated-node scan must also sort on entity_id explicitly. Every
+        degree-0 label ties, so the scan order IS the tie-break — and the scan
+        exits as soon as it has enough labels. Reusing the pagination helper
+        ``_pit_sort_with_field`` would collapse to ``_shard_doc`` on OpenSearch
+        >= 3.3 (the autouse fixture models that cluster), making the backfill
+        return an arbitrary shard-ordered subset and omit alphabetically
+        earlier entities. ``get_all_labels`` tolerates that helper only because
+        it reads every page and re-sorts in Python afterwards.
         """
         mock_client.search = AsyncMock(
             side_effect=[
@@ -6052,45 +5959,10 @@ class TestGraphReadContract:
         assert labels == ["A", "B", "Orphan1", "Orphan2"]
         mock_client.create_pit.assert_awaited_once()
         mock_client.delete_pit.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("shard_doc_supported", [False, True])
-    async def test_isolated_backfill_sorts_by_label_not_shard_order(
-        self, global_config, embed_func, mock_client, shard_doc_supported
-    ):
-        """The isolated-node scan must sort on entity_id explicitly.
-
-        Every degree-0 label ties, so the scan order IS the tie-break — and the
-        scan exits as soon as it has enough labels. Reusing the pagination
-        helper ``_pit_sort_with_field`` would collapse to ``_shard_doc`` on
-        OpenSearch >= 3.3, making the backfill return an arbitrary shard-ordered
-        subset and omit alphabetically earlier entities.
-        ``get_all_labels`` tolerates that helper only because it reads every page
-        and re-sorts in Python afterwards.
-        """
-        mock_client.search = AsyncMock(
-            side_effect=[
-                self._aggs([{"key": "A", "doc_count": 1}], []),
-                self._node_page(["A", "Orphan"]),
-            ]
-        )
-        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"A"}))
-        with patch.object(
-            lightrag.kg.opensearch_impl, "_shard_doc_supported", shard_doc_supported
-        ):
-            with patch.object(ClientManager, "get_client", return_value=mock_client):
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                await s.get_popular_labels(limit=10)
-
-        # The PRIMARY sort key must be entity_id ascending on every cluster
-        # version — an added tiebreaker would be harmless, a _shard_doc primary
-        # is the bug.
+        # The PRIMARY sort key must be entity_id ascending — an added
+        # tiebreaker would be harmless, a _shard_doc primary is the bug.
         scan_body = mock_client.search.call_args_list[-1].kwargs["body"]
-        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, (
-            f"isolated backfill must sort on entity_id "
-            f"(_shard_doc_supported={shard_doc_supported}), got {scan_body['sort']}"
-        )
+        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, scan_body
 
     @pytest.mark.asyncio
     async def test_popular_labels_skips_node_scan_when_limit_already_filled(
@@ -6280,40 +6152,16 @@ class TestGraphReadContract:
         assert kg.is_truncated is True
 
     @pytest.mark.asyncio
-    async def test_knowledge_graph_all_does_not_let_a_dangling_id_take_a_slot(
-        self, global_config, embed_func, mock_client
-    ):
-        """The ranked ids are edge ENDPOINTS, and upsert_edge only guarantees the
-        source node exists, so one can be a dangling id with no node document.
-
-        Applying max_nodes before resolving existence let such an id consume a
-        real node's slot and shrink the answer. The label tie-break is what makes
-        it reachable -- a dangling label sorts like any other -- so here the
-        dangling target "A" outranks the real source "B" and, unresolved, would
-        leave the graph empty.
-        """
-        mock_client.count = AsyncMock(return_value={"count": 3})
-        mock_client.search = AsyncMock(
-            return_value=self._aggs(
-                [{"key": "B", "doc_count": 1}], [{"key": "A", "doc_count": 1}]
-            )
-        )
-        mock_client.mget = AsyncMock(side_effect=_node_mget_side_effect({"B"}))
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            kg = await s.get_knowledge_graph("*", max_depth=1, max_nodes=1)
-
-        assert [node.id for node in kg.nodes] == ["B"]
-
-    @pytest.mark.asyncio
     async def test_knowledge_graph_all_refills_from_the_ranked_band(
         self, global_config, embed_func, mock_client
     ):
         """A slot freed by a dangling id goes to the NEXT-RANKED candidate.
 
-        Falling through to the isolated-node top-up instead would hand it to an
-        arbitrary node from the node index and quietly break the ranking.
+        The ranked ids are edge ENDPOINTS, so one can be a dangling id with no
+        node document. Applying max_nodes before resolving existence let such
+        an id consume a real node's slot and shrink the answer. Falling through
+        to the isolated-node top-up instead would hand the slot to an arbitrary
+        node from the node index and quietly break the ranking.
         """
         mock_client.count = AsyncMock(return_value={"count": 9})
         mock_client.search = AsyncMock(
@@ -6380,9 +6228,8 @@ class TestGraphReadContract:
         assert [node.id for node in kg.nodes] == ["Alpha", "Beta"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("shard_doc_supported", [False, True])
     async def test_knowledge_graph_all_topup_scan_sorts_by_label_not_shard_order(
-        self, global_config, embed_func, mock_client, shard_doc_supported
+        self, global_config, embed_func, mock_client
     ):
         """The same tie-break has to hold on the PIT path, which is what the
         top-up takes once something HAS been accepted (non-empty exclusions).
@@ -6391,6 +6238,7 @@ class TestGraphReadContract:
         collapses to ``_shard_doc`` on OpenSearch >= 3.3 — so on any modern
         cluster the degree-0 slots were handed out in shard order, exactly the
         defect ``_collect_isolated_labels`` documents for get_popular_labels.
+        The autouse fixture models such a cluster (``_shard_doc_supported``).
         """
         mock_client.count = AsyncMock(return_value={"count": 9})
         mock_client.search = AsyncMock(
@@ -6403,38 +6251,19 @@ class TestGraphReadContract:
         mock_client.mget = AsyncMock(
             side_effect=_node_mget_side_effect({"Connected", "Aardvark", "Orphan"})
         )
-        with patch.object(
-            lightrag.kg.opensearch_impl, "_shard_doc_supported", shard_doc_supported
-        ):
-            with patch.object(ClientManager, "get_client", return_value=mock_client):
-                s = self._make(global_config, embed_func)
-                await s.initialize()
-                await s.get_knowledge_graph("*", max_depth=1, max_nodes=3)
+        with patch.object(ClientManager, "get_client", return_value=mock_client):
+            s = self._make(global_config, embed_func)
+            await s.initialize()
+            await s.get_knowledge_graph("*", max_depth=1, max_nodes=3)
 
         scan_body = next(
             call.kwargs["body"]
             for call in mock_client.search.call_args_list
             if "pit" in call.kwargs.get("body", {})
         )
-        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, (
-            f"isolated top-up must sort on entity_id "
-            f"(_shard_doc_supported={shard_doc_supported}), got {scan_body['sort']}"
-        )
+        assert scan_body["sort"][0] == {"entity_id": {"order": "asc"}}, scan_body
 
     # -- get_node_edges -----------------------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_get_node_edges_returns_none_for_missing_node(
-        self, global_config, embed_func, mock_client
-    ):
-        mock_client.search = AsyncMock(
-            return_value={"hits": {"hits": [], "total": {"value": 0}}}
-        )
-        mock_client.exists = AsyncMock(return_value=False)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.get_node_edges("NoSuchEntity") is None
 
     @pytest.mark.asyncio
     async def test_get_node_edges_returns_empty_list_for_isolated_node(
@@ -6450,34 +6279,11 @@ class TestGraphReadContract:
             assert await s.get_node_edges("Lonely") == []
 
     @pytest.mark.asyncio
-    async def test_get_node_edges_returns_edges_for_an_existing_node(
-        self, global_config, embed_func, mock_client
-    ):
-        mock_client.search = AsyncMock(
-            return_value={
-                "hits": {
-                    "hits": [
-                        {
-                            "_id": "e1",
-                            "_source": {"source_node_id": "A", "target_node_id": "B"},
-                            "sort": [1],
-                        }
-                    ],
-                    "total": {"value": 1},
-                }
-            }
-        )
-        mock_client.exists = AsyncMock(return_value=True)
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            assert await s.get_node_edges("A") == [("A", "B")]
-
-    @pytest.mark.asyncio
     async def test_get_node_edges_returns_none_for_a_dangling_target_endpoint(
         self, global_config, embed_func, mock_client
     ):
-        """Having edges does NOT prove the node exists in this backend.
+        """An absent node answers None, never ``[]`` -- and having edges does
+        NOT prove the node exists in this backend.
 
         Writes now materialize both endpoints, but documents indexed before that
         change can still hold an id that appears only as an edge target with no
@@ -6533,30 +6339,6 @@ class TestGraphEndpointPlaceholderSafety:
         )
 
     @pytest.mark.asyncio
-    async def test_has_nodes_batch_raises_on_item_level_error(
-        self, global_config, embed_func, mock_client
-    ):
-        """An mget item carrying an `error` is UNKNOWN, never "absent".
-
-        OpenSearch answers mget with HTTP 200 even when an individual item
-        failed (unavailable shard). Reading the missing `found` flag as absent
-        would make upsert_edge overwrite a live node with a bare placeholder.
-        """
-        mock_client.mget = AsyncMock(
-            return_value={
-                "docs": [
-                    {"_id": "A", "found": True, "_source": {"entity_id": "A"}},
-                    {"_id": "B", "error": {"type": "shard_unavailable"}},
-                ]
-            }
-        )
-        with patch.object(ClientManager, "get_client", return_value=mock_client):
-            s = self._make(global_config, embed_func)
-            await s.initialize()
-            with pytest.raises(RuntimeError, match="mget item error"):
-                await s.has_nodes_batch(["A", "B"])
-
-    @pytest.mark.asyncio
     async def test_has_nodes_batch_raises_on_short_docs_array(
         self, global_config, embed_func, mock_client
     ):
@@ -6579,8 +6361,11 @@ class TestGraphEndpointPlaceholderSafety:
     ):
         """End to end: upsert_edge fails loudly instead of placeholdering.
 
-        This is the actual data-loss path — an ambiguous probe result feeding a
-        placeholder write that would replace a node's description/source_ids.
+        An mget item carrying an `error` is UNKNOWN, never "absent": OpenSearch
+        answers mget with HTTP 200 even when an individual item failed
+        (unavailable shard). This is the actual data-loss path — an ambiguous
+        probe result feeding a placeholder write that would replace a node's
+        description/source_ids.
         """
         mock_client.mget = AsyncMock(
             return_value={
