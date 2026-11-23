@@ -1196,7 +1196,7 @@ async def openai_embed(
             default (600 s), as in ``openai_complete_if_cache``.
 
     Returns:
-        A numpy array of embeddings, one per input text.
+        A numpy array of embeddings, one per input text in input order.
 
     Raises:
         APIConnectionError: If there is a connection error with the OpenAI API.
@@ -1296,12 +1296,28 @@ async def openai_embed(
             }
             token_tracker.add_usage(token_counts)
 
+        rows = response.data
+        # Some compatible endpoints omit indices entirely. Preserve their
+        # response order, but never accept an ambiguous partially indexed batch.
+        indices = [getattr(row, "index", None) for row in rows]
+        if any(index is not None for index in indices):
+            if (
+                len(indices) != len(texts)
+                or any(type(index) is not int for index in indices)
+                or set(indices) != set(range(len(texts)))
+            ):
+                raise ValueError(
+                    f"OpenAI-compatible API returned invalid embedding indices "
+                    f"for {len(texts)} texts (first 10: {indices[:10]})"
+                )
+            rows = sorted(rows, key=lambda row: row.index)
+
         return np.array(
             [
                 np.array(dp.embedding, dtype=np.float32)
                 if isinstance(dp.embedding, list)
                 else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
-                for dp in response.data
+                for dp in rows
             ]
         )
     finally:
