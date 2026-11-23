@@ -11,9 +11,6 @@ pytestmark = pytest.mark.offline
 
 
 def test_timeout_help_does_not_advertise_none_or_infinite(monkeypatch, capsys):
-    monkeypatch.delenv("TIMEOUT", raising=False)
-    monkeypatch.setenv("LLM_BINDING", "openai")
-    monkeypatch.setenv("EMBEDDING_BINDING", "openai")
     monkeypatch.setattr(sys, "argv", ["lightrag-server", "--help"])
 
     with pytest.raises(SystemExit) as exc_info:
