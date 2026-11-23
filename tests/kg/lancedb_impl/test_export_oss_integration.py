@@ -1,22 +1,20 @@
-"""Real-OSS integration test for the cold-snapshot export job.
+"""Real-OSS integration test for the cold-snapshot export job (native oss://).
 
-WRITTEN, NOT YET RUN against OSS: the bucket policy currently denies List
-operations, which lancedb's connect/namespace layer issues. Run it ON THE ECS
-BOX once the grant lands (internal endpoint is ECS-only):
+Run ON THE ECS BOX (the internal endpoint is ECS-only):
 
     LIGHTRAG_RUN_INTEGRATION=true \
     OSS_BUCKET=<bucket> \
-    OSS_ENDPOINT=oss-cn-hangzhou-internal.aliyuncs.com \
-    OSS_REGION=oss-cn-hangzhou \
-    OSS_ACCESS_KEY_ID=... OSS_ACCESS_KEY_SECRET=... \
-    ./scripts/test.sh tests/kg/lancedb_impl/test_export_s3_integration.py --run-integration
+    OSS_ENDPOINT=https://oss-cn-hangzhou-internal.aliyuncs.com \
+    OSS_REGION=cn-hangzhou \
+    OSS_DEFAULT_SECRET_ID=... OSS_DEFAULT_SECRET_KEY=... OSS_DEFAULT_SECRET_TOKEN=... \
+    ./scripts/test.sh tests/kg/lancedb_impl/test_export_oss_integration.py --run-integration
 
-Credentials may also use the .ossenv names (oss_access_ak / oss_access_sk) or
-AWS_* names; ``storage_options_from_env`` maps all three and sets the
-virtual-hosted addressing OSS requires (path-style is rejected). Whether
-lancedb's object_store needs an equivalent of the awscli
-AWS_REQUEST_CHECKSUM_CALCULATION=when_required workaround on PUT is for the
-integration run to discover.
+lancedb 0.41 speaks oss:// natively: ``storage_options_from_env`` emits the
+canonical access_key_id/access_key_secret/security_token/endpoint/region keys.
+The STS token key is ``security_token``; aws_* keys and s3:// virtual-hosted
+addressing do NOT work against OSS (the bucket is stripped -> NoSuchBucket).
+OSS_ACCESS_KEY_ID/SECRET and oss_access_ak/sk names map too; AWS_* names serve
+s3:// destinations only.
 """
 
 import os
@@ -51,7 +49,7 @@ async def test_export_to_oss_publishes_tagged_snapshot(tmp_path):
     embedder.armed = True
     options = storage_options_from_env()
     prefix = f"lightrag-n1-integration-{uuid.uuid4().hex[:12]}"
-    dest = f"s3://{os.environ['OSS_BUCKET']}/{prefix}"
+    dest = f"oss://{os.environ['OSS_BUCKET']}/{prefix}"
     tag = f"int-{uuid.uuid4().hex[:8]}"
     expected = {"docs": len(DOCS), "chunks": len(CHUNKS),
                 "entities": len(NODES), "relations": len(EDGES)}

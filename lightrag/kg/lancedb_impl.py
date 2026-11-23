@@ -1,25 +1,21 @@
 """Cold-snapshot export job: LightRAG source-of-truth -> tagged Lance tables.
 
 Rules for callers:
-- Offline JOB, not a storage backend: registers nothing, serves no queries.
-  Run one export job per destination at a time.
-- Pass an INITIALIZED, quiesced LightRAG: no writers, every
-  ``index_done_callback`` flush complete. Vectors are READ from vector storage
-  (``get_vectors_by_ids``), never computed; on deferred-embedding backends an
-  unflushed row can trigger a lazy embed, so install a fail-loud embedding
-  function to enforce quiescence (the CLI does).
-- Sources of truth: ``full_docs`` / ``text_chunks`` KV + the graph; vector rows
-  join by the rebuild id scheme (``ent-`` / ``rel-`` hashes, chunk ids). Vector
-  rows with no source record are disposable, not exported.
-- Every source must contribute >= 1 row and every vector-eligible record must
-  have a stored vector of the configured dimension; violations raise
-  ``ExportError`` BEFORE anything is written.
-- ``dest``: local directory or ``s3://`` URI (creds: ``storage_options_from_env``).
-  Each export writes a NEW version of docs/chunks/entities/relations; embeddings
-  are fixed-size-list float32 columns, so a later rebuild never re-embeds.
-- Tags are immutable: reusing a tag name raises ``ExportError`` before any write.
-  Tags are created only after all four tables are complete, so an interrupted
-  export leaves untagged versions and a re-run with the same tag publishes cleanly.
+- Offline JOB, not a storage backend: no registry role, no queries; one job per destination.
+- Pass an INITIALIZED, quiesced LightRAG (no writers, every ``index_done_callback``
+  flush complete). Vectors are READ from vector storage (``get_vectors_by_ids``),
+  never computed; on deferred-embedding backends an unflushed row can trigger a
+  lazy embed, so install a fail-loud embedding function (the CLI does).
+- Sources of truth: ``full_docs`` / ``text_chunks`` KV + the graph; vector rows join
+  by the rebuild id scheme (``ent-`` / ``rel-`` hashes, chunk ids); rows with no
+  source record are disposable. Every source must contribute >= 1 row and every
+  vector-eligible record a stored vector of the configured dimension; violations
+  raise ``ExportError`` BEFORE anything is written.
+- ``dest``: local directory, ``oss://`` or ``s3://`` URI (creds:
+  ``storage_options_from_env``). Each export writes a NEW version of all four
+  tables; embeddings are fixed-size-list float32 columns, so rebuilds never re-embed.
+- Tags are immutable: reusing a tag raises ``ExportError`` before any write; tags
+  land only after all four tables complete, so a re-run publishes cleanly.
 
 CLI: ``python -m lightrag.kg.lancedb_impl --working-dir DIR --dest DEST --tag TAG``
 """
@@ -55,23 +51,32 @@ class ExportError(RuntimeError):
     """A snapshot was refused or could not be published; nothing is tagged."""
 
 
-def storage_options_from_env() -> dict[str, str]:
-    """object_store options for an S3/OSS destination; {} when no creds are set.
-
-    Accepts OSS_ACCESS_KEY_ID/SECRET, oss_access_ak/sk and AWS_* names;
-    virtual-hosted addressing is required by OSS.
-    """
-    key = os.getenv("OSS_ACCESS_KEY_ID") or os.getenv("oss_access_ak") or os.getenv("AWS_ACCESS_KEY_ID")
-    secret = os.getenv("OSS_ACCESS_KEY_SECRET") or os.getenv("oss_access_sk") or os.getenv("AWS_SECRET_ACCESS_KEY")
+def storage_options_from_env(dest: str = "") -> dict[str, str]:
+    """object_store options for ``dest``; {} when no credentials are set.
+    oss:// (or empty dest) + OSS creds -> native access_key_id/access_key_secret/security_token/endpoint/region
+    (the oss provider ignores aws_* keys); s3:// -> aws_* keys, virtual-hosted. Creds: OSS_DEFAULT_SECRET_ID/KEY/TOKEN
+    (STS), OSS_ACCESS_KEY_ID/SECRET, oss_access_ak/sk, AWS_*; the token key is security_token, never session_token."""
+    oss_key = os.getenv("OSS_DEFAULT_SECRET_ID") or os.getenv("OSS_ACCESS_KEY_ID") or os.getenv("oss_access_ak")
+    oss_secret = os.getenv("OSS_DEFAULT_SECRET_KEY") or os.getenv("OSS_ACCESS_KEY_SECRET") or os.getenv("oss_access_sk")
+    key, secret = oss_key or os.getenv("AWS_ACCESS_KEY_ID"), oss_secret or os.getenv("AWS_SECRET_ACCESS_KEY")
     if not key or not secret:
         return {}
-    options = {"aws_access_key_id": key, "aws_secret_access_key": secret,
-               "virtual_hosted_style_request": "true"}
-    endpoint = os.getenv("OSS_ENDPOINT") or os.getenv("AWS_ENDPOINT_URL") or os.getenv("AWS_ENDPOINT")
+    token = os.getenv("OSS_DEFAULT_SECRET_TOKEN") or os.getenv("AWS_SESSION_TOKEN")
+    endpoint = os.getenv("OSS_ENDPOINT") or os.getenv("oss_endpoint") or os.getenv("AWS_ENDPOINT_URL") or os.getenv("AWS_ENDPOINT")
+    region = os.getenv("OSS_REGION") or os.getenv("AWS_REGION")
+    if oss_key and not dest.startswith("s3://"):
+        options = {"access_key_id": key, "access_key_secret": secret, "region": region or (endpoint or "").split("://")[-1].split(".")[0].removeprefix("oss-").removesuffix("-internal") or "cn-hangzhou"}
+        if token:
+            options["security_token"] = token
+        if endpoint:
+            options["endpoint"] = endpoint
+        return options
+    options = {"aws_access_key_id": key, "aws_secret_access_key": secret, "virtual_hosted_style_request": "true", "aws_region": region or "us-east-1"}
+    if token:
+        options["aws_session_token"] = token
     if endpoint:
         options["aws_endpoint"] = endpoint
         options["aws_allow_http"] = "true" if endpoint.startswith("http://") else "false"
-    options["aws_region"] = os.getenv("OSS_REGION") or os.getenv("AWS_REGION") or "us-east-1"
     return options
 
 
@@ -243,7 +248,7 @@ async def export_snapshot(
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Export a LightRAG workspace as a tagged Lance cold snapshot.")
     p.add_argument("--working-dir", default=os.getenv("WORKING_DIR", "./rag_storage"))
-    p.add_argument("--dest", required=True, help="local directory or s3:// URI")
+    p.add_argument("--dest", required=True, help="local directory, oss:// or s3:// URI")
     p.add_argument("--tag", required=True, help="immutable tag name for this snapshot")
     p.add_argument("--workspace", default=os.getenv("WORKSPACE", ""))
     p.add_argument("--batch-size", type=int, default=500)
@@ -272,7 +277,7 @@ async def _run(args: argparse.Namespace) -> None:
     )
     await rag.initialize_storages()
     try:
-        options = storage_options_from_env() if args.dest.startswith("s3://") else None
+        options = storage_options_from_env(args.dest) if args.dest.startswith(("s3://", "oss://")) else None
         await export_snapshot(rag, args.dest, args.tag, batch_size=args.batch_size, storage_options=options)
     finally:
         await rag.finalize_storages()
