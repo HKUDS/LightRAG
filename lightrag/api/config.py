@@ -405,7 +405,11 @@ def parse_args() -> argparse.Namespace:
         "--timeout",
         default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
         type=int,
-        help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
+        help=(
+            "Base of the Gunicorn worker timeout in integer seconds "
+            "(worker timeout = value + 30; 0 does not disable it). "
+            "Ignored by lightrag-server; LLM requests use LLM_TIMEOUT"
+        ),
     )
 
     # RAG configuration

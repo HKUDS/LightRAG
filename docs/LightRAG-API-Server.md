@@ -222,7 +222,7 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 - `--host`: Server listening address (default: 0.0.0.0)
 - `--port`: Server listening port (default: 9621)
-- `--timeout`: LLM request timeout (default: 150 seconds)
+- `--timeout`: Base of the Gunicorn worker timeout, in seconds; the worker timeout is this value + 30 (default: 150). Ignored by `lightrag-server`; LLM requests use `LLM_TIMEOUT`
 - `--log-level`: Log level (default: INFO)
 - `--working-dir`: Database persistence directory (default: ./rag_storage)
 - `--input-dir`: Directory for uploaded files (default: ./inputs)
@@ -1068,7 +1068,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--port` | `9621` | Server port |
 | `--working-dir` | `./rag_storage` | Working directory for RAG storage |
 | `--input-dir` | `./inputs` | Directory containing uploaded/input documents |
-| `--timeout` | `150` | Gunicorn worker timeout and fallback request timeout |
+| `--timeout` | `150` | Base of the Gunicorn worker timeout in seconds (worker timeout = value + 30); not an LLM request timeout |
 | `--max-async` | `4` | Base maximum LLM concurrency; also the per-document chunk-extraction task limit (each entity/relation merge phase uses twice this task limit) |
 | `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `--verbose` | `False` | Verbose debug output, effective with debug logging |

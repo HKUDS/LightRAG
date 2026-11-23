@@ -222,7 +222,7 @@ lightrag-gunicorn --workers 4
 
 - `--host`：服务器监听地址（默认：0.0.0.0）
 - `--port`：服务器监听端口（默认：9621）
-- `--timeout`：LLM 请求超时时间（默认：150 秒）
+- `--timeout`：Gunicorn worker 超时的基准秒数，实际 worker 超时为该值 + 30（默认：150）。`lightrag-server` 不使用；LLM 请求超时由 `LLM_TIMEOUT` 控制
 - `--log-level`：日志级别（默认：INFO）
 - `--working-dir`：数据库持久化目录（默认：./rag_storage）
 - `--input-dir`：上传文件存放目录（默认：./inputs）
@@ -1008,7 +1008,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--port` | `9621` | 服务器端口 |
 | `--working-dir` | `./rag_storage` | RAG 存储工作目录 |
 | `--input-dir` | `./inputs` | 上传/输入文档目录 |
-| `--timeout` | `150` | Gunicorn worker timeout 以及 fallback 请求超时 |
+| `--timeout` | `150` | Gunicorn worker 超时的基准秒数（worker 超时 = 该值 + 30）；不是 LLM 请求超时 |
 | `--max-async` | `4` | 基础 LLM 最大并发；也是单文档 chunk 抽取的 task 上限（每个实体/关系合并阶段使用其两倍的 task 上限） |
 | `--log-level` | `INFO` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`） |
 | `--verbose` | `False` | 详细调试输出，配合 debug 日志生效 |
