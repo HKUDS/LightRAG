@@ -1,20 +1,20 @@
 """Real-OSS integration test for rebuild-from-snapshot (zero re-embed promotion).
 
-WRITTEN, NOT YET RUN against OSS: the bucket policy currently denies List
-operations, which lancedb's connect/namespace layer issues. Run it ON THE ECS
-BOX once the grant lands (internal endpoint is ECS-only):
+Run ON THE ECS BOX (the internal endpoint is ECS-only):
 
     LIGHTRAG_RUN_INTEGRATION=true \
     OSS_BUCKET=<bucket> \
-    OSS_ENDPOINT=oss-cn-hangzhou-internal.aliyuncs.com \
-    OSS_REGION=oss-cn-hangzhou \
-    OSS_ACCESS_KEY_ID=... OSS_ACCESS_KEY_SECRET=... \
-    ./scripts/test.sh tests/tools/test_rebuild_from_snapshot_s3_integration.py --run-integration
+    OSS_ENDPOINT=https://oss-cn-hangzhou-internal.aliyuncs.com \
+    OSS_REGION=cn-hangzhou \
+    OSS_DEFAULT_SECRET_ID=... OSS_DEFAULT_SECRET_KEY=... OSS_DEFAULT_SECRET_TOKEN=... \
+    ./scripts/test.sh tests/tools/test_rebuild_from_snapshot_oss_integration.py --run-integration
 
-Credentials may also use the .ossenv names (oss_access_ak / oss_access_sk) or
-AWS_* names; ``storage_options_from_env`` maps all three and sets the
-virtual-hosted addressing OSS requires. The export half reuses the N1 job;
-the restore half is this wave's promotion path read back over OSS.
+lancedb 0.41 speaks oss:// natively: ``storage_options_from_env`` emits the
+canonical access_key_id/access_key_secret/security_token/endpoint/region keys
+(the STS token key is security_token; aws_* keys do NOT work against OSS).
+OSS_ACCESS_KEY_ID/SECRET and oss_access_ak/sk names map too. The export half
+reuses the N1 job; the restore half is this wave's promotion path read back
+over OSS.
 """
 
 import os
@@ -63,7 +63,7 @@ async def test_restore_from_oss_snapshot_is_exact_and_idempotent(tmp_path):
     embedder.armed = True
     options = storage_options_from_env()
     prefix = f"lightrag-n2-integration-{uuid.uuid4().hex[:12]}"
-    dest = f"s3://{os.environ['OSS_BUCKET']}/{prefix}"
+    dest = f"oss://{os.environ['OSS_BUCKET']}/{prefix}"
     tag = f"int-{uuid.uuid4().hex[:8]}"
 
     await export_snapshot(source, dest, tag, batch_size=2, storage_options=options)
