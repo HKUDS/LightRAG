@@ -82,6 +82,19 @@ async def test_embedding_encoding_preserves_numeric_vectors(
     assert client.is_closed()
 
 
+async def test_short_base64_vector_fails_dimension_validation(monkeypatch):
+    """A base64 vector is decoded as sent, never padded or cut to the declared
+    dimension, so a short one reaches the wrapper's dimension check."""
+    vector = np.zeros(3, dtype=np.float32)
+    client, _ = _mock_sdk(
+        monkeypatch, [_row(0, base64.b64encode(vector.tobytes()).decode("ascii"))]
+    )
+
+    with pytest.raises(ValueError, match="Embedding dimension mismatch"):
+        await nvidia_openai_embed(["document"], encode="base64")
+    assert client.is_closed()
+
+
 @pytest.mark.parametrize(
     ("rows", "expected"),
     [
