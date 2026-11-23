@@ -241,7 +241,7 @@ async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> N
     if maxmemory <= 0 or not policy.startswith("allkeys"):
         _eviction_checked.add(redis_url)
         return
-    if os.getenv("REDIS_ALLOW_EVICTION_POLICY", "false").strip().lower() == "true":
+    if get_env_value("REDIS_ALLOW_EVICTION_POLICY", False, bool):
         _eviction_checked.add(redis_url)
         logger.warning(
             f"[{workspace}] Redis is configured to EVICT (maxmemory-policy="

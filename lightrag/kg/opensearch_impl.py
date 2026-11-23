@@ -55,6 +55,7 @@ from ..utils import (
     logger,
     compute_mdhash_id,
     _cooperative_yield,
+    get_env_value,
     merge_source_ids,
     parse_cache_key,
     validate_workspace,
@@ -3875,7 +3876,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     - Application-level batched BFS (fallback, works on any OpenSearch 3.x+)
 
     The strategy is auto-detected during initialize() and can be overridden via
-    the OPENSEARCH_USE_PPL_GRAPHLOOKUP environment variable (true/false).
+    the OPENSEARCH_USE_PPL_GRAPHLOOKUP environment variable (any boolean spelling
+    get_env_value accepts, e.g. true/false or 1/0); an unset, blank or
+    unrecognized value keeps auto-detection.
     """
 
     client: AsyncOpenSearch = field(default=None)
@@ -3986,13 +3989,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def _detect_ppl_graphlookup(self):
         """Detect whether PPL graphlookup command is available on this cluster."""
-        env_override = os.environ.get("OPENSEARCH_USE_PPL_GRAPHLOOKUP", "").lower()
-        if env_override == "true":
-            self._ppl_graphlookup_available = True
-            return
-        if env_override == "false":
-            self._ppl_graphlookup_available = False
-            return
+        raw_env_override = os.environ.get("OPENSEARCH_USE_PPL_GRAPHLOOKUP")
+        if raw_env_override is not None and raw_env_override.strip():
+            env_override = get_env_value("OPENSEARCH_USE_PPL_GRAPHLOOKUP", None, bool)
+            if env_override is not None:
+                self._ppl_graphlookup_available = env_override
+                return
         # Auto-detect by sending a minimal PPL query
         try:
             await self.client.transport.perform_request(

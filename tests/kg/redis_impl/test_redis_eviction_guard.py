@@ -208,7 +208,8 @@ async def test_explicit_override_downgrades_to_a_warning(fake, monkeypatch, capl
 
     from lightrag.utils import logger
 
-    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", "true")
+    # A non-literal spelling: the flag must go through get_env_value.
+    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", " Yes ")
     fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
     storage = _doc_status_storage()
     with capture_lightrag_logs(caplog):
