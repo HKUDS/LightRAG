@@ -68,9 +68,14 @@ async def test_restore_from_oss_snapshot_is_exact_and_idempotent(tmp_path):
 
     await export_snapshot(source, dest, tag, batch_size=2, storage_options=options)
     assert embedder.export_calls == 0
-    for storage in (source.full_docs, source.text_chunks,
-                    source.chunk_entity_relation_graph, source.entities_vdb,
-                    source.relationships_vdb, source.chunks_vdb):
+    for storage in (
+        source.full_docs,
+        source.text_chunks,
+        source.chunk_entity_relation_graph,
+        source.entities_vdb,
+        source.relationships_vdb,
+        source.chunks_vdb,
+    ):
         await storage.finalize()
 
     target_embedder = CountingEmbedder()
