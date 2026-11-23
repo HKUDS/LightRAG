@@ -62,6 +62,7 @@ from lightrag.constants import (
 )
 from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.table_markup import (
+    HTML_ROW_PARTS_RE as _HTML_ROW_PARTS_RE,
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
     dumps_json_table_body as _dumps_json_table_body,
@@ -564,14 +565,19 @@ _HTML_ATTR_RE = re.compile(
 )
 
 
+# The largest values HTML gives a span; browsers clamp larger ones. Bounding
+# them keeps a hostile ``colspan`` from sizing the column layout.
+_HTML_SPAN_LIMITS = {"rowspan": 65534, "colspan": 1000}
+
+
 def _html_span_value(attrs: str, name: str) -> int:
-    """Read ``rowspan``/``colspan`` from a cell's attrs as an int ``>= 1``."""
+    """Read ``rowspan``/``colspan`` from a cell's attrs as an int in HTML's range."""
     for match in _HTML_ATTR_RE.finditer(attrs):
         if match.group("name").lower() != name:
             continue
         raw = match.group("dq") or match.group("sq") or match.group("bare") or "1"
         try:
-            return max(int(raw.strip()), 1)
+            return min(max(int(raw.strip()), 1), _HTML_SPAN_LIMITS[name])
         except ValueError:
             return 1
     return 1
@@ -607,6 +613,27 @@ def _parse_html_tr(tr: str) -> tuple[str, list[re.Match[str]], str] | None:
     return parts.group("open"), cells, parts.group("close")
 
 
+def _html_row_groups(body: str) -> list[int]:
+    """Number the row group of each row :func:`_split_html_rows` returns.
+
+    Every ``<thead>``/``<tbody>``/``<tfoot>`` tag starts a new group, so two
+    adjacent ``<tbody>`` blocks are two groups even though both rows carry
+    the wrapper name ``"tbody"``.
+    """
+    groups: list[int] = []
+    group = 0
+    boundary = False
+    for match in _HTML_ROW_PARTS_RE.finditer(body or ""):
+        if match.group("wrap") is not None:
+            boundary = True
+        elif match.group("tr") is not None:
+            if boundary and groups:
+                group += 1
+            boundary = False
+            groups.append(group)
+    return groups
+
+
 # A placed body cell: (start column, match, rowspan).
 _PlacedCell = tuple[int, "re.Match[str]", int]
 # A span carried into a row from an earlier one:
@@ -634,14 +661,28 @@ class _HtmlRowspanSlicer:
     never parsed and every slice is returned exactly as cut.
 
     Spans never cross a ``<thead>``/``<tbody>``/``<tfoot>`` boundary (HTML
-    limits them to their row group). ``<thead>`` rows, rows that need no
+    limits them to their row group). ``groups`` numbers each row's group (see
+    :func:`_html_row_groups`); without it a group ends where the wrapper name
+    changes. ``<thead>`` rows, rows that need no
     change, and rows that :func:`_parse_html_tr` cannot parse are returned
     unchanged. A repeated cell costs tokens the row splitter did not count;
     the caller's over-cap repair bounds the serialized slice.
     """
 
-    def __init__(self, rows: list[tuple[str, str]]) -> None:
+    def __init__(
+        self, rows: list[tuple[str, str]], groups: list[int] | None = None
+    ) -> None:
         self._rows = rows
+        if groups is None or len(groups) != len(rows):
+            groups = []
+            for index, (wrapper, _tr) in enumerate(rows):
+                changed = index > 0 and wrapper != rows[index - 1][0]
+                groups.append((groups[-1] + changed) if groups else 0)
+        # Index of the last row in each row's group: no span reaches past it.
+        self._group_last = [0] * len(rows)
+        for index in range(len(rows) - 1, -1, -1):
+            same = index + 1 < len(rows) and groups[index + 1] == groups[index]
+            self._group_last[index] = self._group_last[index + 1] if same else index
         self._parsed: list[tuple[str, list[_PlacedCell], str] | None] = []
         self._carried: list[list[_CarriedSpan]] = []
         self.has_spans = any(
@@ -652,11 +693,7 @@ class _HtmlRowspanSlicer:
 
     def _layout(self) -> None:
         active: dict[int, _CarriedSpan] = {}
-        current_wrapper: str | None = None
         for index, (wrapper, tr) in enumerate(self._rows):
-            if wrapper != current_wrapper:
-                active.clear()
-                current_wrapper = wrapper
             for col in [c for c, span in active.items() if span[1] < index]:
                 del active[col]
             self._carried.append(list(active.values()))
@@ -681,7 +718,7 @@ class _HtmlRowspanSlicer:
                 if rowspan > 1:
                     active[col] = (
                         col,
-                        index + rowspan - 1,
+                        min(index + rowspan - 1, self._group_last[index]),
                         colspan,
                         cell.group("tag"),
                         attrs,
@@ -711,7 +748,7 @@ class _HtmlRowspanSlicer:
                     )
                     changed = True
             for col, cell, rowspan in placed:
-                clipped = min(rowspan, end - index)
+                clipped = min(rowspan, end - index, self._group_last[index] - index + 1)
                 if clipped != rowspan:
                     pieces.append(
                         (
@@ -1031,7 +1068,7 @@ def _split_table_text(
             # same tuple objects, so its first row locates it in the table.
             # A lookup miss raises rather than serializing the wrong rows.
             row_index = {id(row): i for i, row in enumerate(rows_html)}
-            slicer = _HtmlRowspanSlicer(rows_html)
+            slicer = _HtmlRowspanSlicer(rows_html, _html_row_groups(body))
             slices_add_cells = slicer.has_spans
 
             def serialize(chunk_rows: list[tuple[str, str]]) -> str:

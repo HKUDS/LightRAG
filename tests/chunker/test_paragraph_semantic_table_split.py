@@ -7,6 +7,8 @@ import pytest
 
 from lightrag.chunker.paragraph_semantic import (
     _HtmlRowspanSlicer,
+    _html_row_groups,
+    _html_span_value,
     _detect_table_format,
     _expand_block_with_table_splits,
     _merge_small_blocks,
@@ -1624,3 +1626,24 @@ def test_rowspan_cell_with_quoted_gt_in_attribute_is_carried_whole():
         ("tbody", '<tr><td title="a > b" rowspan="2">L</td><td>y</td></tr>'),
         ("tbody", "<tr><td>z</td></tr>"),
     ]
+
+
+@pytest.mark.offline
+def test_rowspan_ends_with_its_row_group():
+    body = (
+        '<tbody><tr><td rowspan="4">A</td><td>a1</td></tr><tr><td>a2</td></tr></tbody>'
+        "<tbody><tr><td>B</td><td>b1</td></tr><tr><td>C</td><td>c1</td></tr></tbody>"
+    )
+    rows = _split_html_rows(body)
+    slicer = _HtmlRowspanSlicer(rows, _html_row_groups(body))
+    # HTML confines A to the first <tbody>: it is cut to its two rows there
+    # and never repeated into the second group, which both wrappers call "tbody".
+    assert slicer.slice(0, 3)[0][1] == '<tr><td rowspan="2">A</td><td>a1</td></tr>'
+    assert slicer.slice(2, 4) == rows[2:4]
+
+
+@pytest.mark.offline
+def test_span_values_are_bounded_to_the_html_limits():
+    # An unbounded colspan would size the column layout from untrusted input.
+    assert _html_span_value(' colspan="1000000"', "colspan") == 1000
+    assert _html_span_value(' rowspan="1000000"', "rowspan") == 65534
