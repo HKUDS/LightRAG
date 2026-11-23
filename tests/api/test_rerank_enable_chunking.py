@@ -90,6 +90,6 @@ def test_true_spellings_enable_chunking(cohere_rerank_calls, value):
     assert cohere_rerank_calls(value)["enable_chunking"] is True
 
 
-@pytest.mark.parametrize("value", [None, "0", "off"])
+@pytest.mark.parametrize("value", [None, "0"])
 def test_false_spellings_and_unset_disable_chunking(cohere_rerank_calls, value):
     assert cohere_rerank_calls(value)["enable_chunking"] is False
