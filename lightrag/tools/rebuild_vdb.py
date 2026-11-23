@@ -55,6 +55,8 @@ Usage:
     lightrag-rebuild-vdb
     # or
     python -m lightrag.tools.rebuild_vdb
+    # restore from a tagged Lance cold snapshot (zero re-embedding):
+    lightrag-rebuild-vdb --from-snapshot <uri> --tag <tag>
 
 Configuration is read from .env / environment variables, exactly like the
 LightRAG server (LIGHTRAG_GRAPH_STORAGE, LIGHTRAG_VECTOR_STORAGE,
@@ -71,6 +73,8 @@ import pickle
 import shutil
 import tempfile
 import time
+from dataclasses import dataclass
+from types import SimpleNamespace
 from uuid import uuid4
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List
 
@@ -140,6 +144,18 @@ DEFAULT_BATCH_SIZE = 500
 # Flush deferred-embedding backends (nano/faiss compute embeddings in
 # index_done_callback) every N batches to bound memory usage.
 FLUSH_EVERY_N_BATCHES = 10
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotSource:
+    """A tagged Lance cold snapshot to restore from (``--from-snapshot``).
+
+    ``concurrency`` bounds parallel vector targets (1-3); batches stay sequential.
+    """
+    uri: str
+    tag: str
+    batch_size: int = DEFAULT_BATCH_SIZE
+    concurrency: int = 3
 
 # Cap for listing missing items in the consistency report
 MAX_REPORTED_MISSING = 20
@@ -927,8 +943,13 @@ async def check_vdb_consistency(
 class RebuildTool:
     """Interactive CLI for the offline VDB rebuild."""
 
-    def __init__(self, *, workspace: str | None = None):
+    def __init__(self, *, workspace: str | None = None, snapshot: SnapshotSource | None = None):
         self._workspace_override = workspace
+        self.snapshot = snapshot
+        # Hard gate: the stub counts every embed attempt BEFORE raising, so a
+        # swallowed call still surfaces.
+        self.snapshot_embed_calls = 0
+        self.full_docs = None
         self.graph = None
         self.entities_vdb = None
         self.relationships_vdb = None
@@ -1021,6 +1042,19 @@ class RebuildTool:
             f"model={embedding_func.model_name} dim={embedding_func.embedding_dim}"
         )
         return embedding_func
+
+    def _snapshot_embedding_stub(self) -> EmbeddingFunc:
+        """Counted fail-loud stub; env dim/model name the configured space."""
+        async def _never_embed(*_args, **_kwargs):
+            self.snapshot_embed_calls += 1
+            raise RuntimeError("rebuild-from-snapshot must not call the embedding function; "
+                               "vectors come from the snapshot's embedding columns")
+
+        return EmbeddingFunc(
+            embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
+            func=_never_embed,
+            model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True),
+        )
 
     def build_global_config(self) -> Dict[str, Any]:
         # This tool builds the vector storages without a LightRAG instance,
@@ -1122,27 +1156,33 @@ class RebuildTool:
         for storage_name in set(self.storage_names.values()):
             self.check_env_vars(storage_name)
 
-        self.embedding_func = self.build_embedding_func()
-        self.embedding_available = self.embedding_func is not None
-        if not self.embedding_available:
-            # Vector storages require an embedding_func even for read paths;
-            # use a stub that fails loudly if an embedding is ever requested.
-            async def _no_embedding(*_args, **_kwargs):
-                raise RuntimeError(
-                    "Embedding is not available in check-only mode. "
-                    'Install the api extra: pip install "lightrag-hku[api]"'
-                )
+        if self.snapshot is not None:
+            # Promotion never embeds: a counted fail-loud stub replaces the
+            # server factory so any accidental embed attempt aborts the run.
+            self.embedding_func = self._snapshot_embedding_stub()
+            self.embedding_available = False
+        else:
+            self.embedding_func = self.build_embedding_func()
+            self.embedding_available = self.embedding_func is not None
+            if not self.embedding_available:
+                # Vector storages require an embedding_func even for read paths;
+                # use a stub that fails loudly if an embedding is ever requested.
+                async def _no_embedding(*_args, **_kwargs):
+                    raise RuntimeError(
+                        "Embedding is not available in check-only mode. "
+                        'Install the api extra: pip install "lightrag-hku[api]"'
+                    )
 
-            # model_name must match the server's embedding function: Qdrant /
-            # PostgreSQL derive the collection/table name from
-            # model_name + embedding_dim. Omitting it falls back to the legacy
-            # name, so check-only mode would probe the wrong collection (and
-            # could create an empty legacy one) and misreport records as missing.
-            self.embedding_func = EmbeddingFunc(
-                embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
-                func=_no_embedding,
-                model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True),
-            )
+                # model_name must match the server's embedding function: Qdrant /
+                # PostgreSQL derive the collection/table name from
+                # model_name + embedding_dim. Omitting it falls back to the legacy
+                # name, so check-only mode would probe the wrong collection (and
+                # could create an empty legacy one) and misreport records as missing.
+                self.embedding_func = EmbeddingFunc(
+                    embedding_dim=get_env_value("EMBEDDING_DIM", 1024, int),
+                    func=_no_embedding,
+                    model_name=get_env_value("EMBEDDING_MODEL", None, special_none=True),
+                )
 
         self.global_config = self.build_global_config()
 
@@ -1185,6 +1225,11 @@ class RebuildTool:
             global_config=self.global_config,
             embedding_func=self.embedding_func,
         )
+        if self.snapshot is not None:
+            self.full_docs = kv_cls(
+                namespace=NameSpace.KV_STORE_FULL_DOCS, workspace=self.workspace,
+                global_config=self.global_config, embedding_func=self.embedding_func,
+            )
         self.configuration_storage = create_configuration_storage(
             config_cls,
             global_config=self.global_config,
@@ -1206,8 +1251,9 @@ class RebuildTool:
             # rebuild that protects nothing.
             if not await self.verify_identity():
                 return False
-            for storage in (self.graph, self.text_chunks):
-                await storage.initialize()
+            for storage in (self.graph, self.text_chunks, self.full_docs):
+                if storage is not None:
+                    await storage.initialize()
             # Vector targets, one at a time, tolerating ONLY the typed
             # embedding-space refusal or a typed corrupt snapshot.
             # Neither is deleted during setup. Corrupt files require a backup
@@ -1579,6 +1625,7 @@ class RebuildTool:
             self.relationships_vdb,
             self.chunks_vdb,
             self.text_chunks,
+            self.full_docs,
             self.configuration_storage,
         ]
 
@@ -1840,6 +1887,45 @@ class RebuildTool:
             print(f"{BOLD_GREEN}✓ Rebuild completed successfully.{RESET}")
         return had_errors
 
+    async def _run_snapshot_restore(self) -> bool:
+        """Restore from the tagged snapshot; validation precedes any mutation.
+        Zero re-embedding is the hard gate: the counted stub must report 0.
+        """
+        from lightrag.kg.lancedb_impl import storage_options_from_env
+        from lightrag.tools.snapshot_restore import open_snapshot, restore_workspace_snapshot
+
+        snap = self.snapshot
+        options = storage_options_from_env() if snap.uri.startswith("s3://") else None
+        tables = open_snapshot(snap.uri, snap.tag,
+                               dim=self.embedding_func.embedding_dim, storage_options=options)
+        print(f"\nSnapshot: {snap.uri} (tag {snap.tag!r})")
+        for name, table in tables.items():
+            print(f"  {name}: {table.count_rows():,} rows")
+        print("\nVectors are restored WITHOUT re-embedding; vector storages are dropped")
+        print("and rewritten, KV/graph overwritten; doc_status and LLM cache stay empty")
+        print("(README_REBUILD_VDB.md).")
+        confirm = input("\nProceed with the snapshot restore? (yes/no): ").strip().lower()
+        if confirm != "yes":
+            print("\n✓ Restore cancelled")
+            return True
+        rag = SimpleNamespace(
+            full_docs=self.full_docs, text_chunks=self.text_chunks,
+            chunk_entity_relation_graph=self.graph, entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb, chunks_vdb=self.chunks_vdb,
+            embedding_func=self.embedding_func,
+        )
+        start = time.time()
+        stats = await restore_workspace_snapshot(
+            tables, rag, self.global_config,
+            batch_size=snap.batch_size, concurrency=snap.concurrency,
+        )
+        for label, target_stats in stats.items():
+            await self.commit_baseline(label, target_stats)
+        had_errors = self.report_rebuild(list(stats.values()))
+        print(f"Snapshot restore embedding calls: {self.snapshot_embed_calls}")
+        print(f"(restore took {time.time() - start:.1f}s)")
+        return not had_errors and self.snapshot_embed_calls == 0
+
     async def run(self) -> bool:
         """Run the interactive tool. Returns True on success, False on failure.
 
@@ -1862,6 +1948,9 @@ class RebuildTool:
 
             if not await self.setup_storages():
                 return False
+
+            if self.snapshot is not None:
+                return await self._run_snapshot_restore()
 
             while True:
                 print("\n=== Rebuild Options ===")
@@ -1948,9 +2037,9 @@ class RebuildTool:
             self.release_anchor_lock()
 
 
-async def async_main(*, workspace: str | None = None) -> bool:
+async def async_main(*, workspace: str | None = None, snapshot: SnapshotSource | None = None) -> bool:
     """Async main entry point. Returns True on success, False on failure."""
-    tool = RebuildTool(workspace=workspace)
+    tool = RebuildTool(workspace=workspace, snapshot=snapshot)
     return await tool.run()
 
 
@@ -1983,11 +2072,31 @@ def main(argv: list[str] | None = None):
         help="Exact workspace name (no character replacement); use an empty string "
         "for the default workspace. If omitted, WORKSPACE is normalized as by the server.",
     )
+    parser.add_argument(
+        "--from-snapshot", default=None, metavar="URI",
+        help="Restore from a tagged Lance cold snapshot (local dir or s3:// URI); requires --tag, zero re-embedding.",
+    )
+    parser.add_argument("--tag", default=None,
+                        help="Immutable snapshot tag to restore (required with --from-snapshot).")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help=f"Rows per restore batch (snapshot mode only; default {DEFAULT_BATCH_SIZE}).")
+    parser.add_argument("--concurrency", type=int, default=None,
+                        help="Vector targets restored in parallel, 1-3 (snapshot mode only; default 3).")
     args = parser.parse_args(argv)
+    snapshot = None
+    if args.from_snapshot is not None:
+        if not args.tag:
+            parser.error("--from-snapshot requires --tag")
+        snapshot = SnapshotSource(
+            uri=args.from_snapshot, tag=args.tag,
+            batch_size=args.batch_size if args.batch_size is not None else DEFAULT_BATCH_SIZE,
+            concurrency=args.concurrency if args.concurrency is not None else 3)
+    elif args.tag is not None or args.batch_size is not None or args.concurrency is not None:
+        parser.error("--tag/--batch-size/--concurrency require --from-snapshot")
     # Load environment and configure logging only when run as a tool, never on import.
     load_dotenv(dotenv_path=".env", override=False)
     setup_logger("lightrag", level="INFO")
-    success = asyncio.run(async_main(workspace=args.workspace))
+    success = asyncio.run(async_main(workspace=args.workspace, snapshot=snapshot))
     if not success:
         raise SystemExit(1)
 
