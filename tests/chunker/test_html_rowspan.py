@@ -249,6 +249,27 @@ _SPAN_ROWS = _rows('<td rowspan="2">A</td><td>a1</td>', "<td>a2</td>")
             id="delimiter-in-nested-attribute",
         ),
         pytest.param(
+            # The ``</td><td>`` inside a textarea is text, not two cell tags.
+            _rows(
+                '<td rowspan="2"><textarea></td><td></textarea>A</td><td>a1</td>',
+                "<td>a2</td>",
+            ),
+            "<textarea> element inside a cell",
+            id="raw-text-element",
+        ),
+        pytest.param(
+            # An end tag that closes the cell and its row group in HTML.
+            _rows('<td rowspan="2">A</tbody></td><td>a1</td>', "<td>a2</td>"),
+            "table markup inside a cell",
+            id="group-end-tag-in-cell",
+        ),
+        pytest.param(
+            # U+00A0 between the cells is text, not whitespace.
+            _rows('<td rowspan="2">A</td>\u00a0<td>a1</td>', "<td>a2</td>"),
+            "not a complete cell",
+            id="nbsp-between-cells",
+        ),
+        pytest.param(
             _rows('<td rowspan="2">A<![CDATA[x]]></td><td>a1</td>', "<td>a2</td>"),
             "declaration inside a cell",
             id="declaration-in-cell",
@@ -312,6 +333,10 @@ def test_layout_stops_at_its_work_budget(monkeypatch, lightrag_log_records):
         # ``data-rowspan`` is not a span attribute.
         pytest.param(
             _rows('<td data-rowspan="2">A</td>', "<td>B</td>"), id="data-rowspan"
+        ),
+        # U+00A0 is not whitespace in HTML: one attribute named "data-x\u00a0rowspan".
+        pytest.param(
+            _rows('<td data-x\u00a0rowspan="2">A</td>', "<td>B</td>"), id="nbsp-in-name"
         ),
         # A quoted value that merely mentions rowspan.
         pytest.param(

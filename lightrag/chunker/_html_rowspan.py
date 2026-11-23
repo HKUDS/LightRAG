@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from string import ascii_lowercase, ascii_uppercase
 
 from lightrag.table_markup import HTML_ROW_PARTS_RE, HTML_WRAPPER_TAG_RE
 from lightrag.utils import logger
@@ -44,25 +45,44 @@ _SPAN_LIMITS = {"rowspan": 65534, "colspan": 1000}
 # columns stay far below it.
 LAYOUT_BUDGET = 200_000
 
-_ATTR_VALUE = r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'=<>`]+))"""
-_ATTR_RE = re.compile(rf"""\s+(?P<name>[^\s"'<>/=]+)(?:\s*=\s*{_ATTR_VALUE})?""")
+# HTML's ASCII whitespace. Python's ``\s`` also matches characters such as
+# U+00A0, which HTML reads as part of an attribute name, so it is never used.
+_WS = " \t\n\f\r"
+_W = r"[ \t\n\f\r]"
+_NAME = r"""[^ \t\n\f\r"'<>/=]+"""
+_ATTR_VALUE = r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^ \t\n\f\r"'=<>`]+))"""
+_ATTR_RE = re.compile(rf"""{_W}+(?P<name>{_NAME})(?:{_W}*={_W}*{_ATTR_VALUE})?""")
 # A start tag's attributes: quoted values are consumed whole, so a ``>`` inside
 # one does not end the tag.
-_ATTRS = r"""(?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*"""
-_ROW_RE = re.compile(rf"<tr(?:{_ATTRS})>(?P<inner>.*)</tr>", re.DOTALL | re.IGNORECASE)
+_ATTRS = (
+    rf"""(?:{_W}+{_NAME}(?:{_W}*={_W}*"""
+    rf"""(?:"[^"]*"|'[^']*'|[^ \t\n\f\r"'=<>`]+))?)*{_W}*"""
+)
+_FLAGS = re.DOTALL | re.IGNORECASE | re.ASCII
+_ROW_RE = re.compile(rf"<tr(?:{_ATTRS})>(?P<inner>.*)</tr>", _FLAGS)
 _CELL_RE = re.compile(
-    rf"\s*<(?P<tag>td|th)(?P<attrs>{_ATTRS})>(?P<inner>.*?)</(?P=tag)\s*>",
-    re.DOTALL | re.IGNORECASE,
+    rf"{_W}*<(?P<tag>td|th)(?P<attrs>{_ATTRS})>(?P<inner>.*?)</(?P=tag){_W}*>",
+    _FLAGS,
 )
 # A complete tag inside a cell. Requiring every tag of a cell's content to be
 # complete proves that the ``</td>`` which ended the cell was not inside a
 # quoted attribute value of a nested element.
-_INNER_TAG_RE = re.compile(rf"""</?[A-Za-z][^\s<>/"'=]*{_ATTRS}/?>""")
-# Table structure inside a cell: a nested table, or a cell whose end tag was
-# omitted so that the next cell's start tag landed in its content.
-_STRUCTURE_IN_CELL_RE = re.compile(
-    r"<(?:table|thead|tbody|tfoot|tr|td|th)\b", re.IGNORECASE
+_INNER_TAG_RE = re.compile(
+    rf"""</?(?P<name>[A-Za-z][^ \t\n\f\r<>/"'=]*){_ATTRS}/?>""", re.ASCII
 )
+# Tags that end a cell when HTML meets them inside one: a nested table, or a
+# cell whose end tag was omitted so that the next start tag landed in it.
+_CELL_ENDING_TAGS = frozenset(
+    "table thead tbody tfoot tr td th caption col colgroup".split()
+)
+# Elements whose content HTML does not read as markup (so a ``</td>`` in it is
+# text), and those that change how the content after them is parsed. The first
+# line is the complete list of elements that switch the HTML tokenizer's state.
+_OPAQUE_TAGS = frozenset(
+    "script style textarea title xmp iframe noembed noframes noscript plaintext "
+    "svg math template select".split()
+)
+_ASCII_LOWER = str.maketrans(ascii_uppercase, ascii_lowercase)
 # Wrapper/row sequence of a supported body: an optional ``<thead>`` block, then
 # the body rows either bare or inside a single ``<tbody>``.
 _BODY_SHAPE_RE = re.compile(r"(?:Hr*h)?(?:r+|Br+b)")
@@ -91,7 +111,7 @@ class _Cell:
 
 def _span_value(name: str, match: re.Match[str]) -> int:
     raw = match.group("dq") or match.group("sq") or match.group("bare") or ""
-    raw = raw.strip()
+    raw = raw.strip(_WS)
     if not (raw.isascii() and raw.isdecimal()):
         raise _Unsupported(f"{name} is not a positive integer")
     # Compare the digit count first: ``int`` refuses a very long digit string.
@@ -103,8 +123,6 @@ def _span_value(name: str, match: re.Match[str]) -> int:
 
 
 def _check_cell_content(inner: str) -> None:
-    if _STRUCTURE_IN_CELL_RE.search(inner):
-        raise _Unsupported("table markup inside a cell")
     pos = inner.find("<")
     while pos != -1:
         following = inner[pos + 1 : pos + 2]
@@ -112,6 +130,11 @@ def _check_cell_content(inner: str) -> None:
             tag = _INNER_TAG_RE.match(inner, pos)
             if tag is None:
                 raise _Unsupported("a tag inside a cell that cannot be read")
+            name = tag.group("name").translate(_ASCII_LOWER)
+            if name in _CELL_ENDING_TAGS:
+                raise _Unsupported("table markup inside a cell")
+            if name in _OPAQUE_TAGS:
+                raise _Unsupported(f"a <{name}> element inside a cell")
             pos = inner.find("<", tag.end())
         elif following in ("!", "?"):
             raise _Unsupported("a declaration inside a cell")
@@ -128,8 +151,8 @@ def _parse_cell(match: re.Match[str]) -> _Cell:
     kept: list[str] = []
     # ``attrs`` matched the grammar, so the attributes tile it from the start
     # and only whitespace can follow them; scanning that tail is quadratic.
-    for attr in _ATTR_RE.finditer(attrs.rstrip()):
-        name = attr.group("name").lower()
+    for attr in _ATTR_RE.finditer(attrs.rstrip(_WS)):
+        name = attr.group("name").translate(_ASCII_LOWER)
         if name not in _SPAN_LIMITS:
             kept.append(attr.group(0))
             continue
@@ -139,7 +162,7 @@ def _parse_cell(match: re.Match[str]) -> _Cell:
         if name == "colspan":
             kept.append(attr.group(0))
     return _Cell(
-        html=match.group(0).lstrip(),
+        html=match.group(0).lstrip(_WS),
         tag=match.group("tag"),
         attrs="".join(kept),
         inner=inner,
@@ -159,7 +182,7 @@ def _parse_row(tr: str) -> tuple[str, list[_Cell], str]:
     while (match := _CELL_RE.match(inner, pos)) is not None:
         cells.append(_parse_cell(match))
         pos = match.end()
-    if inner[pos:].strip():
+    if inner[pos:].strip(_WS):
         raise _Unsupported("row content that is not a complete cell")
     return tr[: row.start("inner")], cells, tr[row.end("inner") :]
 
@@ -168,7 +191,7 @@ def _header_row_count(body: str, row_count: int) -> int:
     """Check the body's shape; return how many leading rows are ``<thead>`` rows."""
     if "<!--" in body:
         raise _Unsupported("an HTML comment")
-    if HTML_ROW_PARTS_RE.sub("", body).strip():
+    if HTML_ROW_PARTS_RE.sub("", body).strip(_WS):
         raise _Unsupported("content outside the rows")
     shape: list[str] = []
     for part in HTML_ROW_PARTS_RE.finditer(body):
