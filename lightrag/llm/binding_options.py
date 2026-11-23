@@ -739,7 +739,7 @@ class OpenAILLMOptions(BindingOptions):
     frequency_penalty: float = 0.0  # Penalty for token frequency (-2.0 to 2.0)
     max_completion_tokens: int = None  # Maximum number of tokens to generate
     presence_penalty: float = 0.0  # Penalty for token presence (-2.0 to 2.0)
-    reasoning_effort: str = "medium"  # Reasoning effort; accepted values depend on the model
+    reasoning_effort: str = "medium"  # Accepted values depend on the model
     safety_identifier: str = ""  # Safety identifier for content filtering
     service_tier: str = ""  # Service tier for API usage
     stop: List[str] = field(default_factory=list)  # Stop sequences
@@ -784,7 +784,7 @@ class OpenAIResponsesLLMOptions(BindingOptions):
 
     # Sampling and generation parameters
     max_output_tokens: int = None  # Maximum number of output tokens to generate
-    reasoning_effort: str = ""  # Reasoning effort; accepted values depend on the model
+    reasoning_effort: str = ""  # Accepted values depend on the model
     reasoning_summary: str = ""  # Reasoning summary detail (auto, concise, detailed)
     service_tier: str = ""  # Service tier for API usage
     store: bool = False  # Server-side retention; the driver sends false unless set
