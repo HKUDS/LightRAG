@@ -92,10 +92,10 @@ class _Builder:
             )
         return res
 
-    def stream(self, data: bytes):
+    def stream(self, data: bytes, *, compression_level: int = -1):
         s = DecodedStreamObject()
         s.set_data(data)
-        return self.writer._add_object(s.flate_encode())
+        return self.writer._add_object(s.flate_encode(level=compression_level))
 
     def form(self, data: bytes, xobjects: dict[str, object] | None = None):
         s = DecodedStreamObject()
@@ -400,11 +400,15 @@ def test_cpu_limit_stops_work_the_gates_cannot_see(monkeypatch):
 @pytest.mark.skipif(sys.platform == "win32", reason="no memory limit on Windows")
 def test_memory_limit_stops_the_process(monkeypatch):
     b = _Builder()
-    for index in range(6):
-        b.page(b.stream(b"%" + bytes([65 + index]) * 50_000_000 + b"\n"))
+    # Distinct streams exercise resident memory across pages. Fast compression
+    # keeps fixture creation cheap. This smaller fixture still exceeds the
+    # budget during extraction, with headroom for a normal worker startup.
+    for index in range(5):
+        data = b"%" + bytes([65 + index]) * 24_000_000 + b"\n"
+        b.page(b.stream(data, compression_level=1))
     _set(
         monkeypatch,
-        PDF_MAX_MEMORY_MB=150,
+        PDF_MAX_MEMORY_MB=96,
         PDF_MAX_CONTENT_BYTES=0,
         PDF_MAX_CONTENT_RATIO=0,
     )
