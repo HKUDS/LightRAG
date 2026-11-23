@@ -12,15 +12,14 @@ from lightrag.parser import registry
 from lightrag.parser.native_dispatch import NativeParser
 from lightrag.parser.routing import resolve_file_parser_directives
 
+import pytest
+
+
+pytestmark = pytest.mark.offline
+
 
 def _engine(path: str, rules: str = "") -> str:
     return resolve_file_parser_directives(path, parser_rules=rules)[0]
-
-
-def test_native_declares_markdown_suffixes():
-    assert registry.suffix_capabilities("native") == frozenset(
-        {"docx", "md", "textpack"}
-    )
 
 
 def test_textpack_and_md_in_upload_allowlist():

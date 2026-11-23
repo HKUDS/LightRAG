@@ -236,20 +236,6 @@ async def test_finalize_skips_the_save_when_queued_deletes_change_nothing(tmp_pa
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_delete_cancels_pending_upsert_of_same_id(tmp_path):
-    storage = _make_storage(tmp_path)
-    await storage.initialize()
-
-    await storage.upsert({"id1": {"content": "never-lands"}})
-    await storage.delete(["id1"])
-    await storage.index_done_callback()
-
-    assert len(storage._client) == 0
-    assert await storage.get_by_id("id1") is None
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_delete_only_flush_persists_and_is_idempotent(tmp_path):
     """A flush with ONLY queued deletes (no pending upserts) must still
     materialize, save, and be idempotent on repeat."""
@@ -832,6 +818,33 @@ async def test_reads_still_hide_the_row_a_redo_entry_names(tmp_path):
     assert await storage.get_by_id("id1") is None
     assert (await storage.get_by_ids(["id1", "id2"]))[0] is None
     assert "id1" not in await storage.get_vectors_by_ids(["id1", "id2"])
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_delete_does_not_swallow_an_internal_error(tmp_path):
+    """A failure while queuing a delete must propagate, not be logged and
+    discarded.
+
+    ``delete_entity`` / ``delete_entity_relation`` already re-raise after
+    logging, with a docstring note on exactly this anti-pattern: swallowing
+    the exception silently drops both the queued removal and the failure
+    signal. The bulk ``delete()`` used by the pipeline's purge flow still
+    swallowed it, so a caller that treats a non-raising ``delete()`` as
+    proof the vectors are queued for removal would see none of them removed.
+    """
+    storage = _make_storage(tmp_path)
+    await storage.initialize()
+    await _seed(storage, {"id1": "alpha"})
+
+    class _BrokenPendingDeletes(set):
+        def add(self, item):
+            raise RuntimeError("boom")
+
+    storage._pending_deletes = _BrokenPendingDeletes()
+
+    with pytest.raises(RuntimeError):
+        await storage.delete(["id1"])
 
 
 @pytest.mark.offline

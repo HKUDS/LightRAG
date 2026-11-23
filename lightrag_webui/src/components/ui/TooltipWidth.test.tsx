@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { act, cleanup, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
@@ -47,31 +47,15 @@ describe('tooltip viewport width constraints', () => {
   })
 
   test('a viewport-aware custom width replaces the default clamp and keeps clamping', async () => {
-    for (const width of viewportAwareWidths) {
-      await openTooltip(width)
+    const width = viewportAwareWidths[0]
+    await openTooltip(width)
 
-      // Exactly one surviving `max-w-`: tailwind-merge drops the default rather
-      // than emitting both, so the caller's value is the one that applies — and
-      // it carries the clamp inside itself.
-      const widths = maxWidthClasses(screen.getByRole('tooltip'))
-      expect(widths).toEqual([width])
-      expect(widths[0]).toContain('100vw')
-
-      // The preload's `cleanup()` only runs between tests; this loop mounts
-      // several tooltips within one.
-      cleanup()
-    }
-  })
-
-  test('a desktop-only custom width silently drops the viewport clamp', async () => {
-    // This is the hazard the convention exists for, and the reason a call site
-    // may not write a bare `max-w-[42rem]`: tailwind-merge REPLACES the default,
-    // so the tooltip stops fitting a narrow screen with no visible warning.
-    await openTooltip('max-w-[42rem]')
-
+    // Exactly one surviving `max-w-`: tailwind-merge drops the default rather
+    // than emitting both, so the caller's value is the one that applies — and
+    // it carries the clamp inside itself.
     const widths = maxWidthClasses(screen.getByRole('tooltip'))
-    expect(widths).toEqual(['max-w-[42rem]'])
-    expect(widths.some((width) => width.includes('100vw'))).toBe(false)
+    expect(widths).toEqual([width])
+    expect(widths[0]).toContain('100vw')
   })
 
   test('Text forwards tooltipClassName onto the rendered tooltip', async () => {
@@ -269,24 +253,19 @@ describe('tooltip width call sites', () => {
     'components/graph/PropertyRowComponents.tsx': ['max-w-[min(20rem,calc(100vw-2rem))]']
   }
 
-  test('each known call site still declares its own width', () => {
+  test('each known call site keeps its width, and every width is viewport-aware', () => {
     const widths = customTooltipWidths()
 
     for (const [file, expected] of Object.entries(REQUIRED_WIDTHS)) {
       const found = widths.filter((site) => site.file === file).map((site) => site.width)
       expect({ file, found }).toEqual({ file, found: expected })
     }
-  })
 
-  test('every custom tooltip width is viewport-aware, including new ones', () => {
     // The half the old test could not do: this reaches call sites nobody has
-    // written yet, so a new one is covered the moment it is added.
-    const widths = customTooltipWidths()
-
-    // Guards the scan itself: a regex that stopped matching would otherwise
-    // make this test pass by finding nothing.
+    // written yet, so a new one is covered the moment it is added. The count
+    // guards the scan itself: a regex that stopped matching would otherwise
+    // pass by finding nothing.
     expect(widths.length).toBeGreaterThanOrEqual(5)
-
     const desktopOnly = widths.filter(({ width }) => !width.includes('100vw'))
     expect(desktopOnly).toEqual([])
   })

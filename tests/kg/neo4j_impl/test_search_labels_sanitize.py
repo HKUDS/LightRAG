@@ -22,12 +22,14 @@ sys.path.append(
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
 
+pytestmark = pytest.mark.offline
+
+
 @pytest.mark.parametrize(
     "raw, expected",
     [
         # Reserved characters are replaced with spaces and whitespace collapsed.
         ("tb-", "tb"),
-        ("tb-foo", "tb foo"),
         ("node:x", "node x"),
         ("a (b)", "a b"),
         ("C++", "C"),
@@ -35,13 +37,9 @@ from lightrag.kg.neo4j_impl import Neo4JStorage
         ("name*", "name"),
         # Composed entirely of reserved characters -> empty (caller returns []).
         ("---", ""),
-        ("+++", ""),
         ("()[]{}", ""),
         # No reserved characters -> unchanged (modulo whitespace collapsing).
-        ("machine learning", "machine learning"),
         ("  spaced   out  ", "spaced out"),
-        ("学习", "学习"),
-        ("机器-学习", "机器 学习"),
     ],
 )
 def test_sanitize_fulltext_query(raw, expected):

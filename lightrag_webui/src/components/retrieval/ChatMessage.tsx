@@ -13,7 +13,7 @@ import { remarkFootnotes } from '@/utils/remarkFootnotes'
 import { chatMarkdownSanitizeSchema } from '@/utils/markdownSanitizeSchema'
 
 
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { PrismAsyncLight as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
 import { LoaderIcon, ChevronDownIcon, ClockIcon, ZapIcon } from 'lucide-react'
@@ -40,6 +40,7 @@ export type { MessageWithError } from '@/types/retrieval'
 // Kept out of this file so tests can stub the load without mocking the
 // `mermaid` package process-wide; see `mermaidLoader.ts`.
 import { loadMermaid } from './mermaidLoader'
+import { resolvePrismLanguage } from './prismLanguages'
 
 
 /**
@@ -105,10 +106,16 @@ export const ChatMessage = ({
     : (displayContent !== undefined ? displayContent : (message.content || ''))
 
   // Load KaTeX rehype plugin dynamically
-  // Note: KaTeX extensions (mhchem, copy-tex) are imported statically in main.tsx
+  // The KaTeX extensions load here rather than statically at startup so katex
+  // stays out of the first-load bundle. They must be registered before the
+  // plugin is handed to react-markdown: mhchem adds \ce{} / \pu{} to the katex
+  // instance rehype-katex renders with (one instance via `resolve.dedupe` in
+  // vite.config.ts), and copy-tex installs the copy-as-LaTeX handler.
   useEffect(() => {
     const loadKaTeX = async () => {
       try {
+        await import('katex/contrib/mhchem');
+        await import('katex/contrib/copy-tex');
         const { default: rehypeKatex } = await import('rehype-katex');
         setKatexPlugin(() => rehypeKatex);
       } catch (error) {
@@ -685,7 +692,7 @@ const CodeHighlight = memo(({ inline, className, children, renderAsDiagram = fal
     <SyntaxHighlighter
       style={theme === 'dark' ? oneDark : oneLight}
       PreTag="div"
-      language={language}
+      language={resolvePrismLanguage(language)}
       {...props}
     >
       {contentStr}

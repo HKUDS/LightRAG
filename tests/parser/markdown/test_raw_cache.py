@@ -7,8 +7,10 @@ proven by it NOT being called (it raises) while assets still materialize.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -16,6 +18,9 @@ from lightrag.parser.markdown import parser as md_parser
 from lightrag.parser.markdown.parser import NativeMarkdownParser
 
 from tests.parser.markdown.conftest import PNG_BYTES as _PNG_BYTES
+
+
+pytestmark = pytest.mark.offline
 
 _URL = "http://host/y.png"
 _MD = f"# H\n\n![x]({_URL})\n"
@@ -90,21 +95,6 @@ def test_first_parse_downloads_and_writes_bundle(tmp_path, monkeypatch):
     assert len(files) == 2 and "_manifest.json" in files
 
 
-def test_reparse_unchanged_source_is_cache_hit(tmp_path, monkeypatch):
-    _patch_download(monkeypatch)
-    p = NativeMarkdownParser()
-    src, parsed = _make_doc(tmp_path)
-    _extract(p, src, parsed)  # populate cache
-    _wipe_parsed(parsed)  # base parser would rmtree the .parsed dir
-
-    _forbid_download(monkeypatch)  # any download now fails the test
-    _, warnings, meta = _extract(p, src, parsed)
-    assert warnings.get("images_cache_hit") == 1
-    assert len(meta["md_assets"]) == 1
-    (asset,) = meta["md_assets"].values()
-    assert asset["data"] == _PNG_BYTES
-
-
 def test_pure_cache_hit_does_not_touch_bundle(tmp_path, monkeypatch):
     # A pure hit must write nothing: the manifest + image mtimes stay frozen, so
     # on-disk timestamps alone reveal whether the cache was hit.
@@ -115,10 +105,14 @@ def test_pure_cache_hit_does_not_touch_bundle(tmp_path, monkeypatch):
     raw = _raw_dir(tmp_path)
     before = {c.name: c.stat().st_mtime_ns for c in raw.iterdir()}
 
-    _wipe_parsed(parsed)
+    _wipe_parsed(parsed)  # base parser would rmtree the .parsed dir
     _forbid_download(monkeypatch)  # pure hit: no download allowed
-    _, warnings, _ = _extract(p, src, parsed)
+    _, warnings, meta = _extract(p, src, parsed)
     assert warnings.get("images_cache_hit") == 1
+    # The asset is served from the cache, bytes intact.
+    assert len(meta["md_assets"]) == 1
+    (asset,) = meta["md_assets"].values()
+    assert asset["data"] == _PNG_BYTES
 
     after = {c.name: c.stat().st_mtime_ns for c in raw.iterdir()}
     assert after == before  # nothing rewritten
@@ -176,27 +170,85 @@ def test_tampered_cache_file_falls_back_to_download(tmp_path, monkeypatch):
     assert counter["n"] == 2  # integrity mismatch -> miss -> re-download
 
 
+@pytest.mark.parametrize("manifest", [b"\xff", b'{"images":'])
+def test_corrupt_manifest_does_not_block_text_extraction(
+    tmp_path, manifest, lightrag_caplog
+):
+    src, parsed = _make_doc(tmp_path, text="# Heading\n\nReadable content.\n")
+    raw = _raw_dir(tmp_path)
+    raw.mkdir()
+    (raw / "_manifest.json").write_bytes(manifest)
+
+    with lightrag_caplog.at_level(logging.DEBUG, logger="lightrag"):
+        blocks, _, _ = _extract(NativeMarkdownParser(), src, parsed)
+
+    # The miss is traceable in the debug log rather than silent.
+    assert any("unreadable manifest" in r.getMessage() for r in lightrag_caplog.records)
+    # Documented residue: an image-less run stores nothing, so the corrupt
+    # manifest stays on disk untouched (and is read as a miss again next time).
+    assert (raw / "_manifest.json").read_bytes() == manifest
+    assert blocks == [
+        {
+            "heading": "Heading",
+            "level": 1,
+            "parent_headings": [],
+            "content": "# Heading\n\nReadable content.",
+        }
+    ]
+
+
+@pytest.mark.parametrize("manifest", [b"\xff", b'{"images":'])
+def test_corrupt_manifest_can_be_rebuilt(tmp_path, manifest):
+    from lightrag.parser.markdown.raw_cache import (
+        NativeImageRawCache,
+        native_md_options_signature,
+    )
+
+    src, _ = _make_doc(tmp_path)
+    raw = _raw_dir(tmp_path)
+    raw.mkdir()
+    (raw / "_manifest.json").write_bytes(manifest)
+    (raw / "stale.png").write_bytes(_PNG_BYTES)
+
+    def _cache():
+        cache = NativeImageRawCache(
+            raw,
+            source_path=src,
+            options_signature=native_md_options_signature(),
+            force_reparse=False,
+        )
+        cache.load()
+        return cache
+
+    cache = _cache()
+    assert cache.get(_URL) is None
+    cache.put(_URL, _PNG_BYTES, "png")
+    cache.flush()
+
+    assert not (raw / "stale.png").exists()
+    assert _cache().get(_URL) == (_PNG_BYTES, "png")
+
+
 def test_svg_cached_as_png_and_reused_without_rasterizing(tmp_path, monkeypatch):
     # _download returns the post-rasterization PNG, so a cache hit reuses PNG
-    # bytes and never calls cairosvg.
-    _patch_download(monkeypatch, payload=(_PNG_BYTES, "png"))
+    # bytes and bypasses the rasterizer.
+    _patch_download(monkeypatch)
     p = NativeMarkdownParser()
-    src, parsed = _make_doc(tmp_path, text=f"# H\n\n![s]({_URL})\n")
+    src, parsed = _make_doc(tmp_path, text="# H\n\n![s](http://host/y.svg)\n")
     _, _, meta = _extract(p, src, parsed)
     (asset,) = meta["md_assets"].values()
-    assert asset["fmt"] == "png" and asset["data"].startswith(b"\x89PNG")
+    assert (asset["data"], asset["fmt"]) == (_PNG_BYTES, "png")
 
     _wipe_parsed(parsed)
     _forbid_download(monkeypatch)
 
-    import cairosvg
-
-    def _boom(*a, **k):  # pragma: no cover - must not run on a cache hit
-        raise AssertionError("cairosvg must not run on a cache hit")
-
-    monkeypatch.setattr(cairosvg, "svg2png", _boom)
+    render = Mock(side_effect=AssertionError("SVG rasterizer ran on a cache hit"))
+    monkeypatch.setattr(md_parser, "_rasterize_svg", render)
     _, warnings, meta = _extract(p, src, parsed)
     assert warnings.get("images_cache_hit") == 1
+    (asset,) = meta["md_assets"].values()
+    assert (asset["data"], asset["fmt"]) == (_PNG_BYTES, "png")
+    render.assert_not_called()
 
 
 def test_a_failed_required_parse_persists_downloads_for_the_retry(
@@ -298,12 +350,12 @@ def test_an_aborted_first_parse_still_persists_its_downloads(tmp_path):
     assert retry.get(_URL) == (_PNG_BYTES, "png")
 
 
-def test_an_over_budget_cache_hit_warns_once(tmp_path, monkeypatch, caplog):
+def test_an_over_budget_cache_hit_warns_once(
+    tmp_path, monkeypatch, caplog, lightrag_caplog
+):
     """The cache-hit degrade path used to warn twice for the same image (once
     in _local, once in _budget_degraded) while the mid-read path warned once."""
     import logging
-
-    from lightrag.utils import logger as lightrag_logger
 
     _patch_download(monkeypatch)
     p = NativeMarkdownParser()
@@ -316,7 +368,6 @@ def test_an_over_budget_cache_hit_warns_once(tmp_path, monkeypatch, caplog):
     # (budgets are excluded from the options signature, so the bundle stays
     # valid) and degrades to an external link.
     monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", "1")
-    monkeypatch.setattr(lightrag_logger, "propagate", True)
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         _, warnings, _ = _extract(p, src, parsed)
 

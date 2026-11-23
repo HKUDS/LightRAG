@@ -38,6 +38,10 @@ def _create_embedding_function(
     )
 
 
+# An explicit EMBEDDING_DIM is resolved by one shared step for every
+# binding, so it is checked on OpenAI only; each binding keeps its own
+# guard membership and provider default.
+
 # --- OpenAI (default: text-embedding-3-small, dim=1536) ---
 
 
@@ -79,14 +83,6 @@ class TestJinaEmbeddingDimGuard:
                 embedding_dim=None,
             )
 
-    def test_custom_model_accepts_explicit_dim(self):
-        func = _create_embedding_function(
-            binding="jina",
-            model="jina-embeddings-v3",
-            embedding_dim=1024,
-        )
-        assert func.embedding_dim == 1024
-
     def test_default_model_keeps_provider_dimension(self):
         func = _create_embedding_function(
             binding="jina",
@@ -107,14 +103,6 @@ class TestGeminiEmbeddingDimGuard:
                 model="text-embedding-004",
                 embedding_dim=None,
             )
-
-    def test_custom_model_accepts_explicit_dim(self):
-        func = _create_embedding_function(
-            binding="gemini",
-            model="text-embedding-004",
-            embedding_dim=768,
-        )
-        assert func.embedding_dim == 768
 
     def test_default_model_keeps_provider_dimension(self):
         func = _create_embedding_function(
@@ -137,14 +125,6 @@ class TestBedrockEmbeddingDimGuard:
                 embedding_dim=None,
             )
 
-    def test_custom_model_accepts_explicit_dim(self):
-        func = _create_embedding_function(
-            binding="bedrock",
-            model="cohere.embed-english-v3",
-            embedding_dim=1024,
-        )
-        assert func.embedding_dim == 1024
-
     def test_default_model_keeps_provider_dimension(self):
         func = _create_embedding_function(
             binding="bedrock",
@@ -165,14 +145,6 @@ class TestVoyageAIEmbeddingDimGuard:
                 model="voyage-3-lite",
                 embedding_dim=None,
             )
-
-    def test_custom_model_accepts_explicit_dim(self):
-        func = _create_embedding_function(
-            binding="voyageai",
-            model="voyage-3-lite",
-            embedding_dim=512,
-        )
-        assert func.embedding_dim == 512
 
     def test_default_model_keeps_provider_dimension(self):
         func = _create_embedding_function(

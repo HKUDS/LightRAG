@@ -18,34 +18,39 @@ from lightrag.parser.routing import default_chunker_config
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+# Every variable is read by the shared ``_chunk_env_int``, so each variable
+# is checked once (its own default and slot) and the blank and malformed
+# spellings are swept on one of them: the spellings only differ inside it.
+_CHUNK_ENVS = [
+    ("CHUNK_P_SIZE", "paragraph_semantic", "chunk_token_size", DEFAULT_CHUNK_P_SIZE),
+    ("CHUNK_F_SIZE", "fixed_token", "chunk_token_size", None),
+    ("CHUNK_R_SIZE", "recursive_character", "chunk_token_size", None),
+    ("CHUNK_V_SIZE", "semantic_vector", "chunk_token_size", None),
+    ("CHUNK_F_OVERLAP_SIZE", "fixed_token", "chunk_overlap_token_size", None),
+    ("CHUNK_R_OVERLAP_SIZE", "recursive_character", "chunk_overlap_token_size", None),
+    ("CHUNK_P_OVERLAP_SIZE", "paragraph_semantic", "chunk_overlap_token_size", None),
+]
+_BLANKS = ["", "  ", "\t"]
+_MALFORMED = ["20OO", "1.5", "abc"]
+
+
+def _one_spelling_per_env(spellings):
+    """Every env with the first spelling, plus the other spellings on the first env."""
+    cases = [
+        pytest.param(*env, spellings[0], id=f"{env[0]}-{spellings[0]!r}")
+        for env in _CHUNK_ENVS
+    ]
+    cases += [
+        pytest.param(*_CHUNK_ENVS[0], value, id=f"{_CHUNK_ENVS[0][0]}-{value!r}")
+        for value in spellings[1:]
+    ]
+    return cases
+
+
 @pytest.mark.offline
-@pytest.mark.parametrize("env_value", ["", "  ", "\t"])
 @pytest.mark.parametrize(
-    ("env_key", "strategy", "field", "expected"),
-    [
-        (
-            "CHUNK_P_SIZE",
-            "paragraph_semantic",
-            "chunk_token_size",
-            DEFAULT_CHUNK_P_SIZE,
-        ),
-        ("CHUNK_F_SIZE", "fixed_token", "chunk_token_size", None),
-        ("CHUNK_R_SIZE", "recursive_character", "chunk_token_size", None),
-        ("CHUNK_V_SIZE", "semantic_vector", "chunk_token_size", None),
-        ("CHUNK_F_OVERLAP_SIZE", "fixed_token", "chunk_overlap_token_size", None),
-        (
-            "CHUNK_R_OVERLAP_SIZE",
-            "recursive_character",
-            "chunk_overlap_token_size",
-            None,
-        ),
-        (
-            "CHUNK_P_OVERLAP_SIZE",
-            "paragraph_semantic",
-            "chunk_overlap_token_size",
-            None,
-        ),
-    ],
+    ("env_key", "strategy", "field", "expected", "env_value"),
+    _one_spelling_per_env(_BLANKS),
 )
 def test_empty_strategy_chunk_envs_fall_back(
     env_key: str,
@@ -71,28 +76,30 @@ def test_valid_chunk_f_size_is_honored(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.offline
 @pytest.mark.parametrize(
-    "env_key",
-    [
-        "CHUNK_P_SIZE",
-        "CHUNK_F_SIZE",
-        "CHUNK_R_SIZE",
-        "CHUNK_V_SIZE",
-        "CHUNK_F_OVERLAP_SIZE",
-        "CHUNK_R_OVERLAP_SIZE",
-        "CHUNK_P_OVERLAP_SIZE",
-    ],
+    ("env_key", "strategy", "field", "expected", "env_value"),
+    _one_spelling_per_env(_MALFORMED),
 )
-@pytest.mark.parametrize("env_value", ["20OO", "1.5", "abc"])
 def test_malformed_chunk_size_envs_raise(
-    env_key: str, env_value: str, monkeypatch: pytest.MonkeyPatch
+    env_key: str,
+    strategy: str,
+    field: str,
+    expected: int | None,
+    env_value: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    del strategy, field, expected  # shared case table; only the key matters here
     monkeypatch.setenv(env_key, env_value)
     with pytest.raises(ValueError, match=env_key):
         default_chunker_config()
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("env_value", ["", "  "])
+@pytest.mark.parametrize(
+    "env_value",
+    [
+        "",
+    ],
+)
 def test_empty_chunk_size_env_does_not_crash_lightrag_init(
     env_value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

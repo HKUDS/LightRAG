@@ -14,13 +14,19 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
 )
-from lightrag.utils import wrap_embedding_func_with_attrs, logger
+from lightrag.llm._aiohttp_retry import is_transient_aiohttp_error
+from lightrag.utils import embedding_timeout, wrap_embedding_func_with_attrs, logger
 
 
-async def fetch_data(url, headers, data):
-    async with aiohttp.ClientSession() as session:
+async def fetch_data(url, headers, data, timeout=None):
+    # ``timeout`` is a resolved value: None keeps aiohttp's session default
+    # rather than building ClientTimeout(total=None), which never times out.
+    session_kwargs = {}
+    if timeout is not None:
+        session_kwargs["timeout"] = aiohttp.ClientTimeout(total=timeout)
+    async with aiohttp.ClientSession(**session_kwargs) as session:
         async with session.post(url, headers=headers, json=data) as response:
             if response.status != 200:
                 error_text = await response.text()
@@ -67,10 +73,11 @@ async def fetch_data(url, headers, data):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=(
-        retry_if_exception_type(aiohttp.ClientError)
-        | retry_if_exception_type(aiohttp.ClientResponseError)
-    ),
+    retry=retry_if_exception(is_transient_aiohttp_error),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so the document's error_msg carries Jina's message and callers can still
+    # catch aiohttp.ClientResponseError.
+    reraise=True,
 )
 async def jina_embed(
     texts: list[str],
@@ -81,6 +88,7 @@ async def jina_embed(
     api_key: str = None,
     context: str | None = None,
     task: str | None = None,
+    timeout: float | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using Jina AI's API.
 
@@ -107,14 +115,24 @@ async def jina_embed(
             - "retrieval.passage" for context="document"
             - "text-matching" otherwise (true backward-compatible default)
             Any explicit non-None task value overrides context-based selection.
+        timeout: Total request timeout in seconds for one attempt. None (the
+            default) uses LightRAG's ``default_embedding_timeout`` inside a
+            LightRAG embedding call; 0 or a negative value, or None outside
+            one, keeps aiohttp's session default (300 s).
 
 
     Returns:
-        A numpy array of embeddings, one per input text.
+        A numpy array of embeddings in input order. Indexed responses are
+        validated and reordered; responses without indices retain
+        their response order for compatibility with custom endpoints.
 
     Raises:
         aiohttp.ClientError: If there is a connection error with the Jina API.
         aiohttp.ClientResponseError: If the Jina API returns an error response.
+            Connection failures and 408 / 409 / 429 / 5xx responses are retried
+            up to three attempts first; the last attempt's exception is raised
+            as-is, never wrapped in ``tenacity.RetryError``.
+        TimeoutError: If an attempt exceeds ``timeout``; retried the same way.
     """
     effective_api_key = api_key or os.getenv("JINA_API_KEY")
     if not effective_api_key:
@@ -152,7 +170,9 @@ async def jina_embed(
     )
 
     try:
-        data_list = await fetch_data(url, headers, data)
+        data_list = await fetch_data(
+            url, headers, data, timeout=embedding_timeout(timeout)
+        )
 
         if not data_list:
             logger.error("Jina API returned empty data list")
@@ -165,6 +185,18 @@ async def jina_embed(
             raise ValueError(
                 f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts"
             )
+
+        # Vector stores consume rows positionally, not by the provider's index.
+        if any("index" in row for row in data_list):
+            indices = [row.get("index") for row in data_list]
+            if any(type(index) is not int for index in indices) or set(indices) != set(
+                range(len(texts))
+            ):
+                raise ValueError(
+                    f"Jina API returned invalid embedding indices for "
+                    f"{len(texts)} texts (first 10: {indices[:10]})"
+                )
+            data_list = sorted(data_list, key=lambda row: row["index"])
 
         embeddings = np.array(
             [

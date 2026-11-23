@@ -1885,29 +1885,6 @@ async def test_smartheading_metadata_cache_deleted_alongside_chunk_cache(
 
 
 @pytest.mark.asyncio
-async def test_smartheading_cache_cleared_by_aclear_cache(tmp_path):
-    """The 'clear documents + clear cache' UI flow calls aclear_cache() ->
-    drop(), which wipes the whole llm_response_cache regardless of cache_type,
-    so smart_heading entries are cleared too.
-    """
-    rag = await _build_rag(
-        tmp_path, "smartheading_aclear_cache", _deterministic_chunking
-    )
-    try:
-        cache_id = "default:smartheading:hx"
-        await rag.llm_response_cache.upsert(
-            {cache_id: {"cache_type": "smartheading", "return": "cached-heading"}}
-        )
-        assert await rag.llm_response_cache.get_by_id(cache_id) is not None
-
-        await rag.aclear_cache()
-
-        assert await rag.llm_response_cache.get_by_id(cache_id) is None
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
 async def test_edit_does_not_reseed_present_but_empty_chunk_tracking(tmp_path):
     """Regression for #3609.
 

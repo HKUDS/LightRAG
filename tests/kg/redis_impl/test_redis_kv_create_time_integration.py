@@ -14,7 +14,7 @@ Opt-in — these tests write and DELETE keys, so they never run against the URI
 configured for a real deployment. They read ``LIGHTRAG_TEST_REDIS_URI`` and
 are skipped when it is unset::
 
-    docker run -d --name lr-redis-test -p 16379:6379 redis:latest
+    docker run -d --name lr-redis-test -p 16379:6379 redis:8
 
     LIGHTRAG_TEST_REDIS_URI=redis://localhost:16379 \\
         ./scripts/test.sh tests/kg/redis_impl/test_redis_kv_create_time_integration.py \\

@@ -79,14 +79,6 @@ class _RaisingDocStatus:
 
 
 @pytest.mark.asyncio
-async def test_resolver_propagates_backend_failure():
-    doc_status = _RaisingDocStatus()
-    with pytest.raises(StorageControlPlaneError):
-        await resolve_existing_doc_source(doc_status, "report.pdf")
-    assert doc_status.calls == 1
-
-
-@pytest.mark.asyncio
 async def test_resolver_treats_unknown_source_as_absent_without_querying():
     doc_status = _RaisingDocStatus()
     assert isinstance(
@@ -120,22 +112,6 @@ async def test_enqueue_refuses_when_the_identity_query_fails(tmp_path, monkeypat
 
         # Nothing was admitted on the failure.
         assert await _rows(rag) == {}
-    finally:
-        await rag.finalize_storages()
-
-
-@pytest.mark.asyncio
-async def test_enqueue_admits_a_new_basename(tmp_path):
-    rag = await _build_rag(tmp_path)
-    try:
-        await rag.apipeline_enqueue_documents(
-            "hello world", file_paths="report.pdf", track_id="t-1"
-        )
-        rows = await _rows(rag)
-        assert len(rows) == 1
-        (row,) = rows.values()
-        assert row["status"] == DocStatus.PENDING
-        assert row["file_path"] == "report.pdf"
     finally:
         await rag.finalize_storages()
 

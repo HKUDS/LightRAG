@@ -1,9 +1,8 @@
 """Regression tests for retrying transient OpenAI failures.
 
-Covers:
-  * HTTP 5xx (InternalServerError) is retried on both complete and embed.
-  * Transient "could not parse JSON body" 400s are converted to a retryable
-    TransientBadRequestError, while genuine 400s fail fast.
+Covers transient "could not parse JSON body" 400s, which are converted to a
+retryable TransientBadRequestError while genuine 400s fail fast. HTTP 5xx
+retries are counted at the wire in test_openai_permanent_rate_limit.py.
 """
 
 from types import SimpleNamespace
@@ -11,12 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from openai import BadRequestError, InternalServerError
+from openai import BadRequestError
 
 from lightrag.llm.openai import (
     TransientBadRequestError,
     openai_complete_if_cache,
-    openai_embed,
 )
 
 
@@ -34,10 +32,7 @@ def _retry_exception_types(func) -> set[type]:
             exc_types = (exc_types,)
         types.update(exc_types)
 
-    # openai_embed is wrapped by @wrap_embedding_func_with_attrs; the
-    # tenacity-decorated callable is on `.func`.
-    target = getattr(func, "func", func)
-    _walk(target.retry.retry)
+    _walk(func.retry.retry)
     return types
 
 
@@ -57,15 +52,8 @@ def _make_error_client(error: Exception) -> SimpleNamespace:
 
 
 @pytest.mark.offline
-def test_complete_retries_5xx_and_transient_400():
-    retried = _retry_exception_types(openai_complete_if_cache)
-    assert InternalServerError in retried
-    assert TransientBadRequestError in retried
-
-
-@pytest.mark.offline
-def test_embed_retries_5xx():
-    assert InternalServerError in _retry_exception_types(openai_embed)
+def test_complete_retries_transient_400():
+    assert TransientBadRequestError in _retry_exception_types(openai_complete_if_cache)
 
 
 @pytest.mark.offline

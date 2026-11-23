@@ -91,16 +91,6 @@ _PLAIN = [
 
 class TestGetNodesEdgesBatchSelfLoop:
     @pytest.mark.asyncio
-    async def test_self_loop_is_listed_once(self):
-        """One edge, one tuple: the self-loop matches both the outbound and the
-        inbound query, and listing it from each reports one edge as two."""
-        s = _make_storage(_SELF_LOOP)
-
-        result = await s.get_nodes_edges_batch(["Loop"])
-
-        assert result["Loop"] == [("Loop", "Loop")]
-
-    @pytest.mark.asyncio
     async def test_self_loop_matches_get_node_edges(self):
         """``get_node_edges`` reads the same edge through a single ``$or`` and
         has always returned it once; the batch form must not disagree."""

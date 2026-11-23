@@ -1,10 +1,14 @@
 /// <reference types="bun" />
 import { afterEach, describe, expect, test } from 'bun:test'
-import { readFileSync } from 'fs'
-import { join } from 'path'
-import { act, cleanup } from '@testing-library/react'
+import { act, cleanup, screen, waitFor } from '@testing-library/react'
 
+import {
+  __resetPaginatedDocumentRequestsForTests,
+  __setAxiosAdapterForTests
+} from '@/api/lightrag'
 import { renderWithProviders } from '@/test/render'
+import { useBackendState } from '@/stores/state'
+import DocumentManager from './DocumentManager'
 import RetrievalView from './RetrievalView'
 import StatusIndicator from '@/components/status/StatusIndicator'
 import { CardContent } from '@/components/ui/Card'
@@ -37,7 +41,45 @@ const spacingPx = (element: Element, prefix: string): number => {
 
 afterEach(() => {
   cleanup()
+  __setAxiosAdapterForTests(undefined)
+  __resetPaginatedDocumentRequestsForTests()
+  useBackendState.getState().clearHealthCheckTimer()
 })
+
+/** An empty corpus: enough for DocumentManager to settle on its empty card. */
+const emptyDocumentsAdapter = async (config: any) => {
+  const url: string = config.url ?? ''
+  const data = url.endsWith('/documents/paginated')
+    ? {
+      documents: [],
+      pagination: {
+        page: 1,
+        page_size: 10,
+        total_count: 0,
+        total_pages: 0,
+        has_next: false,
+        has_prev: false
+      },
+      status_counts: { all: 0 }
+    }
+    : url.endsWith('/health')
+      ? { status: 'healthy', pipeline_busy: false, pipeline_active: false }
+      : {}
+  return { data, status: 200, statusText: 'OK', headers: {}, config }
+}
+
+/** The bottom margin of the rendered document list card, as pixels. */
+const renderedListCardMarginPx = async (): Promise<number> => {
+  __setAxiosAdapterForTests(emptyDocumentsAdapter)
+  renderWithProviders(<DocumentManager />)
+  await waitFor(() => {
+    expect(screen.queryAllByText('No Documents')).toHaveLength(1)
+  })
+  // The list card is the one whose title is the uploaded-documents heading.
+  const listCard = screen.getByText('Uploaded Documents').closest('.rounded-md.min-h-0')
+  expect(listCard === null).toBe(false)
+  return spacingPx(listCard!, 'mb')
+}
 
 describe('admin retrieval layout', () => {
   test('the page bottom gap matches the document panel and clears the status indicator', async () => {
@@ -79,8 +121,8 @@ describe('admin retrieval layout', () => {
     cleanup()
 
     // The document panel's clearance is its card's own bottom margin plus the
-    // card's content padding. The card is rendered here directly: mounting
-    // DocumentManager would pull in the whole document pipeline for a number.
+    // card's content padding. The padding is the shared CardContent default,
+    // rendered here directly; the margin is read off DocumentManager below.
     const { container: cardContainer } = renderWithProviders(<CardContent />)
     const cardContent = cardContainer.firstElementChild!
     const contentPaddingPx = spacingPx(cardContent, 'p')
@@ -96,12 +138,10 @@ describe('admin retrieval layout', () => {
     expect(spacingPx(cardContent, 'pt')).toBe(0)
     cleanup()
 
-    // DocumentManager itself stays a source read for the same reason — but of
-    // the NUMBER, so a change to it fails the arithmetic rather than a string.
-    const documentManager = readFileSync(join(import.meta.dir, 'DocumentManager.tsx'), 'utf8')
-    const listCard = documentManager.match(/<Card className="[^"]*\bmin-h-0 mb-(\d+)\b[^"]*">/)
-    expect(listCard === null).toBe(false)
-    const listCardMarginPx = Number(listCard![1]) * SPACING_PX
+    // The list card's margin is read off the rendered DocumentManager, settled
+    // on an empty corpus. spacingPx also refuses a second `mb-N` class.
+    const listCardMarginPx = await renderedListCardMarginPx()
+    cleanup()
 
     const { container: statusContainer } = renderWithProviders(<StatusIndicator />)
     const statusInsetPx = spacingPx(statusContainer.firstElementChild!, 'bottom')

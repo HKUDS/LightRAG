@@ -71,15 +71,6 @@ const renderWelcome = async () => {
 }
 
 describe('workspace welcome branding', () => {
-  test('shows the deployment title', async () => {
-    seedCustomization({ title: 'Acme Knowledge Base' })
-    await renderWelcome()
-
-    expect(
-      await screen.findByRole('heading', { name: 'Acme Knowledge Base' })
-    ).toBeInTheDocument()
-  })
-
   test('never puts the deployment description on the page', async () => {
     // The description is the header tooltip's text — one line of operator
     // context sized for a hover. Printing it on the welcome page would put

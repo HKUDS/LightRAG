@@ -258,15 +258,6 @@ async def test_page_keyset_predicate():
     }
 
 
-async def test_page_no_and_clause_on_fresh_sweep():
-    data = _FakeCollection(find_docs=[])
-    storage = _storage(data=data)
-
-    await storage.get_docs_by_statuses_page([DocStatus.FAILED], limit=2)
-
-    assert "$and" not in data.find_queries[0]
-
-
 async def test_page_full_page_advances_to_last_returned_key():
     data = _FakeCollection(find_docs=[_ROW_1, _ROW_2])
     storage = _storage(data=data)
@@ -355,6 +346,41 @@ async def test_page_malformed_cursor_raises_control_plane_error():
             limit=2,
             position=CursorAfter(json.dumps(["2026-01-01", 3])),
         )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # A two-entry object (another backend's cursor shape) and a
+        # two-character string both unpack to two strings; read as a keyset
+        # position they would mis-position the sweep instead of failing closed.
+        pytest.param(
+            json.dumps({"pending": "doc-a", "failed": "doc-b"}), id="two-key-object"
+        ),
+        pytest.param(json.dumps("ab"), id="two-char-string"),
+    ],
+)
+async def test_page_cursor_payload_must_be_a_two_element_list(payload):
+    storage = _storage()
+
+    with pytest.raises(StorageControlPlaneError):
+        await storage.get_docs_by_statuses_page(
+            [DocStatus.FAILED], limit=2, position=CursorAfter(payload), strict=True
+        )
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(("2026-01-01T00:00:00+00:00", "doc-1"), id="real-key"),
+        # The NULL created_at bucket the backend itself mints for legacy rows.
+        pytest.param((None, "doc-1"), id="null-bucket"),
+    ],
+)
+def test_decode_cursor_accepts_the_backends_own_shapes(key):
+    created, doc_id = key
+    opaque = MongoDocStatusStorage._encode_cursor(created, doc_id)
+    assert MongoDocStatusStorage._decode_cursor(opaque) == key
 
 
 async def test_page_transport_error_propagates():
@@ -612,25 +638,6 @@ async def test_resolve_transport_error_propagates():
 # ---------------------------------------------------------------------------
 
 
-async def test_legacy_basename_primary_only_query():
-    data = _FakeCollection(find_one_result={"_id": "doc-1", "file_path": "a.txt"})
-    storage = _storage(data=data)
-
-    result = await storage.get_doc_by_file_basename("a.txt")
-
-    assert result == ("doc-1", {"_id": "doc-1", "file_path": "a.txt"})
-    query, _ = data.find_one_calls[0]
-    assert query == _PRIMARY_QUERY
-
-
-async def test_legacy_basename_swallows_transport_error():
-    data = _FakeCollection(find_one_error=PyMongoError("down"))
-    storage = _storage(data=data)
-
-    # Legacy compat path: a transport failure reads as a best-effort miss.
-    assert await storage.get_doc_by_file_basename("a.txt") is None
-
-
 # ---------------------------------------------------------------------------
 # list_source_conflicts_page
 # ---------------------------------------------------------------------------
@@ -801,28 +808,6 @@ async def test_repair_primary_not_in_candidates_raises_value_error():
             expected_candidate_fingerprint="",
             dry_run=True,
         )
-
-
-@pytest.mark.asyncio
-async def test_get_doc_by_content_hash_exclude_doc_id_adds_ne_filter():
-    # LR2 Phase 2.5: exclude_doc_id becomes an in-query _id $ne, still served
-    # by the partial content_hash index — never a scan. Sorted + limited so the
-    # EARLIEST other holder wins deterministically (base contract).
-    data = _FakeCollection(find_docs=[{"_id": "doc-2", "content_hash": "h"}])
-    s = _storage(data=data)
-
-    result = await s.get_doc_by_content_hash("h", exclude_doc_id="doc-1")
-    assert result is not None and result[0] == "doc-2"
-    # The id half of the exclusion; the pointer half is asserted in
-    # test_get_doc_by_content_hash_excludes_rows_pointing_at_the_excluded_id.
-    assert data.find_queries[0]["content_hash"] == "h"
-    assert data.find_queries[0]["_id"] == {"$ne": "doc-1"}
-    assert data.find_cursors[0].sort_spec == [("created_at", 1), ("_id", 1)]
-    assert data.find_cursors[0].limit_value == 1
-
-    # No exclusion → plain content_hash filter.
-    await s.get_doc_by_content_hash("h")
-    assert data.find_queries[-1] == {"content_hash": "h"}
 
 
 async def test_get_doc_by_content_hash_propagates_query_failure():

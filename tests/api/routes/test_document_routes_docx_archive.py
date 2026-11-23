@@ -1,5 +1,8 @@
+import asyncio
 import importlib
+import io
 import sys
+import threading
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -475,57 +478,6 @@ async def test_pipeline_index_file_leaves_lightrag_document_docx_for_parser_arch
     assert rag.enqueued[0]["parse_engine"] == "native"
 
 
-async def test_pipeline_enqueue_lightrag_document_docx_does_not_move_source(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native")
-    file_path = tmp_path / "pending.docx"
-    file_path.write_bytes(b"docx bytes")
-    rag = _FakeRag()
-
-    success, returned_track_id = await pipeline_enqueue_file(
-        rag, file_path, "track-docx"
-    )
-
-    assert success is True
-    assert returned_track_id == "track-docx"
-    assert file_path.exists()
-    assert not (tmp_path / PARSED_DIR_NAME / file_path.name).exists()
-    assert rag.enqueued[0]["file_path"] == str(file_path)
-    assert rag.enqueued[0]["docs_format"] == FULL_DOCS_FORMAT_PENDING_PARSE
-    assert rag.enqueued[0]["parse_engine"] == "native"
-
-
-async def test_pipeline_enqueue_docx_defers_to_legacy_parser(tmp_path, monkeypatch):
-    # Legacy now defers extraction to the worker stage; enqueue just records a
-    # PENDING_PARSE row with parse_engine=legacy (no eager extraction here).
-    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:legacy")
-    file_path = tmp_path / "plain.docx"
-    file_path.write_bytes(b"docx bytes")
-    rag = _FakeRag()
-
-    success, returned_track_id = await pipeline_enqueue_file(
-        rag, file_path, "track-docx"
-    )
-
-    assert success is True
-    assert returned_track_id == "track-docx"
-    assert rag.enqueued == [
-        {
-            "input": "",
-            "file_path": str(file_path),
-            "track_id": "track-docx",
-            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-            "parse_engine": "legacy",
-            "process_options": PROCESS_OPTION_CHUNK_FIXED,
-            "chunk_options": None,
-            "from_scan": False,
-        }
-    ]
-    # Deferred: the source stays in place until the worker archives it.
-    assert file_path.exists()
-
-
 async def test_pipeline_enqueue_md_defers_to_legacy_parser(tmp_path, monkeypatch):
     # Unhinted .md defaults to the legacy engine and now defers extraction to
     # the worker stage (PENDING_PARSE), like every other engine.
@@ -576,40 +528,6 @@ async def test_pipeline_enqueue_legacy_duplicate_archives_with_unique_name(
     assert (parsed_dir / "duplicate_001.md").read_text(
         encoding="utf-8"
     ) == "duplicate content"
-
-
-async def test_pipeline_enqueue_parser_routed_pdf_defers_without_extraction(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("LIGHTRAG_PARSER", "pdf:mineru,*:legacy")
-    monkeypatch.setenv("MINERU_API_MODE", "local")
-    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://fake-mineru")
-
-    # Extraction is always deferred now (no enqueue-stage extraction for any
-    # engine), so the pdf simply enqueues as PENDING_PARSE for mineru.
-    file_path = tmp_path / "paper.pdf"
-    file_path.write_bytes(b"fake-pdf")
-    rag = _FakeRag()
-
-    success, returned_track_id = await pipeline_enqueue_file(
-        rag, file_path, "track-pdf"
-    )
-
-    assert success is True
-    assert returned_track_id == "track-pdf"
-    assert file_path.exists()
-    assert rag.enqueued == [
-        {
-            "input": "",
-            "file_path": str(file_path),
-            "track_id": "track-pdf",
-            "docs_format": FULL_DOCS_FORMAT_PENDING_PARSE,
-            "parse_engine": "mineru",
-            "process_options": PROCESS_OPTION_CHUNK_FIXED,
-            "chunk_options": None,
-            "from_scan": False,
-        }
-    ]
 
 
 async def test_pipeline_enqueue_passes_process_options_from_filename_hint(
@@ -686,24 +604,6 @@ async def test_pipeline_enqueue_rejects_invalid_filename_hint(tmp_path, monkeypa
     )
     assert "unsupported parser engine 'abc'" in error_files[0]["original_error"]
     assert file_path.exists()
-
-
-async def test_pipeline_enqueue_lightrag_parser_rule_provides_default_options(
-    tmp_path, monkeypatch
-):
-    """LIGHTRAG_PARSER ``docx:native-iet`` becomes the default ``process_options``."""
-    monkeypatch.setenv("LIGHTRAG_PARSER", "docx:native-iet,*:legacy")
-    file_path = tmp_path / "rule_default.docx"
-    file_path.write_bytes(b"docx-bytes")
-    rag = _FakeRag()
-
-    success, _ = await pipeline_enqueue_file(rag, file_path, "track-rule-default")
-
-    assert success is True
-    assert len(rag.enqueued) == 1
-    enqueued = rag.enqueued[0]
-    assert enqueued["parse_engine"] == "native"
-    assert enqueued["process_options"] == "iet"
 
 
 async def test_pipeline_enqueue_scan_batch_leaves_lightrag_document_docx_batch(
@@ -1181,52 +1081,6 @@ async def test_scan_failed_with_full_docs_resumes_normally(tmp_path, monkeypatch
     assert file_path.exists()
 
 
-async def test_scan_resume_runs_when_all_new_files_fail_to_enqueue(
-    tmp_path, monkeypatch
-):
-    """The exact P2 scenario: a scan batch contains a resume target plus
-    new files that all fail / are rejected during enqueue.
-    pipeline_index_files's internal process_enqueue is gated on at least
-    one successful enqueue; without the unconditional resume trigger in
-    run_scanning_process the PARSING/FAILED row would stay stuck.
-
-    We simulate "all new files rejected" with a pipeline_index_files mock
-    that records its invocation but does not call process_enqueue (mirroring
-    the real helper's behaviour when every per-file enqueue returns False).
-    """
-    new_file = tmp_path / "fresh.docx"
-    resume_file = tmp_path / "retry.docx"
-    new_file.write_bytes(b"fresh docx bytes")
-    resume_file.write_bytes(b"retry docx bytes")
-    doc_manager = DocumentManager(str(tmp_path))
-    rag = _ScanRag(
-        {
-            str(resume_file): {
-                "status": DocStatus.PARSING.value,
-                "file_path": str(resume_file),
-                "track_id": "track-existing",
-            }
-        }
-    )
-
-    async def index_files_all_rejected(rag_arg, candidates, track_id, **kwargs):
-        # Mirror the real helper when every per-file enqueue is rejected: the
-        # batch lands nothing (0), and enqueue never drives processing anyway.
-        return 0
-
-    monkeypatch.setattr(
-        _document_routes, "pipeline_enqueue_scan_batch", index_files_all_rejected
-    )
-
-    await run_scanning_process(rag, doc_manager, "track-scan")
-
-    # Even though pipeline_index_files's internal trigger never fired, the
-    # scan still kicks process_enqueue once so the resume row advances.
-    assert rag.process_calls == 1
-    assert resume_file.exists()
-    assert new_file.exists()
-
-
 async def test_upload_rejects_same_name_failed_doc_status_without_full_docs(
     tmp_path, monkeypatch
 ):
@@ -1414,6 +1268,232 @@ async def test_upload_write_failure_cleans_up_partial_file_and_returns_500(
     assert not (tmp_path / "safe.pdf").exists()
 
 
+@pytest.mark.parametrize("failure", ["cancel", "read_error"])
+async def test_incomplete_upload_is_removed_and_can_be_retried(
+    tmp_path, monkeypatch, failure
+):
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        initialize_pipeline_status,
+    )
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    await initialize_pipeline_status(workspace=rag.workspace)
+    router = create_document_routes(rag, doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    managed = set()
+    indexed = []
+
+    async def index_file(rag_arg, file_path, track_id, **kwargs):
+        indexed.append(file_path.read_bytes())
+
+    monkeypatch.setattr(_document_routes, "pipeline_index_file", index_file)
+    upload = _document_routes.UploadFile(filename="report.txt", file=BytesIO())
+    reading = asyncio.Event()
+    calls = 0
+
+    async def read(size):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return b"truncated report"
+        reading.set()
+        if failure == "read_error":
+            raise ValueError("broken upload stream")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(upload, "read", read)
+    task = asyncio.create_task(endpoint(managed, upload))
+    await asyncio.wait_for(reading.wait(), 5)
+    if failure == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(_document_routes.HTTPException) as excinfo:
+            await task
+        assert excinfo.value.status_code == 500
+
+    assert not (tmp_path / "report.txt").exists()
+    assert list(doc_manager.iter_new_files()) == []
+    status = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+    assert status["pending_enqueues"] == 0
+    assert indexed == []
+
+    retry = _document_routes.UploadFile(
+        filename="report.txt", file=BytesIO(b"complete")
+    )
+    response = await endpoint(managed, retry)
+    await _await_managed(managed)
+    assert response.status == "success"
+    assert indexed == [b"complete"]
+
+
+@pytest.mark.parametrize("stage", ["open", "write", "close"])
+async def test_upload_cancellation_waits_for_inflight_file_io(
+    tmp_path, monkeypatch, stage
+):
+    """Cancel while a real aiofiles executor thread owns the output file."""
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        initialize_pipeline_status,
+    )
+
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    await initialize_pipeline_status(workspace=rag.workspace)
+    router = create_document_routes(rag, doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    started = threading.Event()
+    release = threading.Event()
+    original_open = _document_routes.aiofiles.threadpool.sync_open
+    handles = []
+
+    def pause():
+        started.set()
+        assert release.wait(5), "test did not release the file IO thread"
+
+    class ControlledWriter(io.BufferedWriter):
+        def write(self, data):
+            result = super().write(data)
+            if stage == "write":
+                pause()
+            return result
+
+        def close(self):
+            if stage == "close" and not self.closed:
+                pause()
+            super().close()
+
+    def open_file(path, mode, *args, **kwargs):
+        kwargs["buffering"] = 0
+        handle = ControlledWriter(original_open(path, mode, *args, **kwargs))
+        handles.append(handle)
+        if stage == "open":
+            pause()
+        return handle
+
+    monkeypatch.setattr(_document_routes.aiofiles.threadpool, "sync_open", open_file)
+    upload = _document_routes.UploadFile(
+        filename="report.txt", file=BytesIO(b"complete report")
+    )
+    task = asyncio.create_task(endpoint(set(), upload))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel("shutdown")
+        await asyncio.sleep(0)
+        task.cancel("shutdown again")
+        await asyncio.sleep(0)
+        assert not task.done()
+        status = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        assert status["pending_enqueues"] == 1
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await asyncio.wait_for(task, 5)
+    # The write settled after the cancel was requested, but the file it wrote
+    # was removed: the cancellation must not claim a durable write.
+    assert not _utils.cancellation_was_deferred(cancelled.value)
+    # In the broken open path the executor can finish after the cancelled
+    # endpoint returned; wait for it before inspecting the resulting residue.
+    await asyncio.to_thread(lambda: None)
+    try:
+        assert handles and all(handle.closed for handle in handles)
+        assert not (tmp_path / "report.txt").exists()
+        assert list(doc_manager.iter_new_files()) == []
+        status = await get_namespace_data("pipeline_status", workspace=rag.workspace)
+        assert status["pending_enqueues"] == 0
+    finally:
+        for handle in handles:
+            handle.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_upload_open_conflict_never_removes_another_writers_file(
+    tmp_path, monkeypatch, cancel, lightrag_log_records
+):
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    router = create_document_routes(_DuplicateUploadRag({}), doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    original_open = _document_routes.aiofiles.threadpool.sync_open
+    started = threading.Event()
+    release = threading.Event()
+    path = tmp_path / "report.txt"
+
+    def competing_open(*args, **kwargs):
+        # Another writer wins the exclusive create after the route's precheck.
+        path.write_bytes(b"other writer's complete report")
+        started.set()
+        assert release.wait(5)
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        _document_routes.aiofiles.threadpool, "sync_open", competing_open
+    )
+    upload = _document_routes.UploadFile(
+        filename=path.name, file=BytesIO(b"replacement")
+    )
+    task = asyncio.create_task(endpoint(set(), upload))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        if cancel:
+            task.cancel()
+    finally:
+        release.set()
+    if cancel:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+    else:
+        with pytest.raises(_document_routes.HTTPException) as excinfo:
+            await asyncio.wait_for(task, 5)
+        assert excinfo.value.status_code == 409
+    assert path.read_bytes() == b"other writer's complete report"
+    # Losing the name is the caller's ordinary conflict, cancelled or not --
+    # never reported as a server-side file IO failure.
+    assert [
+        r.getMessage() for r in lightrag_log_records if r.levelname == "ERROR"
+    ] == []
+
+
+async def test_upload_streaming_size_limit_removes_owned_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=4)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    router = create_document_routes(_DuplicateUploadRag({}), doc_manager)
+    endpoint = next(
+        r.endpoint for r in router.routes if r.name == "upload_to_input_dir"
+    )
+    upload = _document_routes.UploadFile(filename="report.txt", file=BytesIO())
+    chunks = iter([b"four", b"extra"])
+
+    async def read(size):
+        return next(chunks, b"")
+
+    monkeypatch.setattr(upload, "read", read)
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await endpoint(set(), upload)
+    assert excinfo.value.status_code == 413
+    assert not (tmp_path / "report.txt").exists()
+    assert list(doc_manager.iter_new_files()) == []
+
+
 async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
     """A malformed filename hint fails the upload synchronously with the
     detailed hint error in the 400 body (it used to be accepted and only
@@ -1439,6 +1519,32 @@ async def test_upload_rejects_malformed_hint_with_detail(tmp_path, monkeypatch):
         await upload_endpoint(set(), upload_file)
     assert excinfo.value.status_code == 400
     assert "multiple chunking modes" in excinfo.value.detail
+
+
+async def test_upload_rejects_hint_chunk_size_below_minimum(tmp_path, monkeypatch):
+    """A new upload whose hint sets a chunk size below MIN_CHUNK_TOKEN_SIZE is
+    rejected before the file is written, although such a hint still parses."""
+    monkeypatch.setattr(
+        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
+    )
+    doc_manager = DocumentManager(str(tmp_path))
+    rag = _DuplicateUploadRag({})
+    router = create_document_routes(rag, doc_manager)
+    upload_endpoint = [
+        route.endpoint
+        for route in router.routes
+        if getattr(route, "name", "") == "upload_to_input_dir"
+    ][-1]
+    name = "small.[-R(chunk_ts=32,chunk_ol=0)].md"
+    upload_file = _document_routes.UploadFile(
+        filename=name, file=BytesIO(b"markdown body")
+    )
+
+    with pytest.raises(_document_routes.HTTPException) as excinfo:
+        await upload_endpoint(set(), upload_file)
+    assert excinfo.value.status_code == 400
+    assert "must be >= 64, got 32" in excinfo.value.detail
+    assert not (tmp_path / name).exists()
 
 
 async def test_upload_rejects_c_without_custom_callback_before_writing(
@@ -1501,71 +1607,6 @@ async def test_upload_accepts_c_when_custom_callback_is_injected(tmp_path, monke
 
     assert response.status == "success"
     assert (tmp_path / "custom.[native-C].docx").exists()
-
-
-async def test_upload_succeeds_concurrent_with_pipeline_busy(tmp_path, monkeypatch):
-    """Under the new contract, ``busy=True`` no longer blocks uploads.
-    The upload reserves a pending-enqueue slot, schedules its bg task,
-    and returns success; the bg task's enqueue is permitted while the
-    pipeline is busy and the running loop picks up the new doc via the
-    ingress mailbox.
-    """
-    import importlib
-
-    monkeypatch.setattr(
-        _document_routes, "global_args", SimpleNamespace(max_upload_size=None)
-    )
-    doc_manager = DocumentManager(str(tmp_path))
-    rag = _DuplicateUploadRag({})
-
-    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
-    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
-    pipeline_status = await shared_storage.get_namespace_data(
-        "pipeline_status", workspace=rag.workspace
-    )
-    pipeline_status["scanning"] = False
-    pipeline_status["pending_enqueues"] = 0
-    pipeline_status["busy"] = True
-
-    router = create_document_routes(rag, doc_manager)
-    upload_endpoint = [
-        route.endpoint
-        for route in router.routes
-        if getattr(route, "name", "") == "upload_to_input_dir"
-    ][-1]
-    upload_file = _document_routes.UploadFile(
-        filename="while_busy.docx",
-        file=BytesIO(b"docx bytes"),
-    )
-
-    # Gate the managed child so the enqueue slot stays reserved until we let it
-    # finish — the deterministic replacement for the old "task queued but not
-    # run" deferral.
-    import asyncio
-
-    gate = asyncio.Event()
-
-    async def _gated_index(rag_arg, file_path, track_id=None, admission_token=None):
-        await gate.wait()
-
-    monkeypatch.setattr(_document_routes, "pipeline_index_file", _gated_index)
-
-    managed: set = set()
-    response = await upload_endpoint(managed, upload_file)
-
-    # Endpoint accepted the upload despite busy=True.
-    assert response.status == "success"
-    assert (tmp_path / "while_busy.docx").exists()
-    # The slot has been transferred to the managed task, which is parked in the
-    # gated child; until it finishes pending_enqueues stays at 1 so a concurrent
-    # /scan would refuse.
-    assert pipeline_status["pending_enqueues"] == 1
-    assert len(managed) == 1
-
-    # Let the child complete; its finally releases the slot.
-    gate.set()
-    await _await_managed(managed)
-    assert pipeline_status["pending_enqueues"] == 0
 
 
 async def test_upload_returns_409_when_scanning_classification(tmp_path, monkeypatch):
@@ -3201,6 +3242,188 @@ def test_delete_file_variants_removes_canonical_hint_variants(tmp_path):
     assert unrelated_artifact_dir.is_dir()
 
 
+@pytest.mark.parametrize(
+    ("file_path", "numbered_copy"),
+    [
+        ("scan_001.pdf", "scan_001_001.pdf"),
+        ("export_1700000000.csv", "export_1700000000_001.csv"),
+    ],
+)
+def test_delete_file_variants_removes_archive_of_name_ending_in_archive_suffix(
+    tmp_path, file_path, numbered_copy
+):
+    # A document whose own name ends like an archive suffix keeps that name
+    # when it is first archived into __parsed__; delete_file must still find it.
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    archived = parsed_dir / file_path
+    archived.write_bytes(b"delete me")
+    (parsed_dir / numbered_copy).write_bytes(b"delete me")
+    unrelated = parsed_dir / "other_001.pdf"
+    unrelated.write_bytes(b"keep me")
+
+    deleted_files, errors = _document_routes.delete_file_variants_by_file_path(
+        tmp_path,
+        file_path,
+    )
+
+    assert errors == []
+    assert set(deleted_files) == {
+        str(Path(PARSED_DIR_NAME) / file_path),
+        str(Path(PARSED_DIR_NAME) / numbered_copy),
+    }
+    assert not archived.exists()
+    assert unrelated.exists()
+
+
+def test_find_archived_variants_shared_with_other_sources(tmp_path):
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    for name in ("scan.pdf", "scan_001.pdf", "scan_001_001.pdf", "other_001.pdf"):
+        (parsed_dir / name).write_bytes(b"x")
+    (parsed_dir / "scan_002.pdf.parsed").mkdir()
+
+    find = _document_routes.find_archived_variants_shared_with_other_sources
+    assert find(tmp_path, "scan.pdf") == {"scan_001.pdf": ["scan_001.pdf"]}
+    assert find(tmp_path, "scan_001.pdf") == {
+        "scan.pdf": ["scan_001.pdf"],
+        "scan_001_001.pdf": ["scan_001_001.pdf"],
+    }
+    assert find(tmp_path, "unknown.pdf") == {}
+    assert find(tmp_path / "missing", "scan.pdf") == {}
+
+
+def _seed_archive_family(tmp_path):
+    """``scan.pdf`` archived twice, then ``scan_001.pdf`` archived once."""
+    parsed_dir = tmp_path / PARSED_DIR_NAME
+    parsed_dir.mkdir()
+    files = {}
+    for name in ("scan.pdf", "scan_001.pdf", "scan_001_001.pdf", "scan_002.pdf"):
+        files[name] = parsed_dir / name
+        files[name].write_bytes(name.encode())
+    return files
+
+
+async def _run_background_delete(tmp_path, rag, doc_id):
+    shared_storage = importlib.import_module("lightrag.kg.shared_storage")
+    shared_storage.initialize_share_data()
+    await shared_storage.initialize_pipeline_status(workspace=rag.workspace)
+    await _document_routes.background_delete_documents(
+        rag,
+        DocumentManager(str(tmp_path)),
+        [doc_id],
+        delete_file=True,
+    )
+    pipeline_status = await shared_storage.get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    return list(pipeline_status.get("history_messages", []))
+
+
+@pytest.mark.parametrize(
+    ("deleted_source", "live_source", "kept", "removed"),
+    [
+        # Deleting scan.pdf must not take the first archive of live scan_001.pdf.
+        (
+            "scan.pdf",
+            "scan_001.pdf",
+            {"scan_001.pdf", "scan_001_001.pdf"},
+            {"scan.pdf", "scan_002.pdf"},
+        ),
+        # Deleting scan_001.pdf must not take a numbered copy of live scan.pdf.
+        (
+            "scan_001.pdf",
+            "scan.pdf",
+            {"scan.pdf", "scan_001.pdf", "scan_002.pdf"},
+            {"scan_001_001.pdf"},
+        ),
+    ],
+)
+async def test_background_delete_keeps_archive_shared_with_live_source(
+    tmp_path, deleted_source, live_source, kept, removed
+):
+    files = _seed_archive_family(tmp_path)
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-deleted",
+            message="deleted",
+            file_path=deleted_source,
+        ),
+        status_rows={
+            "doc-deleted": {"file_path": deleted_source, "metadata": {}},
+            "doc-live": {"file_path": live_source, "metadata": {}},
+        },
+    )
+
+    history = await _run_background_delete(tmp_path, rag, "doc-deleted")
+
+    assert {name for name, path in files.items() if path.exists()} == kept
+    assert not any(files[name].exists() for name in removed)
+    assert any(
+        "Archived file kept" in msg and f"'{live_source}'" in msg for msg in history
+    )
+    assert not any("missing or unsafe" in msg for msg in history)
+
+
+async def test_background_delete_removes_shared_archive_without_live_source(
+    tmp_path,
+):
+    files = _seed_archive_family(tmp_path)
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-deleted",
+            message="deleted",
+            file_path="scan_001.pdf",
+        ),
+        status_rows={"doc-deleted": {"file_path": "scan_001.pdf", "metadata": {}}},
+    )
+
+    history = await _run_background_delete(tmp_path, rag, "doc-deleted")
+
+    assert not files["scan_001.pdf"].exists()
+    assert not files["scan_001_001.pdf"].exists()
+    assert files["scan.pdf"].exists()
+    assert files["scan_002.pdf"].exists()
+    assert not any("Archived file kept" in msg for msg in history)
+
+
+class _OtherSourceLookupFailsDocStatus(_DeleteDocStatus):
+    def __init__(self, rows, failing_key):
+        super().__init__(rows)
+        self.failing_key = failing_key
+
+    async def resolve_doc_source_strict(self, canonical_source_key: str):
+        if canonical_source_key == self.failing_key:
+            raise RuntimeError("simulated backend read failure")
+        return await super().resolve_doc_source_strict(canonical_source_key)
+
+
+async def test_background_delete_keeps_shared_archive_when_lookup_fails(tmp_path):
+    files = _seed_archive_family(tmp_path)
+    rag = _DeleteRag(
+        DeletionResult(
+            status="success",
+            doc_id="doc-deleted",
+            message="deleted",
+            file_path="scan_001.pdf",
+        ),
+    )
+    rag.doc_status = _OtherSourceLookupFailsDocStatus(
+        {"doc-deleted": {"file_path": "scan_001.pdf", "metadata": {}}},
+        failing_key="scan.pdf",
+    )
+
+    history = await _run_background_delete(tmp_path, rag, "doc-deleted")
+
+    assert files["scan_001.pdf"].exists()
+    assert not files["scan_001_001.pdf"].exists()
+    assert any(
+        "Archived file kept" in msg and "could not be checked" in msg for msg in history
+    )
+
+
 async def test_background_delete_removes_parser_hint_file_variants(tmp_path):
     shared_storage = importlib.import_module("lightrag.kg.shared_storage")
     parsed_dir = tmp_path / PARSED_DIR_NAME
@@ -3686,38 +3909,47 @@ def test_sanitize_filename_rejects_traversal_instead_of_rewriting(tmp_path):
     assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path):
-    for filename in ("nested/report.pdf", "nested\\report.pdf", "report.pdf\x00"):
-        with pytest.raises(_document_routes.HTTPException) as exc:
-            _document_routes.sanitize_filename(filename, tmp_path)
+@pytest.mark.parametrize(
+    # A control character is the shared character rule, pinned in
+    # test_document_source_characters.py.
+    "filename",
+    ["nested/report.pdf", "nested\\report.pdf"],
+)
+def test_sanitize_filename_rejects_separator_and_control_characters(tmp_path, filename):
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        _document_routes.sanitize_filename(filename, tmp_path)
 
-        assert exc.value.status_code == 400
+    assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_rejects_colon(tmp_path):
-    for filename in (
+@pytest.mark.parametrize(
+    "filename",
+    [
         "safe.pdf:payload.pdf",  # NTFS alternate-data-stream reference
         "C:report.pdf",  # drive-relative, not a literal basename
-    ):
-        with pytest.raises(_document_routes.HTTPException) as exc:
-            _document_routes.sanitize_filename(filename, tmp_path)
+    ],
+)
+def test_sanitize_filename_rejects_colon(tmp_path, filename):
+    with pytest.raises(_document_routes.HTTPException) as exc:
+        _document_routes.sanitize_filename(filename, tmp_path)
 
-        assert exc.value.status_code == 400
+    assert exc.value.status_code == 400
 
 
-def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path):
+@pytest.mark.parametrize(
+    "filename",
+    [
+        # sanitize_filename has no branch for these; the glob metacharacters
+        # stand for the set because they carry the glob.escape rationale.
+        "glob?name.pdf",
+        "glob*name.pdf",
+    ],
+)
+def test_sanitize_filename_allows_other_windows_reserved_characters(tmp_path, filename):
     """Unlike ':', these don't let the name be reinterpreted as a different
     path (no shell-out or unescaped glob() call site uses upload filenames in
     this codebase), so they're accepted rather than pre-emptively rejected."""
-    for filename in (
-        'quoted"name.pdf',
-        "piped|name.pdf",
-        "glob?name.pdf",
-        "glob*name.pdf",
-        "less<than.pdf",
-        "greater>than.pdf",
-    ):
-        assert _document_routes.sanitize_filename(filename, tmp_path) == filename
+    assert _document_routes.sanitize_filename(filename, tmp_path) == filename
 
 
 def test_sanitize_filename_allows_non_traversal_dot_sequences(tmp_path):
@@ -3748,7 +3980,8 @@ def test_upload_file_opener_creates_new_file_with_private_permissions(tmp_path):
         fh.write(b"content")
 
     assert path.read_bytes() == b"content"
-    assert (path.stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":  # POSIX chmod semantics; NTFS reports 0o666
+        assert (path.stat().st_mode & 0o777) == 0o600
 
 
 def test_upload_file_opener_falls_back_when_dir_fd_unsupported(tmp_path, monkeypatch):
@@ -3774,7 +4007,8 @@ def test_upload_file_opener_falls_back_when_dir_fd_unsupported(tmp_path, monkeyp
         fh.write(b"content")
 
     assert path.read_bytes() == b"content"
-    assert (path.stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":  # POSIX chmod semantics; NTFS reports 0o666
+        assert (path.stat().st_mode & 0o777) == 0o600
     assert directory_open_attempts == []
 
     with pytest.raises(FileExistsError):

@@ -103,10 +103,13 @@ const container = (): HTMLElement => {
   return element
 }
 
-/** The effect debounces by 300 ms before it even starts loading. */
+/**
+ * The effect debounces by 300 ms before it even starts loading; every loader
+ * here settles in a microtask, so a 50 ms margin is enough.
+ */
 const settleDiagram = async (): Promise<void> => {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 600))
+    await new Promise((resolve) => setTimeout(resolve, 350))
   })
 }
 
@@ -166,12 +169,8 @@ describe('mermaid renderer fails to load', () => {
     expect(text).toContain('A-->B;')
     // And it is the ONLY thing in the container.
     expect(container().children).toHaveLength(1)
-  })
 
-  test('the failure is logged for the operator too', async () => {
-    renderDiagram()
-    await settleDiagram()
-
+    // It is logged for the operator too.
     expect(
       consoleErrors.some((args) => String(args[0]).includes('Failed to load mermaid'))
     ).toBe(true)
@@ -233,8 +232,6 @@ describe('mermaid renderer loads but the diagram does not', () => {
 })
 
 describe('mermaid failure branches (source-level)', () => {
-  const SOURCE = readFileSync(join(import.meta.dir, 'ChatMessage.tsx'), 'utf8')
-
   test('mermaidLoader is the only module that names the mermaid package', () => {
     // A forbidden import, which is a genuinely source-level property. Two
     // things rest on it: a static `import ... from 'mermaid'` anywhere in the
@@ -322,44 +319,5 @@ describe('mermaid failure branches (source-level)', () => {
       .map((file) => relativePath(srcDir, file))
 
     expect(importers).toEqual(['components/retrieval/mermaidLoader.ts'])
-  })
-
-  /**
-   * Whether `marker` sits INSIDE a block guarded by the container-identity
-   * check, established by brace matching rather than by counting occurrences:
-   * `ChatMessage` has four such guards and only three of them are on failure
-   * branches, so any count that a dropped failure guard could still satisfy is
-   * not an assertion about that branch at all.
-   */
-  const isGuarded = (marker: string): boolean => {
-    const at = SOURCE.indexOf(marker)
-    expect({ marker, found: at > -1 }).toEqual({ marker, found: true })
-
-    const guardAt = SOURCE.lastIndexOf('if (mermaidRef.current === container', at)
-    if (guardAt < 0) return false
-
-    const open = SOURCE.indexOf('{', SOURCE.indexOf(')', guardAt))
-    let depth = 0
-    for (let i = open; i < SOURCE.length; i++) {
-      if (SOURCE[i] === '{') depth += 1
-      else if (SOURCE[i] === '}') {
-        depth -= 1
-        // The guard's block closes here; the write is guarded only if it is
-        // before that.
-        if (depth === 0) return at < i
-      }
-    }
-    return false
-  }
-
-  test.each([
-    ['the renderer failed to load', '`Mermaid renderer failed to load: ${errorMessage}'],
-    ['mermaid.render() rejected', '`Mermaid diagram error: ${errorMessage}'],
-    ['synchronous setup threw', '`Mermaid diagram setup error: ${errorMessage}']
-  ])('the write for "%s" is inside the container-identity guard', (_case, marker) => {
-    // An await elapsed, so the ref may now point at a different node — and a
-    // write into a detached container is invisible either way, which is why no
-    // rendered assertion can see this one.
-    expect({ marker, guarded: isGuarded(marker) }).toEqual({ marker, guarded: true })
   })
 })

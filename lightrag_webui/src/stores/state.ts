@@ -31,8 +31,8 @@ interface BackendState {
   // Resolve `apiDocsCapability` alone, without touching the shared backend
   // health state. Needed when periodic health checks are disabled: reusing
   // `check()` there would let a single failed probe latch `health: false`,
-  // which drops the document list to its idle polling cadence and re-opens the
-  // API key alert on every dismissal (RFC #3671).
+  // which drops the document list to its idle polling cadence without a
+  // timer left to recover it (RFC #3671).
   probeApiDocsCapability: () => Promise<void>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
@@ -65,11 +65,10 @@ interface AuthState {
 let apiDocsProbeInFlight: Promise<void> | null = null
 
 // Last-caller-wins guard for health checks: concurrent check() calls (a
-// credential probe racing a save-triggered re-probe, or overlapping periodic
-// checks) must not let COMPLETION ORDER decide the shared state — a stale
+// manual refresh racing a periodic check, or overlapping periodic checks)
+// must not let COMPLETION ORDER decide the shared state — a stale
 // request finishing last would overwrite health/message with an outdated
-// result (e.g. the previous API key's failure after the replacement already
-// validated). Only the newest in-flight check may write.
+// result. Only the newest in-flight check may write.
 let healthCheckGeneration = 0
 
 const useBackendStateStoreBase = create<BackendState>()((set, get) => ({

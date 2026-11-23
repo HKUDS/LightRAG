@@ -19,6 +19,7 @@ from lightrag.tools.source_conflict_repair import (
     collect_source_conflicts,
     repair_one_conflict,
 )
+from tests._log_capture import capture_lightrag_logs
 
 pytestmark = pytest.mark.offline
 
@@ -372,15 +373,20 @@ async def test_scan_classification_and_a_manual_freeze_also_refuse(tmp_path):
         storage = await _storage(
             tmp_path / flag, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
         )
-        with pytest.raises(StorageControlPlaneError, match=expected):
-            await repair_one_conflict(
-                storage,
-                "a.pdf",
-                "doc-1",
-                workspace=workspace,
-                full_docs=_AnyContent(),
-                apply=True,
-            )
+        try:
+            with pytest.raises(StorageControlPlaneError, match=expected):
+                await repair_one_conflict(
+                    storage,
+                    "a.pdf",
+                    "doc-1",
+                    workspace=workspace,
+                    full_docs=_AnyContent(),
+                    apply=True,
+                )
+        finally:
+            # Each iteration binds the same workspace to a DIFFERENT working
+            # directory, so the hold has to go back before the next one takes it.
+            await storage.finalize()
 
 
 @pytest.mark.asyncio
@@ -401,8 +407,7 @@ async def test_an_offline_repair_proceeds_but_says_it_is_unguarded(tmp_path, cap
     storage = await _storage(
         tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
     )
-    logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger=logger.name):
             result = await repair_one_conflict(
                 storage,
@@ -412,8 +417,6 @@ async def test_an_offline_repair_proceeds_but_says_it_is_unguarded(tmp_path, cap
                 full_docs=_AnyContent(),
                 apply=True,
             )
-    finally:
-        logger.propagate = False
 
     assert result.committed is True
     resolved = await storage.resolve_doc_source_strict("a.pdf")
@@ -439,8 +442,7 @@ async def test_a_guarded_repair_does_not_warn(tmp_path, caplog):
     storage = await _storage(
         tmp_path, {"doc-1": _row("a.pdf"), "doc-2": _row("a.pdf", "failed")}
     )
-    logger.propagate = True
-    try:
+    with capture_lightrag_logs(caplog):
         with caplog.at_level(logging.WARNING, logger=logger.name):
             await repair_one_conflict(
                 storage,
@@ -450,8 +452,6 @@ async def test_a_guarded_repair_does_not_warn(tmp_path, caplog):
                 full_docs=_AnyContent(),
                 apply=True,
             )
-    finally:
-        logger.propagate = False
     assert "without pipeline exclusion" not in caplog.text
 
 

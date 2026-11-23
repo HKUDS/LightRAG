@@ -8,6 +8,8 @@ The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](htt
 
 LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `examples/generate_query.py`.
 
+For new query sets, the script defaults to `gpt-6-luna`. To use a different OpenAI model, pass its ID with `--model`, for example `python examples/generate_query.py --model gpt-6-luna`. The original script used `gpt-4o-mini`, which [OpenAI is shutting down on January 14, 2027](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). A new model can generate different questions; the scores below are the original reported results.
+
 **Prompt**
 
 ```
@@ -207,10 +209,15 @@ def get_summary(context, tot_tokens=2000):
     tokens = tokenizer.tokenize(context)
     half_tokens = tot_tokens // 2
 
-    start_tokens = tokens[1000:1000 + half_tokens]
-    end_tokens = tokens[-(1000 + half_tokens):1000]
+    # Too short to skip 1000 tokens at each end and still take two disjoint
+    # windows: sample from the start rather than dropping or repeating text.
+    if len(tokens) < 2 * (1000 + half_tokens):
+        summary_tokens = tokens[:tot_tokens]
+    else:
+        start_tokens = tokens[1000:1000 + half_tokens]
+        end_tokens = tokens[-(1000 + half_tokens):-1000]
+        summary_tokens = start_tokens + end_tokens
 
-    summary_tokens = start_tokens + end_tokens
     summary = tokenizer.convert_tokens_to_string(summary_tokens)
 
     return summary
