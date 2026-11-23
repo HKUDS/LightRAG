@@ -1,0 +1,29 @@
+"""The rendered timeout help must describe values the parser accepts."""
+
+import sys
+
+import pytest
+
+from lightrag.api.config import parse_args
+
+
+pytestmark = pytest.mark.offline
+
+
+def test_timeout_help_describes_supported_integer_seconds(monkeypatch, capsys):
+    monkeypatch.delenv("TIMEOUT", raising=False)
+    monkeypatch.setenv("LLM_BINDING", "openai")
+    monkeypatch.setenv("EMBEDDING_BINDING", "openai")
+    monkeypatch.setattr(sys, "argv", ["lightrag-server", "--help"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args()
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    timeout_help = help_text.partition("\n  --timeout TIMEOUT")[2].split("\n  --", 1)[0]
+    assert "None" not in timeout_help
+    assert "infinite" not in timeout_help
+    assert "integer" in timeout_help
+    assert "seconds" in timeout_help
+    assert "Gunicorn" in timeout_help
