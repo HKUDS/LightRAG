@@ -84,9 +84,9 @@ option set by design).
 
 | Field type | Accepted spelling | Notes |
 | --- | --- | --- |
-| bool | `true`/`1`/`yes`/`t`/`on` → true; anything else → false | Case-insensitive. |
+| bool | `true`/`1`/`yes`/`t`/`on` → true; `false`/`0`/`no`/`f`/`off`/empty → false | Case-insensitive. Any other word logs a warning and the option stays unset; on the command line it is an error. |
 | bool-or-level (`OLLAMA_LLM_THINK` only) | `true`/`false`/… or `low`/`medium`/`high` | An unrecognized word is a **startup error**, not a silent `false`. An empty value means `false`, not "unset". |
-| int / float | plain number | An empty value is a startup error: `argument --openai-llm-max_tokens: invalid int value: ''`. |
+| int / float | plain number | At base level a value that does not parse, empty included, is a startup error: `argument --openai-llm-max_tokens: invalid int value: ''`. At role level (`EXTRACT_OPENAI_LLM_TEMPERATURE=0.7x`, or `500.0` for an int) it logs a warning and is ignored; an empty value is ignored without one. |
 | list | JSON array, e.g. `'["</s>", "\n\n"]'` | Quote it in `.env` / the shell. |
 | dict | JSON object, e.g. `'{"reasoning": {"enabled": false}}'` | Quote it in `.env` / the shell. |
 | str | verbatim | An empty value **is** a value: `OPENAI_LLM_SERVICE_TIER=` sends `service_tier: ""` to the provider. Comment the line out instead. |
@@ -95,8 +95,9 @@ Malformed JSON behaves differently by scope, which matters when debugging:
 
 - **Base level** (`OPENAI_LLM_EXTRA_BODY=not json`): the option is dropped and the
   server starts as if it were unset.
-- **Role level** (`QUERY_OPENAI_LLM_EXTRA_BODY=not json`): the raw string is kept and
-  forwarded, so the failure surfaces later as a provider-side request error.
+- **Role level** (`QUERY_OPENAI_LLM_EXTRA_BODY=not json`, or a valid JSON value of the
+  wrong shape): a warning names the variable and the override is ignored, so the role
+  keeps the base option (same provider) or the provider default (cross provider).
 
 ## 2. Coverage matrix
 

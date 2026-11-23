@@ -1033,12 +1033,13 @@ def test_options_dict_for_role_resets_cross_provider(monkeypatch):
     )
     _clear_role_provider_env(monkeypatch, "query", OpenAILLMOptions)
     monkeypatch.setenv("QUERY_OPENAI_LLM_TOP_P", "0.6")
+    monkeypatch.setenv("QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS", "500")
 
     options = OpenAILLMOptions.options_dict_for_role(
         args, "query", is_cross_provider=True
     )
 
-    assert options == {"top_p": 0.6}
+    assert options == {"top_p": 0.6, "max_completion_tokens": 500}
 
 
 def test_options_dict_for_role_parses_nested_extra_body_cross_provider(monkeypatch):
