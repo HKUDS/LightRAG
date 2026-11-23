@@ -53,6 +53,7 @@ from ..exceptions import (
 )
 from ..utils import (
     logger,
+    parse_bool_setting,
     compute_mdhash_id,
     _cooperative_yield,
     get_env_value,
@@ -97,6 +98,15 @@ config.read("config.ini", "utf-8")
 def _get_opensearch_env(key, fallback):
     cfg_key = key.replace("OPENSEARCH_", "").lower()
     return os.environ.get(key, config.get("opensearch", cfg_key, fallback=fallback))
+
+
+def _get_opensearch_bool(key, fallback):
+    return parse_bool_setting(
+        key,
+        _get_opensearch_env(key, str(fallback).lower()),
+        fallback,
+        source="OpenSearch setting",
+    )
 
 
 def _get_index_number_of_shards() -> int:
@@ -824,14 +834,8 @@ class ClientManager:
                 hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
                 username = _get_opensearch_env("OPENSEARCH_USER", "admin")
                 password = _get_opensearch_env("OPENSEARCH_PASSWORD", "admin")
-                use_ssl = _get_opensearch_env("OPENSEARCH_USE_SSL", "true").lower() in (
-                    "true",
-                    "1",
-                    "yes",
-                )
-                verify_certs = _get_opensearch_env(
-                    "OPENSEARCH_VERIFY_CERTS", "false"
-                ).lower() in ("true", "1", "yes")
+                use_ssl = _get_opensearch_bool("OPENSEARCH_USE_SSL", True)
+                verify_certs = _get_opensearch_bool("OPENSEARCH_VERIFY_CERTS", False)
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 

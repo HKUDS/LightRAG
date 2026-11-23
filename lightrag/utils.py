@@ -328,6 +328,33 @@ ENV_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
 ENV_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
 
 
+def parse_bool_setting(
+    name: str, value: str, default: bool, source: str = "Environment variable"
+) -> bool:
+    """Parse a boolean setting with the ``get_env_value(..., bool)`` rules.
+
+    ``value`` is matched trimmed and case-insensitively against
+    ``ENV_BOOL_TRUE_WORDS`` / ``ENV_BOOL_FALSE_WORDS`` (blank reads as
+    ``False``). Anything else logs a warning naming ``source`` and ``name``
+    and returns ``default``. Use it for settings read from somewhere other
+    than the environment alone, such as an env-over-``config.ini`` lookup.
+    """
+    text = value.strip().lower()
+    if text in ENV_BOOL_TRUE_WORDS:
+        return True
+    if text in ENV_BOOL_FALSE_WORDS:
+        return False
+    logger.warning(
+        f"{source} %s=%r is not a recognized boolean "
+        "(expected one of %s), using default %r",
+        name,
+        value,
+        "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+        default,
+    )
+    return default
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -358,20 +385,7 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        text = value.strip().lower()
-        if text in ENV_BOOL_TRUE_WORDS:
-            return True
-        if text in ENV_BOOL_FALSE_WORDS:
-            return False
-        logger.warning(
-            "Environment variable %s=%r is not a recognized boolean "
-            "(expected one of %s), using default %r",
-            env_key,
-            value,
-            "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
-            default,
-        )
-        return default
+        return parse_bool_setting(env_key, value, default)
 
     # Handle list type with JSON parsing
     if value_type is list:
