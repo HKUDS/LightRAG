@@ -2559,8 +2559,8 @@ def create_app(args):
         rerank_enable_chunking = False
         rerank_max_tokens_per_doc = DEFAULT_RERANK_MAX_TOKENS_PER_DOC
         if args.rerank_binding == "cohere":
-            rerank_enable_chunking = (
-                os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true"
+            rerank_enable_chunking = get_env_value(
+                "RERANK_ENABLE_CHUNKING", False, bool
             )
             raw_max_tokens = os.getenv(
                 "RERANK_MAX_TOKENS_PER_DOC", str(DEFAULT_RERANK_MAX_TOKENS_PER_DOC)
