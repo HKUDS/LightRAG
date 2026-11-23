@@ -515,14 +515,25 @@ def test_split_table_text_html_table_split_by_tr():
 
 
 @pytest.mark.offline
-def test_split_table_text_html_preserves_thead_tbody_wrappers():
+@pytest.mark.parametrize(
+    "cell_attrs",
+    [
+        # No rowspan anywhere: the slices are cut without parsing a cell.
+        pytest.param("", id="no-span"),
+        # ``data-rowspan`` is not a span: parsed, then left exactly as it is.
+        pytest.param(' data-rowspan="2"', id="data-rowspan"),
+    ],
+)
+def test_split_table_text_html_preserves_thead_tbody_wrappers(cell_attrs):
     # When an HTML table mixes <thead> and <tbody>, the row splitter
     # used to drop the wrappers entirely — the chunked output came back
     # as bare <tr> sequences. The fix re-emits each wrapper around its
     # rows in every chunk so the table structure survives splitting.
     tokenizer = _make_tokenizer()
     head_row = "<tr><th>" + ("h" * 80) + "</th></tr>"
-    body_rows = "".join(f"<tr><td>{'b' * 80}{i}</td></tr>" for i in range(4))
+    body_rows = "".join(
+        f"<tr><td{cell_attrs}>{'b' * 80}{i}</td></tr>" for i in range(4)
+    )
     body = f"<thead>{head_row}</thead><tbody>{body_rows}</tbody>"
     table_text = f'<table id="tb-mixed" format="html">{body}</table>'
 
@@ -1480,7 +1491,7 @@ def test_split_table_text_header_holding_closing_tag_is_injected_whole():
 _SEGMENT_HEADER = (
     "<thead><tr><th>Segment</th><th>Quarter</th><th>Revenue</th></tr></thead>"
 )
-_SPAN_ATTR = r'{}="(\d+)"'
+_SPAN_ATTR = r'(?<![\w-]){}="(\d+)"'
 
 
 def _segment_table() -> str:
@@ -1513,6 +1524,17 @@ def _colspan_table() -> str:
             f'<tr><td colspan="2">{g}-c</td><td>{g}-4 {pad}</td><td>{g}-s</td><td>{g}-t4</td></tr>'
         )
     return f'<table id="tb-col" format="html"><tbody>{"".join(body)}</tbody></table>'
+
+
+def _tall_label_table() -> str:
+    """One wide label spanning 12 short rows: its copy dominates every slice."""
+    rows = "".join(
+        f'<tr><td rowspan="12">{"L" * 100}</td><td>v{i}</td></tr>'
+        if i == 0
+        else f"<tr><td>v{i}</td></tr>"
+        for i in range(12)
+    )
+    return f'<table id="tb-tall" format="html"><tbody>{rows}</tbody></table>'
 
 
 def _body_grid(piece: str) -> list[list[str]]:
@@ -1561,6 +1583,9 @@ def _body_grid(piece: str) -> list[list[str]]:
         ),
         # One-row slices inside every span: repeated cells keep colspan and column.
         pytest.param(_colspan_table, None, 200, ["L0", "B0", "B0"], id="colspan"),
+        # Only the repeated label overflows: re-splitting must still cut rows
+        # instead of degrading the table to a character split.
+        pytest.param(_tall_label_table, None, 200, ["L" * 100, "v6"], id="tall-label"),
     ],
 )
 def test_rowspan_cells_are_local_to_each_slice(
@@ -1583,21 +1608,3 @@ def test_rowspan_cells_are_local_to_each_slice(
     # The case really cuts through the span it names: a later slice opens on
     # a continuation row, which only a repeated spanned cell can complete.
     assert opens_on in [grid[0][: len(opens_on)] for grid in grids[1:]], pieces
-
-
-@pytest.mark.offline
-def test_table_without_rowspan_splits_as_before():
-    rows = "".join(f"<tr><td>r{i}</td><td>{'x' * 40}</td></tr>" for i in range(12))
-    table = f'<table id="tb-plain" format="html"><tbody>{rows}</tbody></table>'
-    pieces = _split_table_text(
-        table,
-        tokenizer=_make_tokenizer(),
-        target_max=300,
-        target_ideal=240,
-        last_min=20,
-    )
-    assert len(pieces) >= 2
-    rejoined = "".join(
-        piece.split("<tbody>", 1)[1].rsplit("</tbody>", 1)[0] for piece in pieces
-    )
-    assert rejoined == rows

@@ -554,15 +554,18 @@ _HTML_TR_PARTS_RE = re.compile(
     r"(?P<open><tr\b[^>]*>)(?P<inner>.*)(?P<close></tr\s*>)\s*\Z",
     re.DOTALL | re.IGNORECASE,
 )
-_HTML_SPAN_ATTR_RE = re.compile(
-    r"""\s*\b(?P<name>rowspan|colspan)\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s>]+))""",
-    re.IGNORECASE,
+# One attribute of a start tag, scanned left to right so a quoted value is
+# consumed whole: ``data-rowspan`` or ``title="rowspan=2"`` never reads as a
+# ``rowspan`` attribute.
+_HTML_ATTR_RE = re.compile(
+    r"""\s*(?P<name>[^\s"'>/=]+)"""
+    r"""(?:\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'=<>`]+)))?"""
 )
 
 
 def _html_span_value(attrs: str, name: str) -> int:
     """Read ``rowspan``/``colspan`` from a cell's attrs as an int ``>= 1``."""
-    for match in _HTML_SPAN_ATTR_RE.finditer(attrs):
+    for match in _HTML_ATTR_RE.finditer(attrs):
         if match.group("name").lower() != name:
             continue
         raw = match.group("dq") or match.group("sq") or match.group("bare") or "1"
@@ -576,7 +579,7 @@ def _html_span_value(attrs: str, name: str) -> int:
 def _html_cell_with_rowspan(tag: str, attrs: str, inner: str, rowspan: int) -> str:
     """Re-emit a cell with ``rowspan`` set to ``rowspan`` (dropped when 1)."""
     # Drop only the rowspan attribute so every other attribute stays as it is.
-    kept = _HTML_SPAN_ATTR_RE.sub(
+    kept = _HTML_ATTR_RE.sub(
         lambda m: "" if m.group("name").lower() == "rowspan" else m.group(0),
         attrs,
     )
@@ -640,10 +643,10 @@ class _HtmlRowspanSlicer:
         self._rows = rows
         self._parsed: list[tuple[str, list[_PlacedCell], str] | None] = []
         self._carried: list[list[_CarriedSpan]] = []
-        self._has_spans = any(
+        self.has_spans = any(
             wrapper != "thead" and "rowspan" in tr.lower() for wrapper, tr in rows
         )
-        if self._has_spans:
+        if self.has_spans:
             self._layout()
 
     def _layout(self) -> None:
@@ -687,7 +690,7 @@ class _HtmlRowspanSlicer:
             self._parsed.append((open_tag, placed, close_tag))
 
     def slice(self, start: int, end: int) -> list[tuple[str, str]]:
-        if not self._has_spans:
+        if not self.has_spans:
             return self._rows[start:end]
         out: list[tuple[str, str]] = []
         for index in range(start, end):
@@ -979,6 +982,9 @@ def _split_table_text(
     body_last_min = max(last_min - wrapper_overhead - header_overhead, 1)
     row_chunks: list[list[Any]] | None = None
     serialize: Callable[[list[Any]], str] | None = None
+    # True when serialized slices may hold repeated rowspan cells the row
+    # splitter never measured (see ``_HtmlRowspanSlicer``).
+    slices_add_cells = False
     # HeaderRecovery (JSON): when the repeating header prefixes the body, pin it
     # OUT of the rows being split so every emitted slice holds only genuine data
     # rows. The full header is then re-injected into every slice afterwards —
@@ -1025,6 +1031,7 @@ def _split_table_text(
             # A lookup miss raises rather than serializing the wrong rows.
             row_index = {id(row): i for i, row in enumerate(rows_html)}
             slicer = _HtmlRowspanSlicer(rows_html)
+            slices_add_cells = slicer.has_spans
 
             def serialize(chunk_rows: list[tuple[str, str]]) -> str:
                 start = row_index[id(chunk_rows[0])]
@@ -1130,6 +1137,13 @@ def _split_table_text(
                 target_ideal=sub_ideal,
                 last_min=sub_last_min,
             )
+        if len(sub_chunks) <= 1 and slices_add_cells:
+            # The splitter measures the source rows only, so it can call a
+            # slice that is over the cap through its repeated rowspan cells
+            # already small enough. Halve it instead: each half still makes
+            # progress towards the single-row checks above.
+            middle = len(chunk_rows) // 2
+            sub_chunks = [chunk_rows[:middle], chunk_rows[middle:]]
         if len(sub_chunks) <= 1:
             # The splitter could not reduce further (e.g. one row already
             # dominates the body). Keep it whole only when it needs no injected
