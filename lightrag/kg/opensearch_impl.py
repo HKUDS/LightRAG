@@ -52,6 +52,8 @@ from ..exceptions import (
     StorageRecordNotFoundError,
 )
 from ..utils import (
+    ENV_BOOL_FALSE_WORDS,
+    ENV_BOOL_TRUE_WORDS,
     logger,
     compute_mdhash_id,
     _cooperative_yield,
@@ -97,6 +99,24 @@ config.read("config.ini", "utf-8")
 def _get_opensearch_env(key, fallback):
     cfg_key = key.replace("OPENSEARCH_", "").lower()
     return os.environ.get(key, config.get("opensearch", cfg_key, fallback=fallback))
+
+
+def _get_opensearch_bool(key, fallback):
+    value = _get_opensearch_env(key, str(fallback).lower())
+    text = value.strip().lower()
+    if text in ENV_BOOL_TRUE_WORDS:
+        return True
+    if text in ENV_BOOL_FALSE_WORDS:
+        return False
+    logger.warning(
+        "OpenSearch setting %s=%r is not a recognized boolean "
+        "(expected one of %s), using default %r",
+        key,
+        value,
+        "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+        fallback,
+    )
+    return fallback
 
 
 def _get_index_number_of_shards() -> int:
@@ -824,14 +844,8 @@ class ClientManager:
                 hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
                 username = _get_opensearch_env("OPENSEARCH_USER", "admin")
                 password = _get_opensearch_env("OPENSEARCH_PASSWORD", "admin")
-                use_ssl = _get_opensearch_env("OPENSEARCH_USE_SSL", "true").lower() in (
-                    "true",
-                    "1",
-                    "yes",
-                )
-                verify_certs = _get_opensearch_env(
-                    "OPENSEARCH_VERIFY_CERTS", "false"
-                ).lower() in ("true", "1", "yes")
+                use_ssl = _get_opensearch_bool("OPENSEARCH_USE_SSL", True)
+                verify_certs = _get_opensearch_bool("OPENSEARCH_VERIFY_CERTS", False)
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 

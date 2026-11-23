@@ -460,6 +460,58 @@ class TestClientManager:
             # The connection is closed on the last release only.
             inner.close.assert_awaited_once()
 
+    @pytest.mark.parametrize(
+        ("use_ssl", "verify_certs", "config_values", "expected", "warn_keys"),
+        [
+            ("on", "false", {}, (True, False), set()),
+            ("false", "on", {}, (False, True), set()),
+            (" True ", "t", {}, (True, True), set()),
+            ("ture", "true", {}, (True, True), {"OPENSEARCH_USE_SSL"}),
+            ("true", "ture", {}, (True, False), {"OPENSEARCH_VERIFY_CERTS"}),
+            (None, None, {"use_ssl": "on"}, (True, False), set()),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_boolean_connection_settings(
+        self,
+        monkeypatch,
+        lightrag_log_records,
+        use_ssl,
+        verify_certs,
+        config_values,
+        expected,
+        warn_keys,
+    ):
+        for key, value in (
+            ("OPENSEARCH_USE_SSL", use_ssl),
+            ("OPENSEARCH_VERIFY_CERTS", verify_certs),
+        ):
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+
+        ClientManager._instances = {"client": None, "ref_count": 0}
+        with (
+            patch("lightrag.kg.opensearch_impl.config") as mock_config,
+            patch("lightrag.kg.opensearch_impl.AsyncOpenSearch") as mock_cls,
+        ):
+            mock_config.get.side_effect = lambda _section, key, fallback: (
+                config_values.get(key, fallback)
+            )
+            inner = self._stub_client()
+            mock_cls.return_value = inner
+            client = await ClientManager.get_client()
+            kwargs = mock_cls.call_args.kwargs
+            assert (kwargs["use_ssl"], kwargs["verify_certs"]) == expected
+            await ClientManager.release_client(client)
+        warned = {
+            record.args[0]
+            for record in lightrag_log_records
+            if "is not a recognized boolean" in record.msg
+        }
+        assert warned == warn_keys
+
 
 # ---------------------------------------------------------------------------
 # _verify_mirrored_id_mapping helper
