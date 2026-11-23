@@ -14,7 +14,12 @@ import lancedb
 import lancedb.table
 import pytest
 
-from lightrag.kg.lancedb_impl import ExportError, export_snapshot, main
+from lightrag.kg.lancedb_impl import (
+    ExportError,
+    export_snapshot,
+    main,
+    storage_options_from_env,
+)
 from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.utils import compute_mdhash_id
 
@@ -268,3 +273,56 @@ def test_cli_exports_seeded_workspace(tmp_path, monkeypatch):
         assert table.tags.get_version("cli-snap") == table.version
     chunks = {r["id"]: r for r in db.open_table("chunks").to_arrow().to_pylist()}
     assert chunks["chunk-1"]["embedding"] == expected_vector(CHUNKS["chunk-1"]["content"])
+
+
+_CREDS_ENV = (
+    "OSS_DEFAULT_SECRET_ID", "OSS_DEFAULT_SECRET_KEY", "OSS_DEFAULT_SECRET_TOKEN",
+    "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET", "oss_access_ak", "oss_access_sk",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "OSS_ENDPOINT", "oss_endpoint", "AWS_ENDPOINT_URL", "AWS_ENDPOINT",
+    "OSS_REGION", "AWS_REGION",
+)
+_STS_ENV = {
+    "OSS_DEFAULT_SECRET_ID": "STS.test-id", "OSS_DEFAULT_SECRET_KEY": "test-secret",
+    "OSS_DEFAULT_SECRET_TOKEN": "test-token",
+    "OSS_ENDPOINT": "https://oss-cn-hangzhou-internal.aliyuncs.com",
+}
+
+
+@pytest.mark.parametrize(
+    ("env", "dest", "expected"),
+    [
+        pytest.param(
+            _STS_ENV, "oss://bucket/prefix",
+            {"access_key_id": "STS.test-id", "access_key_secret": "test-secret",
+             "security_token": "test-token",
+             "endpoint": "https://oss-cn-hangzhou-internal.aliyuncs.com",
+             "region": "cn-hangzhou"},
+            id="native-oss-sts",
+        ),
+        pytest.param(
+            _STS_ENV, "s3://bucket/prefix",
+            {"aws_access_key_id": "STS.test-id", "aws_secret_access_key": "test-secret",
+             "aws_session_token": "test-token", "virtual_hosted_style_request": "true",
+             "aws_endpoint": "https://oss-cn-hangzhou-internal.aliyuncs.com",
+             "aws_allow_http": "false", "aws_region": "us-east-1"},
+            id="s3-compat-sts",
+        ),
+        pytest.param(
+            {"AWS_ACCESS_KEY_ID": "AKIA-test", "AWS_SECRET_ACCESS_KEY": "aws-secret"},
+            "s3://bucket/prefix",
+            {"aws_access_key_id": "AKIA-test", "aws_secret_access_key": "aws-secret",
+             "virtual_hosted_style_request": "true", "aws_region": "us-east-1"},
+            id="aws-only-s3",
+        ),
+        pytest.param({}, "oss://bucket/prefix", {}, id="no-creds"),
+    ],
+)
+def test_storage_options_shape_follows_dest_scheme(monkeypatch, env, dest, expected):
+    """Native oss:// needs the canonical OSS keys (security_token, endpoint
+    region derived from the endpoint host); s3:// keeps the aws_* shape."""
+    for name in _CREDS_ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert storage_options_from_env(dest) == expected
