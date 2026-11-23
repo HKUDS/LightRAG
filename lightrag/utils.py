@@ -473,10 +473,8 @@ if TYPE_CHECKING:
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
-PERFORMANCE_TIMING_LOGS = (
-    os.getenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false").lower() == "true"
-)
+VERBOSE_DEBUG = get_env_value("VERBOSE", False, bool)
+PERFORMANCE_TIMING_LOGS = get_env_value("LIGHTRAG_PERFORMANCE_TIMING_LOGS", False, bool)
 
 
 def verbose_debug(msg: str, *args, **kwargs):
