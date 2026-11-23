@@ -114,7 +114,16 @@ The P chunker reads `.blocks.jsonl` directly, treating each content line as an i
 
 Before slicing, the `<table {attrs}></table>` wrapper token overhead is debited so that re-wrapped slices stay within `table_max` as much as possible. Each slice is re-wrapped as a legal `<table>` tag for easy downstream parsing.
 
-A body cell with `rowspan` that crosses a slice boundary is made local to each slice: in the earlier slice its `rowspan` is cut to the rows that slice holds, and the cell is repeated (with the remaining `rowspan`) in the first row of the next slice, at the same column. Without this, the rows after the boundary would have no cell for that column and their values would shift one column left under the header. `<thead>` rows are kept verbatim. The repeated cell costs tokens the row splitter did not count; a slice it pushes over the cap is re-split like any other, and a single row that no longer fits degrades the table as described in §3.2.2. A table with no body `rowspan` splits exactly as before.
+A body cell with `rowspan` that crosses a slice boundary is made local to each slice: in the earlier slice its `rowspan` is cut to the rows that slice holds, and the cell is repeated (with the remaining `rowspan`) in the first row of the next slice, at the same column. Without this, the rows after the boundary would have no cell for that column and their values would shift one column left under the header. `<thead>` rows are kept verbatim.
+
+This repair (`lightrag/chunker/_html_rowspan.py`) is all or nothing per table. It runs only when the whole table body is in a closed grammar; any other table is sliced exactly as cut, with one `logger.warning` naming the table and the reason, because a layout built from a partly understood table could move a cell into the wrong column:
+
+- the body is an optional `<thead>` block followed by the body rows, either bare or inside a single `<tbody>`; nothing else stands between the rows (no comment, `<caption>`, `<colgroup>`, `<tfoot>` or second `<tbody>`);
+- every body row is a sequence of complete `<td>`/`<th>` cells whose content holds no table markup (no nested table, no omitted end tag);
+- `rowspan`/`colspan` appear at most once per cell and are plain integers within HTML's limits (`rowspan` 1 to 65534, `colspan` 1 to 1000); `rowspan="0"` is not supported;
+- the layout work (spans carried into each row plus the columns they cover, summed over the rows) stays within a fixed budget, so a hostile table cannot make it quadratic.
+
+A repeated cell costs tokens the row splitter did not count: a slice it pushes over the cap is re-split like any other, halved when the splitter cannot reduce it, and a single row that still does not fit degrades the table as described in §3.2.2. A table with no body `rowspan` splits exactly as before.
 
 #### 3.2.2 Row-Level Recursive Re-Slicing
 

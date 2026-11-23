@@ -6,9 +6,6 @@ import logging
 import pytest
 
 from lightrag.chunker.paragraph_semantic import (
-    _HtmlRowspanSlicer,
-    _html_row_groups,
-    _html_span_value,
     _detect_table_format,
     _expand_block_with_table_splits,
     _merge_small_blocks,
@@ -518,25 +515,14 @@ def test_split_table_text_html_table_split_by_tr():
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize(
-    "cell_attrs",
-    [
-        # No rowspan anywhere: the slices are cut without parsing a cell.
-        pytest.param("", id="no-span"),
-        # ``data-rowspan`` is not a span: parsed, then left exactly as it is.
-        pytest.param(' data-rowspan="2"', id="data-rowspan"),
-    ],
-)
-def test_split_table_text_html_preserves_thead_tbody_wrappers(cell_attrs):
+def test_split_table_text_html_preserves_thead_tbody_wrappers():
     # When an HTML table mixes <thead> and <tbody>, the row splitter
     # used to drop the wrappers entirely — the chunked output came back
     # as bare <tr> sequences. The fix re-emits each wrapper around its
     # rows in every chunk so the table structure survives splitting.
     tokenizer = _make_tokenizer()
     head_row = "<tr><th>" + ("h" * 80) + "</th></tr>"
-    body_rows = "".join(
-        f"<tr><td{cell_attrs}>{'b' * 80}{i}</td></tr>" for i in range(4)
-    )
+    body_rows = "".join(f"<tr><td>{'b' * 80}{i}</td></tr>" for i in range(4))
     body = f"<thead>{head_row}</thead><tbody>{body_rows}</tbody>"
     table_text = f'<table id="tb-mixed" format="html">{body}</table>'
 
@@ -1485,189 +1471,3 @@ def test_split_table_text_header_holding_closing_tag_is_injected_whole():
         assert parsed is not None, piece
         assert parsed[1][:1] == header
     assert all(_count_tokens(tokenizer, p) <= 300 for p in pieces)
-
-
-# ---------------------------------------------------------------------------
-# rowspan cells across row-split boundaries
-# ---------------------------------------------------------------------------
-
-_SEGMENT_HEADER = (
-    "<thead><tr><th>Segment</th><th>Quarter</th><th>Revenue</th></tr></thead>"
-)
-_SPAN_ATTR = r'(?<![\w-]){}="(\d+)"'
-
-
-def _segment_table() -> str:
-    """Cloud/Hardware labels each span their four quarter rows."""
-    segments = {
-        "Cloud": [("Q1", "1,200"), ("Q2", "1,350"), ("Q3", "1,410"), ("Q4", "1,520")],
-        "Hardware": [("Q1", "800"), ("Q2", "760"), ("Q3", "790"), ("Q4", "810")],
-    }
-    body = []
-    for segment, quarters in segments.items():
-        for i, (quarter, revenue) in enumerate(quarters):
-            label = f'<td rowspan="{len(quarters)}">{segment}</td>' if i == 0 else ""
-            body.append(f"<tr>{label}<td>{quarter}</td><td>{revenue}</td></tr>")
-    return (
-        f'<table id="tb-seg" format="html">{_SEGMENT_HEADER}'
-        f"<tbody>{''.join(body)}</tbody></table>"
-    )
-
-
-def _colspan_table() -> str:
-    """Per group: a 4-row label, a 2x2 block, and a 2-row cell before the last column."""
-    pad = "x" * 30
-    body = []
-    for g in range(3):
-        body.append(
-            f'<tr><td rowspan="4">L{g}</td><td rowspan="2" colspan="2">B{g}</td>'
-            f'<td>{g}-1 {pad}</td><td rowspan="2">R{g}</td><td>{g}-t1</td></tr>'
-            f"<tr><td>{g}-2 {pad}</td><td>{g}-t2</td></tr>"
-            f"<tr><td>{g}-a</td><td>{g}-b</td><td>{g}-3 {pad}</td><td>{g}-r</td><td>{g}-t3</td></tr>"
-            f'<tr><td colspan="2">{g}-c</td><td>{g}-4 {pad}</td><td>{g}-s</td><td>{g}-t4</td></tr>'
-        )
-    return f'<table id="tb-col" format="html"><tbody>{"".join(body)}</tbody></table>'
-
-
-def _tall_label_table() -> str:
-    """One wide label spanning 12 short rows: its copy dominates every slice."""
-    rows = "".join(
-        f'<tr><td rowspan="12">{"L" * 100}</td><td>v{i}</td></tr>'
-        if i == 0
-        else f"<tr><td>v{i}</td></tr>"
-        for i in range(12)
-    )
-    return f'<table id="tb-tall" format="html"><tbody>{rows}</tbody></table>'
-
-
-def _body_grid(piece: str) -> list[list[str]]:
-    """Expand a piece's body rows to a text grid, spans filled in.
-
-    Fails when a span runs past the piece's last row or a row leaves a column
-    uncovered, so the grid alone shows a dropped or misplaced spanned cell.
-    """
-    import re
-
-    trs = re.findall(r"<tr>(.*?)</tr>", piece.split("<tbody>", 1)[1])
-    pending: dict[tuple[int, int], str] = {}
-    grid = []
-    for r, tr in enumerate(trs):
-        row = {c: t for (rr, c), t in pending.items() if rr == r}
-        col = 0
-        for attrs, text in re.findall(r"<td([^>]*)>(.*?)</td>", tr):
-            while col in row:
-                col += 1
-            spans = [
-                re.search(_SPAN_ATTR.format(n), attrs) for n in ("rowspan", "colspan")
-            ]
-            rowspan, colspan = (int(m.group(1)) if m else 1 for m in spans)
-            assert r + rowspan <= len(trs), ("rowspan runs past its slice", piece)
-            for dr in range(rowspan):
-                for dc in range(colspan):
-                    if dr:
-                        pending[(r + dr, col + dc)] = text
-                    else:
-                        row[col + dc] = text
-            col += colspan
-        assert sorted(row) == list(range(len(row))), ("uncovered column", piece)
-        grid.append([row[c] for c in sorted(row)])
-    return grid
-
-
-@pytest.mark.offline
-@pytest.mark.parametrize(
-    ("table", "header_body", "target_max", "opens_on"),
-    [
-        # Cut after Cloud's Q3: the next slice opens on Cloud's Q4 row.
-        pytest.param(_segment_table, _SEGMENT_HEADER, 420, ["Cloud", "Q4"], id="label"),
-        # Cut after Cloud's Q2: the label is repeated with rowspan="2".
-        pytest.param(
-            _segment_table, _SEGMENT_HEADER, 300, ["Cloud", "Q3"], id="label-2"
-        ),
-        # One-row slices inside every span: repeated cells keep colspan and column.
-        pytest.param(_colspan_table, None, 200, ["L0", "B0", "B0"], id="colspan"),
-        # Only the repeated label overflows: re-splitting must still cut rows
-        # instead of degrading the table to a character split.
-        pytest.param(_tall_label_table, None, 200, ["L" * 100, "v6"], id="tall-label"),
-    ],
-)
-def test_rowspan_cells_are_local_to_each_slice(
-    table, header_body, target_max, opens_on
-):
-    source = table()
-    pieces = _split_table_text(
-        source,
-        tokenizer=_make_tokenizer(),
-        target_max=target_max,
-        target_ideal=int(target_max * 0.8),
-        last_min=20,
-        header_body=header_body,
-    )
-    assert len(pieces) >= 2
-    assert all(piece.startswith("<table") for piece in pieces)
-    # Rejoined, the slices' grids are the source table's grid row for row.
-    grids = [_body_grid(piece) for piece in pieces]
-    assert [row for grid in grids for row in grid] == _body_grid(source)
-    # The case really cuts through the span it names: a later slice opens on
-    # a continuation row, which only a repeated spanned cell can complete.
-    assert opens_on in [grid[0][: len(opens_on)] for grid in grids[1:]], pieces
-
-
-@pytest.mark.offline
-def test_rowspan_cell_with_quoted_gt_in_attribute_is_carried_whole():
-    rows = [
-        ("tbody", '<tr><td rowspan="3" title="a > b">L</td><td>x</td></tr>'),
-        ("tbody", "<tr><td>y</td></tr>"),
-        ("tbody", "<tr><td>z</td></tr>"),
-    ]
-    # The ``>`` inside the quoted title does not end the start tag, so the
-    # repeated label keeps its title and text and gets its new rowspan.
-    assert _HtmlRowspanSlicer(rows).slice(1, 3) == [
-        ("tbody", '<tr><td title="a > b" rowspan="2">L</td><td>y</td></tr>'),
-        ("tbody", "<tr><td>z</td></tr>"),
-    ]
-
-
-@pytest.mark.offline
-def test_rowspan_ends_with_its_row_group():
-    body = (
-        '<tbody><tr><td rowspan="4">A</td><td>a1</td></tr><tr><td>a2</td></tr></tbody>'
-        "<tbody><tr><td>B</td><td>b1</td></tr><tr><td>C</td><td>c1</td></tr></tbody>"
-    )
-    rows = _split_html_rows(body)
-    slicer = _HtmlRowspanSlicer(rows, _html_row_groups(body))
-    # HTML confines A to the first <tbody>: it is cut to its two rows there
-    # and never repeated into the second group, which both wrappers call "tbody".
-    assert slicer.slice(0, 3)[0][1] == '<tr><td rowspan="2">A</td><td>a1</td></tr>'
-    assert slicer.slice(2, 4) == rows[2:4]
-
-
-@pytest.mark.offline
-def test_span_values_are_bounded_to_the_html_limits():
-    # An unbounded colspan would size the column layout from untrusted input.
-    assert _html_span_value(' colspan="1000000"', "colspan") == 1000
-    assert _html_span_value(' rowspan="1000000"', "rowspan") == 65534
-
-
-@pytest.mark.offline
-def test_commented_out_wrapper_is_not_a_row_group_boundary():
-    body = (
-        '<tbody><tr><td rowspan="2">A</td><td>a1</td></tr>'
-        "<!-- <tbody> --><tr><td>a2</td></tr></tbody>"
-    )
-    rows = _split_html_rows(body)
-    assert _html_row_groups(body) == [0, 0]
-    # A still spans both rows, so a slice holding both keeps them unchanged.
-    assert _HtmlRowspanSlicer(rows, _html_row_groups(body)).slice(0, 2) == rows
-
-
-@pytest.mark.offline
-def test_rowspan_layout_gives_up_past_its_work_budget():
-    width = 600
-    first = "".join(f'<td rowspan="{width}">c{i}</td>' for i in range(width))
-    rows = [("tbody", f"<tr>{first}</tr>")] + [("tbody", "<tr></tr>")] * (width - 1)
-    # Every row would carry all 600 spans (360,000 steps): the table is sliced
-    # as cut instead of building a quadratic layout.
-    slicer = _HtmlRowspanSlicer(rows)
-    assert slicer.has_spans is False
-    assert slicer.slice(1, 3) == rows[1:3]

@@ -60,9 +60,9 @@ from lightrag.constants import (
     DEFAULT_P_REFERENCES_HEADINGS,
     DEFAULT_P_REFERENCES_TAIL_N,
 )
+from lightrag.chunker._html_rowspan import build_rowspan_slicer
 from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.table_markup import (
-    HTML_ROW_PARTS_RE as _HTML_ROW_PARTS_RE,
     TABLE_TAG_RE as _TABLE_TAG_RE,
     detect_table_format as _detect_table_format,
     dumps_json_table_body as _dumps_json_table_body,
@@ -546,259 +546,6 @@ def _split_html_rows_by_tokens(
     return chunks
 
 
-# A ``<td>``/``<th>`` cell with its end tag, as the table writers emit it.
-# The attrs skip quoted values whole, so ``title="a > b"`` does not end the tag.
-_HTML_CELL_RE = re.compile(
-    r"""<(?P<tag>td|th)\b(?P<attrs>(?:[^>"']|"[^"]*"|'[^']*')*)>(?P<inner>.*?)</(?P=tag)\s*>""",
-    re.DOTALL | re.IGNORECASE,
-)
-_HTML_TR_PARTS_RE = re.compile(
-    r"""(?P<open><tr\b(?:[^>"']|"[^"]*"|'[^']*')*>)(?P<inner>.*)(?P<close></tr\s*>)\s*\Z""",
-    re.DOTALL | re.IGNORECASE,
-)
-# One attribute of a start tag, scanned left to right so a quoted value is
-# consumed whole: ``data-rowspan`` or ``title="rowspan=2"`` never reads as a
-# ``rowspan`` attribute.
-_HTML_ATTR_RE = re.compile(
-    r"""\s*(?P<name>[^\s"'>/=]+)"""
-    r"""(?:\s*=\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s"'=<>`]+)))?"""
-)
-
-
-# The largest values HTML gives a span; browsers clamp larger ones. Bounding
-# them keeps a hostile ``colspan`` from sizing the column layout.
-_HTML_SPAN_LIMITS = {"rowspan": 65534, "colspan": 1000}
-
-
-def _html_span_value(attrs: str, name: str) -> int:
-    """Read ``rowspan``/``colspan`` from a cell's attrs as an int in HTML's range."""
-    for match in _HTML_ATTR_RE.finditer(attrs):
-        if match.group("name").lower() != name:
-            continue
-        raw = match.group("dq") or match.group("sq") or match.group("bare") or "1"
-        try:
-            return min(max(int(raw.strip()), 1), _HTML_SPAN_LIMITS[name])
-        except ValueError:
-            return 1
-    return 1
-
-
-def _html_cell_with_rowspan(tag: str, attrs: str, inner: str, rowspan: int) -> str:
-    """Re-emit a cell with ``rowspan`` set to ``rowspan`` (dropped when 1)."""
-    # Drop only the rowspan attribute so every other attribute stays as it is.
-    kept = _HTML_ATTR_RE.sub(
-        lambda m: "" if m.group("name").lower() == "rowspan" else m.group(0),
-        attrs,
-    )
-    span = f' rowspan="{rowspan}"' if rowspan > 1 else ""
-    return f"<{tag}{kept}{span}>{inner}</{tag}>"
-
-
-def _parse_html_tr(tr: str) -> tuple[str, list[re.Match[str]], str] | None:
-    """Split a ``<tr>`` into its open tag, cell matches and close tag.
-
-    Returns ``None`` when the row holds anything besides whitespace and
-    complete ``<td>``/``<th>`` cells (omitted end tags, nested tables, text
-    between cells), so such a row is left exactly as it is.
-    """
-    parts = _HTML_TR_PARTS_RE.match(tr)
-    if parts is None:
-        return None
-    inner = parts.group("inner")
-    cells = list(_HTML_CELL_RE.finditer(inner))
-    if _HTML_CELL_RE.sub("", inner).strip():
-        return None
-    if any("<table" in cell.group("inner").lower() for cell in cells):
-        return None
-    return parts.group("open"), cells, parts.group("close")
-
-
-_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
-
-# Upper bound on the work the rowspan layout may do for one table (active spans
-# visited plus columns they cover, summed over rows). Real tables stay far
-# below it; past it the table is sliced as cut, without rowspan repair, so a
-# hostile table cannot make the layout quadratic in time or memory.
-_HTML_SPAN_LAYOUT_BUDGET = 200_000
-
-
-def _html_row_groups(body: str) -> list[int]:
-    """Number the row group of each row :func:`_split_html_rows` returns.
-
-    Every ``<thead>``/``<tbody>``/``<tfoot>`` tag starts a new group, so two
-    adjacent ``<tbody>`` blocks are two groups even though both rows carry
-    the wrapper name ``"tbody"``.
-    """
-    text = body or ""
-    # A wrapper tag inside an HTML comment is not a boundary. Rows inside one
-    # are still numbered, to stay aligned with ``_split_html_rows``.
-    comments = [m.span() for m in _HTML_COMMENT_RE.finditer(text)]
-    groups: list[int] = []
-    group = 0
-    boundary = False
-    for match in _HTML_ROW_PARTS_RE.finditer(text):
-        if match.group("wrap") is not None:
-            pos = match.start()
-            if not any(start <= pos < end for start, end in comments):
-                boundary = True
-        elif match.group("tr") is not None:
-            if boundary and groups:
-                group += 1
-            boundary = False
-            groups.append(group)
-    return groups
-
-
-# A placed body cell: (start column, match, rowspan).
-_PlacedCell = tuple[int, "re.Match[str]", int]
-# A span carried into a row from an earlier one:
-# (start column, last row index covered, colspan, tag, attrs, inner).
-_CarriedSpan = tuple[int, int, int, str, str, str]
-
-
-class _HtmlRowspanSlicer:
-    """Cut ``rows[start:end]`` with ``rowspan`` cells made local to the slice.
-
-    Row splitting cuts a table between two ``<tr>`` rows, but a cell with
-    ``rowspan="N"`` covers the next ``N - 1`` rows too. Kept as is, the cell
-    claims rows the slice does not hold, and the first rows of the next slice
-    have no cell for that column, so their values shift one column left under
-    the header. :meth:`slice` makes every slice a table on its own:
-
-    * a spanned cell that starts before ``start`` and still covers ``start`` is
-      repeated in the slice's first row, at its column, with the rows it covers
-      inside the slice as its ``rowspan``;
-    * a cell whose ``rowspan`` runs past ``end`` is cut to the rows left in the
-      slice.
-
-    The column layout is computed once for the whole table, so each slice
-    costs only its own rows. A table with no ``rowspan`` outside ``<thead>`` is
-    never parsed and every slice is returned exactly as cut.
-
-    Spans never cross a ``<thead>``/``<tbody>``/``<tfoot>`` boundary (HTML
-    limits them to their row group). ``groups`` numbers each row's group (see
-    :func:`_html_row_groups`); without it a group ends where the wrapper name
-    changes. ``<thead>`` rows, rows that need no
-    change, and rows that :func:`_parse_html_tr` cannot parse are returned
-    unchanged. A repeated cell costs tokens the row splitter did not count;
-    the caller's over-cap repair bounds the serialized slice. A table whose
-    layout would exceed ``_HTML_SPAN_LAYOUT_BUDGET`` sets ``has_spans`` to
-    ``False`` and is sliced as cut.
-    """
-
-    def __init__(
-        self, rows: list[tuple[str, str]], groups: list[int] | None = None
-    ) -> None:
-        self._rows = rows
-        if groups is None or len(groups) != len(rows):
-            groups = []
-            for index, (wrapper, _tr) in enumerate(rows):
-                changed = index > 0 and wrapper != rows[index - 1][0]
-                groups.append((groups[-1] + changed) if groups else 0)
-        # Index of the last row in each row's group: no span reaches past it.
-        self._group_last = [0] * len(rows)
-        for index in range(len(rows) - 1, -1, -1):
-            same = index + 1 < len(rows) and groups[index + 1] == groups[index]
-            self._group_last[index] = self._group_last[index + 1] if same else index
-        self._parsed: list[tuple[str, list[_PlacedCell], str] | None] = []
-        self._carried: list[list[_CarriedSpan]] = []
-        self.has_spans = any(
-            wrapper != "thead" and "rowspan" in tr.lower() for wrapper, tr in rows
-        )
-        if self.has_spans and not self._layout():
-            self.has_spans = False
-            self._parsed = []
-            self._carried = []
-
-    def _layout(self) -> bool:
-        """Place every body cell; ``False`` when the work budget runs out."""
-        active: dict[int, _CarriedSpan] = {}
-        work = 0
-        for index, (wrapper, tr) in enumerate(self._rows):
-            work += len(active)
-            if work > _HTML_SPAN_LAYOUT_BUDGET:
-                return False
-            for col in [c for c, span in active.items() if span[1] < index]:
-                del active[col]
-            self._carried.append(list(active.values()))
-            # The header is kept verbatim (HeaderRecovery repeats it as stored).
-            parsed = None if wrapper == "thead" else _parse_html_tr(tr)
-            if parsed is None:
-                self._parsed.append(None)
-                continue
-            open_tag, cells, close_tag = parsed
-            occupied: set[int] = set()
-            for col, _last, colspan, *_cell in active.values():
-                work += colspan
-                occupied.update(range(col, col + colspan))
-            if work > _HTML_SPAN_LAYOUT_BUDGET:
-                return False
-            placed: list[_PlacedCell] = []
-            col = 0
-            for cell in cells:
-                while col in occupied:
-                    col += 1
-                attrs = cell.group("attrs")
-                rowspan = _html_span_value(attrs, "rowspan")
-                colspan = _html_span_value(attrs, "colspan")
-                placed.append((col, cell, rowspan))
-                if rowspan > 1:
-                    active[col] = (
-                        col,
-                        min(index + rowspan - 1, self._group_last[index]),
-                        colspan,
-                        cell.group("tag"),
-                        attrs,
-                        cell.group("inner"),
-                    )
-                col += colspan
-            self._parsed.append((open_tag, placed, close_tag))
-        return True
-
-    def slice(self, start: int, end: int) -> list[tuple[str, str]]:
-        if not self.has_spans:
-            return self._rows[start:end]
-        out: list[tuple[str, str]] = []
-        for index in range(start, end):
-            wrapper, tr = self._rows[index]
-            parsed = self._parsed[index]
-            if parsed is None:
-                out.append((wrapper, tr))
-                continue
-            open_tag, placed, close_tag = parsed
-            pieces: list[tuple[int, str]] = []
-            changed = False
-            if index == start:
-                for col, last, _colspan, tag, attrs, inner in self._carried[index]:
-                    span = min(last, end - 1) - start + 1
-                    pieces.append(
-                        (col, _html_cell_with_rowspan(tag, attrs, inner, span))
-                    )
-                    changed = True
-            for col, cell, rowspan in placed:
-                clipped = min(rowspan, end - index, self._group_last[index] - index + 1)
-                if clipped != rowspan:
-                    pieces.append(
-                        (
-                            col,
-                            _html_cell_with_rowspan(
-                                cell.group("tag"),
-                                cell.group("attrs"),
-                                cell.group("inner"),
-                                clipped,
-                            ),
-                        )
-                    )
-                    changed = True
-                else:
-                    pieces.append((col, cell.group(0)))
-            if changed:
-                pieces.sort(key=lambda item: item[0])
-                tr = open_tag + "".join(html for _, html in pieces) + close_tag
-            out.append((wrapper, tr))
-        return out
-
-
 def _dedup_preserving_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -1049,7 +796,7 @@ def _split_table_text(
     row_chunks: list[list[Any]] | None = None
     serialize: Callable[[list[Any]], str] | None = None
     # True when serialized slices may hold repeated rowspan cells the row
-    # splitter never measured (see ``_HtmlRowspanSlicer``).
+    # splitter never measured (see ``lightrag.chunker._html_rowspan``).
     slices_add_cells = False
     # HeaderRecovery (JSON): when the repeating header prefixes the body, pin it
     # OUT of the rows being split so every emitted slice holds only genuine data
@@ -1092,19 +839,24 @@ def _split_table_text(
                 last_min=body_last_min,
             )
 
+            # ``None`` unless a body cell spans rows and the whole table is in
+            # the supported grammar: the rows are then serialized as cut.
+            slicer = build_rowspan_slicer(
+                body, rows_html, table_label=_extract_table_id(attrs) or "<no-id>"
+            )
+            slices_add_cells = slicer is not None
             # Every chunk is a contiguous run of ``rows_html`` holding the
             # same tuple objects, so its first row locates it in the table.
             # A lookup miss raises rather than serializing the wrong rows.
             row_index = {id(row): i for i, row in enumerate(rows_html)}
-            slicer = _HtmlRowspanSlicer(rows_html, _html_row_groups(body))
-            slices_add_cells = slicer.has_spans
 
             def serialize(chunk_rows: list[tuple[str, str]]) -> str:
-                start = row_index[id(chunk_rows[0])]
-                local_rows = slicer.slice(start, start + len(chunk_rows))
+                if slicer is not None:
+                    start = row_index[id(chunk_rows[0])]
+                    chunk_rows = slicer.slice(start, start + len(chunk_rows))
                 return (
                     f"<table {attrs}>"
-                    f"{_serialize_rows_with_wrappers(local_rows)}"
+                    f"{_serialize_rows_with_wrappers(chunk_rows)}"
                     f"</table>"
                 )
 
