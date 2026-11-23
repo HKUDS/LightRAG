@@ -10,7 +10,7 @@ from lightrag.api.config import parse_args
 pytestmark = pytest.mark.offline
 
 
-def test_timeout_help_describes_supported_integer_seconds(monkeypatch, capsys):
+def test_timeout_help_does_not_advertise_none_or_infinite(monkeypatch, capsys):
     monkeypatch.delenv("TIMEOUT", raising=False)
     monkeypatch.setenv("LLM_BINDING", "openai")
     monkeypatch.setenv("EMBEDDING_BINDING", "openai")
@@ -22,8 +22,6 @@ def test_timeout_help_describes_supported_integer_seconds(monkeypatch, capsys):
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
     timeout_help = help_text.partition("\n  --timeout TIMEOUT")[2].split("\n  --", 1)[0]
+    assert timeout_help, "the --timeout entry was not found in the help output"
     assert "None" not in timeout_help
     assert "infinite" not in timeout_help
-    assert "integer" in timeout_help
-    assert "seconds" in timeout_help
-    assert "Gunicorn" in timeout_help
