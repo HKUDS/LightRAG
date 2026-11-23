@@ -1,10 +1,10 @@
 """Startup validation for custom embedding dimensions across all bindings.
 
-Extends the Ollama-specific guard (test_ollama_embedding_dimension.py) to
-every binding that goes through create_optimized_embedding_function.
+Covers every binding that goes through create_optimized_embedding_function.
 See: https://github.com/HKUDS/LightRAG/issues/3644
 """
 
+import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -38,121 +38,54 @@ def _create_embedding_function(
     )
 
 
-# An explicit EMBEDDING_DIM is resolved by one shared step for every
-# binding, so it is checked on OpenAI only; each binding keeps its own
-# guard membership and provider default.
-
-# --- OpenAI (default: text-embedding-3-small, dim=1536) ---
+# Each binding keeps its own guard membership and provider default, so both
+# are listed per binding. An explicit EMBEDDING_DIM is resolved by one shared
+# step for every guarded binding, so it is checked on OpenAI only.
 
 
-class TestOpenAIEmbeddingDimGuard:
-    def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*text-embedding-3-large"):
-            _create_embedding_function(
-                binding="openai",
-                model="text-embedding-3-large",
-                embedding_dim=None,
-            )
-
-    def test_custom_model_accepts_explicit_dim(self):
-        func = _create_embedding_function(
-            binding="openai",
-            model="text-embedding-3-large",
-            embedding_dim=3072,
-        )
-        assert func.embedding_dim == 3072
-
-    def test_default_model_keeps_provider_dimension(self):
-        func = _create_embedding_function(
-            binding="openai",
-            model=None,
-            embedding_dim=None,
-        )
-        assert func.embedding_dim == 1536
+@pytest.mark.parametrize(
+    ("binding", "model"),
+    [
+        ("ollama", "nomic-embed-text"),
+        ("openai", "text-embedding-3-large"),
+        ("jina", "jina-embeddings-v3"),
+        ("gemini", "text-embedding-004"),
+        ("bedrock", "cohere.embed-english-v3"),
+        ("voyageai", "voyage-3-lite"),
+    ],
+)
+def test_custom_model_requires_explicit_dim(binding, model):
+    with pytest.raises(ValueError, match=rf"EMBEDDING_DIM.*{re.escape(model)}"):
+        _create_embedding_function(binding=binding, model=model, embedding_dim=None)
 
 
-# --- Jina (default: jina-embeddings-v4, dim=2048) ---
+@pytest.mark.parametrize(
+    ("binding", "model", "provider_dim"),
+    [
+        ("ollama", None, 1024),
+        # The configured name equals the default, with or without Ollama's
+        # ``:latest`` suffix.
+        ("ollama", "bge-m3", 1024),
+        ("ollama", "bge-m3:latest", 1024),
+        ("openai", None, 1536),
+        ("jina", None, 2048),
+        ("gemini", None, 1536),
+        ("bedrock", None, 1024),
+        ("voyageai", None, 1024),
+    ],
+)
+def test_default_model_keeps_provider_dimension(binding, model, provider_dim):
+    func = _create_embedding_function(binding=binding, model=model, embedding_dim=None)
+    assert func.embedding_dim == provider_dim
 
 
-class TestJinaEmbeddingDimGuard:
-    def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*jina-embeddings-v3"):
-            _create_embedding_function(
-                binding="jina",
-                model="jina-embeddings-v3",
-                embedding_dim=None,
-            )
-
-    def test_default_model_keeps_provider_dimension(self):
-        func = _create_embedding_function(
-            binding="jina",
-            model=None,
-            embedding_dim=None,
-        )
-        assert func.embedding_dim == 2048
-
-
-# --- Gemini (default: gemini-embedding-001, dim=1536) ---
-
-
-class TestGeminiEmbeddingDimGuard:
-    def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*text-embedding-004"):
-            _create_embedding_function(
-                binding="gemini",
-                model="text-embedding-004",
-                embedding_dim=None,
-            )
-
-    def test_default_model_keeps_provider_dimension(self):
-        func = _create_embedding_function(
-            binding="gemini",
-            model=None,
-            embedding_dim=None,
-        )
-        assert func.embedding_dim == 1536
-
-
-# --- Bedrock (default: amazon.titan-embed-text-v2:0, dim=1024) ---
-
-
-class TestBedrockEmbeddingDimGuard:
-    def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*cohere.embed-english-v3"):
-            _create_embedding_function(
-                binding="bedrock",
-                model="cohere.embed-english-v3",
-                embedding_dim=None,
-            )
-
-    def test_default_model_keeps_provider_dimension(self):
-        func = _create_embedding_function(
-            binding="bedrock",
-            model=None,
-            embedding_dim=None,
-        )
-        assert func.embedding_dim == 1024
-
-
-# --- VoyageAI (default: voyage-3, dim=1024) ---
-
-
-class TestVoyageAIEmbeddingDimGuard:
-    def test_custom_model_requires_explicit_dim(self):
-        with pytest.raises(ValueError, match=r"EMBEDDING_DIM.*voyage-3-lite"):
-            _create_embedding_function(
-                binding="voyageai",
-                model="voyage-3-lite",
-                embedding_dim=None,
-            )
-
-    def test_default_model_keeps_provider_dimension(self):
-        func = _create_embedding_function(
-            binding="voyageai",
-            model=None,
-            embedding_dim=None,
-        )
-        assert func.embedding_dim == 1024
+def test_custom_model_accepts_explicit_dim():
+    func = _create_embedding_function(
+        binding="openai",
+        model="text-embedding-3-large",
+        embedding_dim=3072,
+    )
+    assert func.embedding_dim == 3072
 
 
 # --- Azure OpenAI (always requires explicit dim) ---
