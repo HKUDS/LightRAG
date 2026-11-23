@@ -46,6 +46,13 @@
 
 </div>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
+    <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="LightRAG 的 GitHub Star 账号自报归属。图中机构选自 2026 年 11 月 23 日识别到的 304 家机构。Star 为个人行为。">
+  </picture>
+</p>
+
 <div align="center" style="margin: 30px 0;">
   <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
 </div>
