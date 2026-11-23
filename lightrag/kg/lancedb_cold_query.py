@@ -15,7 +15,8 @@ Caller rules:
   panics on DuckDB 1.4.4 (2.0.1 reads it), so export with a batch size that
   leaves no single-row fragment.
 - Install the extension once (``duckdb -c "INSTALL lance FROM core"``); the job
-  runs ``LOAD lance``. S3 needs httpfs plus a secret from ``storage_options_from_env``.
+  runs ``LOAD lance``. S3/OSS needs httpfs plus a secret from ``storage_options_from_env``;
+  DuckDB reads OSS via the S3 protocol (s3. endpoint, s3:// scan path).
 - Missing table/tag, stale tag, wrong dimension or non-finite values raise
   ``ColdQueryError`` before any hit.
 
@@ -129,28 +130,32 @@ def _sql_literal(value: str) -> str:
 
 
 def _s3_setup(options: Mapping[str, str]) -> str:
-    key = options.get("aws_access_key_id")
-    secret = options.get("aws_secret_access_key")
+    key = options.get("aws_access_key_id") or options.get("access_key_id")
+    secret = options.get("aws_secret_access_key") or options.get("access_key_secret")
     if not key or not secret:
         return ""
-    endpoint = (options.get("aws_endpoint") or "").strip()
-    use_ssl = "false" if endpoint.startswith("http://") else "true"
-    endpoint = endpoint.removeprefix("https://").removeprefix("http://")
+    raw = (options.get("aws_endpoint") or options.get("endpoint") or "").strip()
+    use_ssl = "false" if raw.startswith("http://") else "true"
+    endpoint = raw.removeprefix("https://").removeprefix("http://")
+    if options.get("access_key_id") and endpoint and not endpoint.startswith("s3."):
+        endpoint = f"s3.{endpoint}"  # DuckDB speaks S3; OSS S3-compat needs the s3. host
+    token = options.get("aws_session_token") or options.get("security_token")
     parts = [f"KEY_ID {_sql_literal(key)}", f"SECRET {_sql_literal(secret)}",
-             f"REGION {_sql_literal(options.get('aws_region') or 'us-east-1')}",
+             f"REGION {_sql_literal(options.get('aws_region') or options.get('region') or 'us-east-1')}",
              "URL_STYLE 'vhost'", f"USE_SSL {use_ssl}"]
+    if token:
+        parts.append(f"SESSION_TOKEN {_sql_literal(token)}")
     if endpoint:
         parts.append(f"ENDPOINT {_sql_literal(endpoint)}")
-    return (
-        "INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET "
-        "(TYPE s3, " + ", ".join(parts) + ");"
-    )
+    return ("INSTALL httpfs; LOAD httpfs; CREATE OR REPLACE SECRET "
+            "(TYPE s3, " + ", ".join(parts) + ");")
 
 
 def _build_sql(
     config: ColdQueryConfig, values: list[float], dim: int, top_k: int, setup: str
 ) -> str:
-    path = f"{config.dest.rstrip('/')}/{config.table}.lance"
+    # DuckDB httpfs reads OSS via the S3 protocol: scan the oss:// lake under its s3:// alias.
+    path = f"{config.dest.replace('oss://', 's3://', 1).rstrip('/')}/{config.table}.lance"
     vector = "[" + ", ".join(repr(value) for value in values) + f"]::FLOAT[{dim}]"
     statements = ["LOAD lance;"]
     statements.extend(s for s in (setup, config.duckdb_setup.strip()) if s)
@@ -218,7 +223,7 @@ def cold_search(
     _latest_tag_version(table, config)
     dim = _embedding_dim(table, config)
     values = _query_values(query_vector, dim)
-    setup = _s3_setup(config.storage_options or {}) if config.dest.startswith("s3://") else ""
+    setup = _s3_setup(config.storage_options or {}) if config.dest.startswith(("s3://", "oss://")) else ""
     rows = _query_rows(
         _duckdb_binary(config), _build_sql(config, values, dim, top_k, setup), config.timeout_s
     )
@@ -238,7 +243,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run an exact top-k cold query over a tagged Lance snapshot."
     )
-    parser.add_argument("--dest", required=True, help="local directory or s3:// URI")
+    parser.add_argument("--dest", required=True, help="local directory, oss:// or s3:// URI")
     parser.add_argument("--tag", required=True, help="tag at the table's latest version")
     parser.add_argument("--table", default="chunks")
     parser.add_argument("--query-vector", help="JSON list, e.g. '[0.1, 0.2]'")
@@ -267,7 +272,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise ColdQueryError(f"query vector is not valid JSON: {exc}") from exc
         if not isinstance(vector, list) or not vector:
             raise ColdQueryError("query vector must be a non-empty JSON list")
-        options = storage_options_from_env() if args.dest.startswith("s3://") else None
+        options = storage_options_from_env(args.dest) if args.dest.startswith(("s3://", "oss://")) else None
         config = ColdQueryConfig(
             args.dest, args.tag, args.table, args.metric,
             args.duckdb_bin, args.timeout, options,

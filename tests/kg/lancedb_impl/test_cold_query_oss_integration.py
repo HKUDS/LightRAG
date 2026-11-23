@@ -1,23 +1,21 @@
-"""Real-OSS integration test for the DuckDB cold query.
+"""Real-OSS integration test for the DuckDB cold query (native oss:// lake).
 
-WRITTEN, NOT YET RUN against OSS: the bucket policy currently denies List
-operations, which lancedb's connect/namespace layer issues before the tag
-check. Run it ON THE ECS BOX once the grant lands (the internal endpoint is
-ECS-only):
+Run ON THE ECS BOX (the internal endpoint is ECS-only):
 
     LIGHTRAG_RUN_INTEGRATION=true \
     OSS_BUCKET=<bucket> \
-    OSS_ENDPOINT=oss-cn-hangzhou-internal.aliyuncs.com \
-    OSS_REGION=oss-cn-hangzhou \
-    OSS_ACCESS_KEY_ID=... OSS_ACCESS_KEY_SECRET=... \
-    ./scripts/test.sh tests/kg/lancedb_impl/test_cold_query_s3_integration.py --run-integration
+    OSS_ENDPOINT=https://oss-cn-hangzhou-internal.aliyuncs.com \
+    OSS_REGION=cn-hangzhou \
+    OSS_DEFAULT_SECRET_ID=... OSS_DEFAULT_SECRET_KEY=... OSS_DEFAULT_SECRET_TOKEN=... \
+    ./scripts/test.sh tests/kg/lancedb_impl/test_cold_query_oss_integration.py --run-integration
 
 The export uses ``batch_size=500`` on purpose: DuckDB's bundled Lance 2.0.1
 decoder panics on a fragment that holds exactly one row, and N1's default test
-batch of 2 leaves such a fragment in the three-row chunks table. Whether the
-ECS DuckDB 2.0.1 build needs a different S3 secret/URL-style combination is for
-the integration run to discover; ``ColdQueryConfig.duckdb_setup`` is the
-override point if ``storage_options_from_env`` is not enough.
+batch of 2 leaves such a fragment in the three-row chunks table. lancedb
+writes through the native oss:// provider; DuckDB reads the same objects
+through the S3 protocol (s3. endpoint, vhost style, STS SESSION_TOKEN), which
+``_s3_setup`` builds from the native storage options.
+``ColdQueryConfig.duckdb_setup`` is the override point if that is not enough.
 """
 
 import os
@@ -55,7 +53,7 @@ async def test_cold_query_reads_tagged_oss_snapshot(tmp_path):
     embedder.armed = True
     options = storage_options_from_env()
     prefix = f"lightrag-n3-integration-{uuid.uuid4().hex[:12]}"
-    dest = f"s3://{os.environ['OSS_BUCKET']}/{prefix}"
+    dest = f"oss://{os.environ['OSS_BUCKET']}/{prefix}"
     tag = f"int-{uuid.uuid4().hex[:8]}"
     vector = expected_vector(CHUNKS["chunk-1"]["content"])
     try:
