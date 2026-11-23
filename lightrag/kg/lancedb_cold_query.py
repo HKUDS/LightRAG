@@ -278,8 +278,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise ColdQueryError("query vector must be a non-empty JSON list")
         options = storage_options_from_env(args.dest) if args.dest.startswith(("s3://", "oss://")) else None
         config = ColdQueryConfig(
-            args.dest, args.tag, args.table, args.metric,
-            args.duckdb_bin, args.timeout, options,
+            args.dest, args.tag, args.table, args.metric, args.duckdb_bin, args.timeout, options
         )
         started = time.perf_counter()
         hits = cold_search(config, vector, args.top_k)
