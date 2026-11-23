@@ -126,9 +126,11 @@ surface; three is the observed ceiling of the successful systems.
 
 The export job (`export_snapshot` in `lightrag/kg/lancedb_impl.py`) publishes
 four Lance tables — `docs`, `chunks`, `entities`, `relations` — into one
-destination (a local directory or an `s3://` URI). Embeddings are
-fixed-size-list `float32` columns of the configured dimension, so a later
-rebuild never re-embeds.
+destination (a local directory, an `s3://` or an `oss://` URI). Embeddings
+are fixed-size-list `float32` columns of the configured dimension, so a
+later rebuild never re-embeds. Every table's schema metadata records the
+exporting embedding model under `lightrag.embedding_model` (empty when the
+model is unknown), so a restore can verify the vectors' query space.
 
 Lance gives each table ACID commits and an MVCC manifest: every write is a
 new version, and a **tag** names a version permanently. Tags survive
@@ -145,8 +147,9 @@ The export rules that keep snapshots immutable:
 - Each export writes a NEW version of every table; the previous tagged
   versions stay readable. Re-export is a new tag, not an update.
 - Tags are created only AFTER all four tables are complete. An interrupted
-  export leaves untagged versions (prunable garbage, no tagged data lost),
-  and a re-run with the same tag publishes cleanly.
+  export leaves untagged versions (prunable garbage, no tagged data lost);
+  a same-tag re-run publishes cleanly only while NO table carries the tag
+  yet — a partial tagging refuses a same-tag retry (Accepted residue 6).
 - Vectors are READ from vector storage (`get_vectors_by_ids`), never
   computed. The CLI installs a fail-loud embedding stub so an unflushed
   deferred-embedding row aborts the export instead of silently embedding.
@@ -163,15 +166,18 @@ disposable and are not exported.
 `lightrag/tools/snapshot_restore.py` restores a workspace from a tagged
 snapshot; `lightrag-rebuild-vdb --from-snapshot URI --tag TAG` is the CLI
 (`--batch-size`, default 500, and `--concurrency`, 1–3 parallel vector
-targets, default 3, apply to snapshot mode only).
+targets, default 3, apply to snapshot mode only). Remote destinations
+resolve credentials through `storage_options_from_env(uri)`: the URI
+selects the dialect (`s3://` → `aws_*` keys, `oss://` → native OSS keys).
 
 The mechanism, in order:
 
 1. `open_snapshot` checks out the tag on all four tables and validates
    BEFORE any mutation: tag present, tables non-empty, embedding dimension
-   equal to the configured one, and no vector-eligible row without a stored
-   vector (content-less chunks legitimately carry none). Any violation
-   raises `RestoreError`; nothing has been touched.
+   equal to the configured one, no vector-eligible row without a stored
+   vector (content-less chunks legitimately carry none), and the recorded
+   embedding-model identity equal to the target's. Any violation raises
+   `RestoreError`; nothing has been touched.
 2. Sources of truth are restored first — `full_docs` / `text_chunks` KV and
    the graph — and flushed (`index_done_callback`).
 3. Each vector target is dropped and rewritten. The snapshot's vectors are
@@ -184,6 +190,16 @@ The mechanism, in order:
    attempt aborts the run, and success requires the count to be exactly 0.
    That count is the hard gate of the promotion, not a benchmark target.
 
+The model-identity check reads the `lightrag.embedding_model` schema
+metadata the export stamps on every table: vectors from a different
+embedding model are an incompatible query space even at equal dimension,
+so a recorded model that differs from the target's refuses the restore.
+When either side is unnamed — an older snapshot without the metadata, or a
+target with no configured model name — the identity cannot be verified;
+the restore logs a WARNING and proceeds on the operator's assurance that
+the spaces match. That warning is the accepted residue of unverifiable
+identity: loud, never silent, and the dimension check still applies.
+
 Only `NanoVectorDBStorage` targets support the vector-cache seeding; any
 other backend raises `StorageCapabilityError` before anything is dropped.
 This is a capability boundary, not an oversight: the other backends have no
@@ -194,7 +210,12 @@ The three targets run under an `asyncio.TaskGroup`, so a failing target
 cancels and awaits its siblings — an interrupted restore never leaves
 concurrent writers for the re-run. A re-run is idempotent: it re-restores the
 sources and re-drops/rebuilds the indexes, healing any partial state. The
-snapshot itself loses nothing.
+snapshot itself loses nothing. Each drop runs the caller's `before_drop`
+hook first; the rebuild CLI wires it to the same private-backup recovery as
+a normal rebuild, so a corrupt or refused target is backed up before it is
+destroyed. Prefer an EMPTY target: over a populated workspace the source
+upserts are additive while the vector targets are replaced, leaving
+vector-less orphan source rows (Accepted residue 8).
 
 The community shape: Qdrant keeps full-precision vectors as the durable
 copy and reads them only to rescore a compressed candidate set — the
@@ -297,8 +318,8 @@ refusal is a typed error that leaves the world unchanged:
   read and vector-joined before any write, so an empty source or a missing
   vector destroys nothing.
 - Restore: blank tag, missing table/tag, empty table, dimension mismatch,
-  missing vector, non-Nano target → `RestoreError` /
-  `StorageCapabilityError` before anything is dropped.
+  missing vector, embedding-model mismatch, non-Nano target →
+  `RestoreError` / `StorageCapabilityError` before anything is dropped.
 - Cold query: invalid config, missing/stale tag, wrong dimension,
   non-finite values, failed execution → `ColdQueryError` before any hit.
 
@@ -373,15 +394,32 @@ Each residue is accepted with its reason and recovery path, per
    policy denies List fails loud at connect, not silently. Recovery: grant
    the list permission (an operator action); until then the cloud jobs are
    unavailable and the local-directory destination still works.
-6. **Interrupted export leaves untagged versions.** Tags are created only
-   after all four tables complete, so a crash mid-export leaves untagged
-   versions. They are prunable garbage; no tagged snapshot is affected.
-   Recovery: re-run with the same tag publishes cleanly.
+6. **Interrupted export leaves untagged versions — or a partial tag.**
+   Tags are created only after all four tables complete. A crash during
+   the WRITE phase leaves untagged versions: prunable garbage, no tagged
+   snapshot affected, and a re-run with the same tag publishes cleanly
+   because no table carries the tag yet. A crash during the TAG phase
+   (some tables tagged, others not) is different: the tag now exists, and
+   the immutability preflight refuses a same-tag retry. Recovery: publish
+   under a NEW tag; the created tags stay intact (tags are never moved or
+   pruned) and the untagged versions remain prunable. Nothing is lost
+   either way; only the recovery path differs.
 7. **Interrupted restore leaves a partial hot index.** Sources are restored
    before the vector targets, and a failing target cancels its siblings, so
    a crash can leave some indexes rebuilt and others not. The snapshot is
    untouched. Recovery: re-run; the restore is idempotent and heals the
    partial state.
+8. **Restore over a populated workspace leaves orphan source rows.** The
+   KV/graph restore upserts additively while the vector targets are dropped
+   and replaced, so pre-existing source rows absent from the tag survive
+   without vectors. The direction is retention, not loss: no snapshot
+   content is dropped, and a row that could have been deleted is kept
+   (*Consistency without transactions*). A populated target is not refused
+   because the idempotent re-run of residue 7 is itself a restore over a
+   populated workspace. Recovery: prefer an EMPTY target; otherwise the
+   orphans heal through a normal rebuild (which re-embeds from the restored
+   sources) or re-ingestion, and an operator may clear the workspace first
+   when the pre-existing content is disposable.
 
 ## Rejected remedies
 
