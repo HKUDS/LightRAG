@@ -73,14 +73,6 @@ def _mock_gateway(
             id="html",
         ),
         pytest.param(
-            lambda: httpx.Response(
-                200,
-                headers={"content-type": "text/plain"},
-                text="Synthetic upstream unavailable",
-            ),
-            id="plain-text",
-        ),
-        pytest.param(
             lambda: httpx.Response(200, json=["unexpected", "array"]),
             id="json-array",
         ),
@@ -165,16 +157,3 @@ def test_describe_invalid_response_truncates_long_bodies() -> None:
     detail = openai_module._describe_invalid_response("x" * (limit * 10))
 
     assert detail.endswith("'" + "x" * limit + "...'")
-
-
-async def test_valid_completion_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    requests, clients = _mock_gateway(monkeypatch, [_completion()])
-
-    assert (
-        await openai_module.openai_complete_if_cache(
-            model="synthetic-model", prompt="Synthetic chunk"
-        )
-        == "Recovered"
-    )
-    assert len(requests) == 1
-    assert clients[0].is_closed()

@@ -22,8 +22,14 @@ def _row(index, value):
     ("rows", "expected"),
     [
         pytest.param([_row(1, 1.0), _row(0, 0.0)], [[0.0], [1.0]], id="shuffled"),
+        # Endpoints that send no index at all keep their response order.
+        pytest.param(
+            [_row(None, 1.0), _row(None, 0.0)], [[1.0], [0.0]], id="unindexed"
+        ),
         pytest.param([_row(0, 0.0), _row(0, 1.0)], None, id="duplicate"),
         pytest.param([_row(1, 1.0), _row(None, 0.0)], None, id="partial"),
+        # True == 1, so only the type check rejects a boolean index.
+        pytest.param([_row(True, 1.0), _row(0, 0.0)], None, id="non-int"),
     ],
 )
 async def test_openai_embedding_input_order(rows, expected):

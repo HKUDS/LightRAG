@@ -87,20 +87,21 @@ def _make_stream_chunk(content=None, reasoning_content=None):
     )
 
 
-@pytest.mark.offline
 @pytest.mark.asyncio
-async def test_length_finish_reason_returns_raw_content():
-    """Truncated responses (finish_reason='length') still yield raw content.
+@pytest.mark.parametrize(
+    ("finish_reason", "truncated"),
+    [("length", True), ("stop", False)],
+)
+async def test_finish_reason_sets_truncation_marker(finish_reason, truncated):
+    """Content is returned unchanged; only finish_reason='length' is flagged.
 
-    After the dispatch simplification, we no longer rely on the typed
-    ``LengthFinishReasonError`` path — ``create()`` returns the partial
-    content unchanged and upstream tolerant JSON parsing handles it.
+    A truncated payload is still usable (str equality holds for salvage, and
+    upstream tolerant JSON parsing handles it), but ``is_truncated_response``
+    reports True so the cache layer does not persist it. ``response_format``
+    reaches ``create()`` as given.
     """
-    raw_json = (
-        '{"entities":[{"name":"Alice","type":"Person",'
-        '"description":"Founder"}],"relationships":[]}'
-    )
-    completion = _make_completion(raw_json, finish_reason="length")
+    raw_json = '{"entities":[{"name":"Alice","type":"Person"'
+    completion = _make_completion(raw_json, finish_reason=finish_reason)
     fake_client = _make_fake_client(completion)
 
     with patch(
@@ -111,63 +112,17 @@ async def test_length_finish_reason_returns_raw_content():
             model="test-model",
             prompt="Extract entities",
             response_format={"type": "json_object"},
-            max_completion_tokens=128,
         )
 
     assert result == raw_json
+    assert is_truncated_response(result) is truncated
     fake_client.chat.completions.create.assert_awaited_once()
+    assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
+        "type": "json_object"
+    }
     fake_client.close.assert_awaited_once()
 
 
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_length_finish_reason_marks_result_truncated():
-    """Truncated content is returned but flagged so the cache layer skips it.
-
-    The partial payload is still usable (str equality holds for salvage), but
-    ``is_truncated_response`` reports True so callers do not persist it.
-    """
-    raw_json = '{"entities":[{"name":"Alice","type":"Person"'
-    completion = _make_completion(raw_json, finish_reason="length")
-    fake_client = _make_fake_client(completion)
-
-    with patch(
-        "lightrag.llm.openai.create_openai_async_client",
-        return_value=fake_client,
-    ):
-        result = await openai_complete_if_cache(
-            model="test-model",
-            prompt="Extract entities",
-            response_format={"type": "json_object"},
-        )
-
-    assert result == raw_json
-    assert is_truncated_response(result) is True
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_stop_finish_reason_is_not_marked_truncated():
-    """A normally-completed response is not flagged and remains cacheable."""
-    raw_json = '{"entities":[],"relationships":[]}'
-    completion = _make_completion(raw_json, finish_reason="stop")
-    fake_client = _make_fake_client(completion)
-
-    with patch(
-        "lightrag.llm.openai.create_openai_async_client",
-        return_value=fake_client,
-    ):
-        result = await openai_complete_if_cache(
-            model="test-model",
-            prompt="Extract entities",
-            response_format={"type": "json_object"},
-        )
-
-    assert result == raw_json
-    assert is_truncated_response(result) is False
-
-
-@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_azure_length_finish_reason_marks_result_truncated():
     """Azure shares the unified non-streaming path, so it emits the marker too.
@@ -195,35 +150,9 @@ async def test_azure_length_finish_reason_marks_result_truncated():
     assert is_truncated_response(result) is True
 
 
-@pytest.mark.offline
 @pytest.mark.asyncio
-async def test_json_object_response_format_forwarded_to_create():
-    completion = _make_completion(
-        '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
-    )
-    fake_client = _make_fake_client(completion)
-
-    with patch(
-        "lightrag.llm.openai.create_openai_async_client",
-        return_value=fake_client,
-    ):
-        result = await openai_complete_if_cache(
-            model="test-model",
-            prompt="Extract keywords",
-            response_format={"type": "json_object"},
-        )
-
-    assert result == '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
-    fake_client.chat.completions.create.assert_awaited_once()
-    assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
-        "type": "json_object"
-    }
-    fake_client.close.assert_awaited_once()
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_legacy_entity_extraction_emits_deprecation_warning():
+@pytest.mark.parametrize("flag", ["entity_extraction", "keyword_extraction"])
+async def test_legacy_extraction_flag_emits_deprecation_warning(flag):
     completion = _make_completion('{"entities":[],"relationships":[]}')
     fake_client = _make_fake_client(completion)
 
@@ -234,8 +163,8 @@ async def test_legacy_entity_extraction_emits_deprecation_warning():
         with pytest.warns(DeprecationWarning):
             await openai_complete_if_cache(
                 model="test-model",
-                prompt="Extract entities",
-                entity_extraction=True,
+                prompt="Extract",
+                **{flag: True},
             )
 
     fake_client.chat.completions.create.assert_awaited_once()
@@ -244,30 +173,6 @@ async def test_legacy_entity_extraction_emits_deprecation_warning():
     }
 
 
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_legacy_keyword_extraction_emits_deprecation_warning():
-    completion = _make_completion('{"high_level_keywords":[],"low_level_keywords":[]}')
-    fake_client = _make_fake_client(completion)
-
-    with patch(
-        "lightrag.llm.openai.create_openai_async_client",
-        return_value=fake_client,
-    ):
-        with pytest.warns(DeprecationWarning):
-            await openai_complete_if_cache(
-                model="test-model",
-                prompt="Extract keywords",
-                keyword_extraction=True,
-            )
-
-    fake_client.chat.completions.create.assert_awaited_once()
-    assert fake_client.chat.completions.create.await_args.kwargs["response_format"] == {
-        "type": "json_object"
-    }
-
-
-@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_typed_response_format_is_rejected():
     completion = _make_completion("{}")
@@ -291,7 +196,6 @@ async def test_typed_response_format_is_rejected():
     fake_client.close.assert_not_awaited()
 
 
-@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_streaming_structured_output_disables_cot():
     fake_stream = _FakeAsyncStream(
@@ -321,7 +225,6 @@ async def test_streaming_structured_output_disables_cot():
     fake_client.close.assert_awaited_once()
 
 
-@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_empty_content_reasoning_only_diagnostics(caplog):
     """Reasoning-only responses surface finish_reason/usage/reasoning clues.
@@ -363,7 +266,6 @@ async def test_empty_content_reasoning_only_diagnostics(caplog):
     fake_client.close.assert_awaited()
 
 
-@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_empty_content_length_truncation_diagnostics(caplog):
     """Token-limit truncation with no content is identified as such.
@@ -376,6 +278,8 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
 
     completion = _make_completion("", finish_reason="length")
     fake_client = _make_fake_client(completion)
+    tracked: list[dict] = []
+    tracker = SimpleNamespace(add_usage=tracked.append)
 
     caplog.set_level(logging.ERROR, logger="lightrag")
     with capture_lightrag_logs(caplog):
@@ -393,6 +297,7 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
                     model="test-model",
                     prompt="Describe the image",
                     response_format={"type": "json_object"},
+                    token_tracker=tracker,
                 )
 
     assert fake_client.chat.completions.create.await_count == 1, (
@@ -408,36 +313,8 @@ async def test_empty_content_length_truncation_diagnostics(caplog):
     assert "hit the token limit" in message
     assert "consider raising max_tokens" in message
     fake_client.close.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_empty_content_length_raise_still_counts_usage():
-    """Codex review (PR #3607, flagged on the Gemini twin): the empty-content
-    raise happened before token accounting, so the request that consumed its
-    ENTIRE completion budget on reasoning was the one missing from usage
-    reporting. Usage is now recorded before any validation raise."""
-    from lightrag.exceptions import EmptyTruncatedResponseError
-
-    completion = _make_completion("", finish_reason="length")
-    fake_client = _make_fake_client(completion)
-
-    tracked: list[dict] = []
-    tracker = SimpleNamespace(add_usage=tracked.append)
-
-    with patch(
-        "lightrag.llm.openai.create_openai_async_client",
-        return_value=fake_client,
-    ):
-        with pytest.raises(EmptyTruncatedResponseError):
-            await openai_complete_if_cache(
-                model="test-model",
-                prompt="Describe the image",
-                token_tracker=tracker,
-            )
-
+    # Usage is recorded before the validation raise: the request that spent
+    # its whole completion budget on reasoning must not vanish from accounting.
     assert tracked == [
         {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
-    ], (
-        "the exhausted request's tokens vanished from usage accounting "
-        "because the raise preceded token_tracker.add_usage"
-    )
+    ]
