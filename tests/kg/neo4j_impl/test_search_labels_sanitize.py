@@ -7,17 +7,7 @@ search containing Lucene reserved characters (e.g. "tb-") was misparsed by the
 full-text query parser ('-' as NOT) and silently returned nothing.
 """
 
-import os
-import sys
-
 import pytest
-
-# Add the project root directory to the Python path
-sys.path.append(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    )
-)
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
