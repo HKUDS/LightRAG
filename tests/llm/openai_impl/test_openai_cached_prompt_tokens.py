@@ -12,8 +12,18 @@ from lightrag.utils import TokenTracker
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
 
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("cached_tokens", [None, 0, 2])
+# Both call sites share one helper, so the absent / reported-zero branches are
+# pinned on the non-streaming path; the streaming case proves its call site uses
+# that helper.
+@pytest.mark.parametrize(
+    ("stream", "cached_tokens"),
+    [
+        pytest.param(False, None, id="absent"),
+        pytest.param(False, 0, id="reported-zero"),
+        pytest.param(False, 2, id="reported"),
+        pytest.param(True, 2, id="stream-reported"),
+    ],
+)
 async def test_openai_chat_reports_cached_prompt_tokens(
     monkeypatch, stream, cached_tokens
 ):
