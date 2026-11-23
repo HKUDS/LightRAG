@@ -624,6 +624,8 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 #### F —— 定长
 
+窗口在原文的字符边界处切分（与嵌入前硬切分使用同一个 `Tokenizer.split_by_token_limit`），因此窗口永远不会切断多字节字符，chunk 内容始终是它所来自的原文。chunk 的 `tokens` 统计的是存储下来的、去掉首尾空白后的内容；由于 BPE 把空格归入其后的词，开头空格被去掉的窗口可能比 `chunk_token_size` 多出一两个 token。
+
 - **`CHUNK_F_SIZE`** —— 未设，int。
   F 自己的 `chunk_token_size`，高于顶层兜底（`CHUNK_SIZE` 与 SDK 路径的 `LightRAG(chunk_token_size=…)`）。未设时 F 沿用顶层解析结果。
 - **`CHUNK_F_OVERLAP_SIZE`** —— 未设，int。
