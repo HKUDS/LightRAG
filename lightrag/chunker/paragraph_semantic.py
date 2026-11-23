@@ -613,6 +613,15 @@ def _parse_html_tr(tr: str) -> tuple[str, list[re.Match[str]], str] | None:
     return parts.group("open"), cells, parts.group("close")
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+
+# Upper bound on the work the rowspan layout may do for one table (active spans
+# visited plus columns they cover, summed over rows). Real tables stay far
+# below it; past it the table is sliced as cut, without rowspan repair, so a
+# hostile table cannot make the layout quadratic in time or memory.
+_HTML_SPAN_LAYOUT_BUDGET = 200_000
+
+
 def _html_row_groups(body: str) -> list[int]:
     """Number the row group of each row :func:`_split_html_rows` returns.
 
@@ -620,12 +629,18 @@ def _html_row_groups(body: str) -> list[int]:
     adjacent ``<tbody>`` blocks are two groups even though both rows carry
     the wrapper name ``"tbody"``.
     """
+    text = body or ""
+    # A wrapper tag inside an HTML comment is not a boundary. Rows inside one
+    # are still numbered, to stay aligned with ``_split_html_rows``.
+    comments = [m.span() for m in _HTML_COMMENT_RE.finditer(text)]
     groups: list[int] = []
     group = 0
     boundary = False
-    for match in _HTML_ROW_PARTS_RE.finditer(body or ""):
+    for match in _HTML_ROW_PARTS_RE.finditer(text):
         if match.group("wrap") is not None:
-            boundary = True
+            pos = match.start()
+            if not any(start <= pos < end for start, end in comments):
+                boundary = True
         elif match.group("tr") is not None:
             if boundary and groups:
                 group += 1
@@ -666,7 +681,9 @@ class _HtmlRowspanSlicer:
     changes. ``<thead>`` rows, rows that need no
     change, and rows that :func:`_parse_html_tr` cannot parse are returned
     unchanged. A repeated cell costs tokens the row splitter did not count;
-    the caller's over-cap repair bounds the serialized slice.
+    the caller's over-cap repair bounds the serialized slice. A table whose
+    layout would exceed ``_HTML_SPAN_LAYOUT_BUDGET`` sets ``has_spans`` to
+    ``False`` and is sliced as cut.
     """
 
     def __init__(
@@ -688,12 +705,19 @@ class _HtmlRowspanSlicer:
         self.has_spans = any(
             wrapper != "thead" and "rowspan" in tr.lower() for wrapper, tr in rows
         )
-        if self.has_spans:
-            self._layout()
+        if self.has_spans and not self._layout():
+            self.has_spans = False
+            self._parsed = []
+            self._carried = []
 
-    def _layout(self) -> None:
+    def _layout(self) -> bool:
+        """Place every body cell; ``False`` when the work budget runs out."""
         active: dict[int, _CarriedSpan] = {}
+        work = 0
         for index, (wrapper, tr) in enumerate(self._rows):
+            work += len(active)
+            if work > _HTML_SPAN_LAYOUT_BUDGET:
+                return False
             for col in [c for c, span in active.items() if span[1] < index]:
                 del active[col]
             self._carried.append(list(active.values()))
@@ -705,7 +729,10 @@ class _HtmlRowspanSlicer:
             open_tag, cells, close_tag = parsed
             occupied: set[int] = set()
             for col, _last, colspan, *_cell in active.values():
+                work += colspan
                 occupied.update(range(col, col + colspan))
+            if work > _HTML_SPAN_LAYOUT_BUDGET:
+                return False
             placed: list[_PlacedCell] = []
             col = 0
             for cell in cells:
@@ -726,6 +753,7 @@ class _HtmlRowspanSlicer:
                     )
                 col += colspan
             self._parsed.append((open_tag, placed, close_tag))
+        return True
 
     def slice(self, start: int, end: int) -> list[tuple[str, str]]:
         if not self.has_spans:

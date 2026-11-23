@@ -1647,3 +1647,27 @@ def test_span_values_are_bounded_to_the_html_limits():
     # An unbounded colspan would size the column layout from untrusted input.
     assert _html_span_value(' colspan="1000000"', "colspan") == 1000
     assert _html_span_value(' rowspan="1000000"', "rowspan") == 65534
+
+
+@pytest.mark.offline
+def test_commented_out_wrapper_is_not_a_row_group_boundary():
+    body = (
+        '<tbody><tr><td rowspan="2">A</td><td>a1</td></tr>'
+        "<!-- <tbody> --><tr><td>a2</td></tr></tbody>"
+    )
+    rows = _split_html_rows(body)
+    assert _html_row_groups(body) == [0, 0]
+    # A still spans both rows, so a slice holding both keeps them unchanged.
+    assert _HtmlRowspanSlicer(rows, _html_row_groups(body)).slice(0, 2) == rows
+
+
+@pytest.mark.offline
+def test_rowspan_layout_gives_up_past_its_work_budget():
+    width = 600
+    first = "".join(f'<td rowspan="{width}">c{i}</td>' for i in range(width))
+    rows = [("tbody", f"<tr>{first}</tr>")] + [("tbody", "<tr></tr>")] * (width - 1)
+    # Every row would carry all 600 spans (360,000 steps): the table is sliced
+    # as cut instead of building a quadratic layout.
+    slicer = _HtmlRowspanSlicer(rows)
+    assert slicer.has_spans is False
+    assert slicer.slice(1, 3) == rows[1:3]
