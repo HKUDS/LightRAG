@@ -22,7 +22,13 @@ pytestmark = pytest.mark.offline
 @pytest.mark.parametrize(
     ("flags", "response_format", "warned_flag"),
     [
-        pytest.param({"entity_extraction": True}, None, "entity", id="entity"),
+        # An explicit False is still a kwarg the real chat() would reject.
+        pytest.param(
+            {"entity_extraction": True, "keyword_extraction": False},
+            None,
+            "entity",
+            id="entity",
+        ),
         pytest.param({"keyword_extraction": True}, None, "keyword", id="keyword"),
         # entity wins the elif, so keyword must still be consumed.
         pytest.param(

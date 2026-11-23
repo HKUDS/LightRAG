@@ -116,10 +116,12 @@ async def test_streaming_records_usage_from_the_terminal_chunk():
         ]
     )
 
-    result, _ = await _call(stream, stream=True, token_tracker=tracker)
+    result, fake_client = await _call(stream, stream=True, token_tracker=tracker)
     collected = "".join([chunk async for chunk in result])
 
     assert collected == "hello"
+    # A fully consumed stream closes the client it was handed.
+    fake_client._client.aclose.assert_awaited_once()
     assert tracker.get_usage() == {
         "prompt_tokens": 7,
         "completion_tokens": 2,
