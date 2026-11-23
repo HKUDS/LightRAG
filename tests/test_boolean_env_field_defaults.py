@@ -1,4 +1,4 @@
-"""The public dataclass defaults use the shared boolean environment syntax."""
+"""The import-time boolean env defaults use the shared boolean syntax."""
 
 import json
 import os
@@ -13,31 +13,46 @@ pytestmark = pytest.mark.offline
 
 
 @pytest.mark.parametrize(
-    ("rerank", "json_extraction", "expected_json", "warn_key"),
-    # Each case pins one field's alias parsing and the OTHER field's typo
-    # fallback, so a wrong fallback default on either field fails one case.
+    ("env", "expected", "warn_keys"),
+    # Each case pins one flag of each pair to an alias and the OTHER flag to a
+    # typo, with the roles swapped between cases, so a wrong fallback default
+    # or two flags reading the same variable fails one case.
     [
         pytest.param(
-            " ON ",
-            "ture",
-            False,
-            "ENTITY_EXTRACTION_USE_JSON",
-            id="rerank-alias-json-typo-keeps-false",
+            {
+                "RERANK_BY_DEFAULT": " ON ",
+                "ENTITY_EXTRACTION_USE_JSON": "ture",
+                "VERBOSE": "1",
+                "LIGHTRAG_PERFORMANCE_TIMING_LOGS": "ture",
+            },
+            {
+                "rerank": True,
+                "json_extraction": False,
+                "verbose": True,
+                "timing": False,
+            },
+            ("ENTITY_EXTRACTION_USE_JSON", "LIGHTRAG_PERFORMANCE_TIMING_LOGS"),
+            id="rerank-verbose-alias-json-timing-typo",
         ),
         pytest.param(
-            "ture",
-            "yes",
-            True,
-            "RERANK_BY_DEFAULT",
-            id="json-alias-rerank-typo-keeps-true",
+            {
+                "RERANK_BY_DEFAULT": "ture",
+                "ENTITY_EXTRACTION_USE_JSON": "yes",
+                "VERBOSE": "ture",
+                "LIGHTRAG_PERFORMANCE_TIMING_LOGS": " ON ",
+            },
+            {"rerank": True, "json_extraction": True, "verbose": False, "timing": True},
+            ("RERANK_BY_DEFAULT", "VERBOSE"),
+            id="json-timing-alias-rerank-verbose-typo",
         ),
     ],
 )
 def test_boolean_env_field_defaults(
-    rerank: str, json_extraction: str, expected_json: bool, warn_key: str
+    env: dict[str, str], expected: dict[str, bool], warn_keys: tuple[str, ...]
 ) -> None:
-    # Both defaults are evaluated on import. Reading the LightRAG field lets
-    # us exercise that evaluation without constructing unrelated storages.
+    # All four defaults are evaluated on import. Reading the LightRAG field
+    # and the lightrag.utils flags exercises that evaluation without
+    # constructing unrelated storages.
     result = subprocess.run(
         [
             sys.executable,
@@ -45,10 +60,16 @@ def test_boolean_env_field_defaults(
             """
 import json
 
+import lightrag.utils as utils
 from lightrag import LightRAG, QueryParam
 
 json_default = LightRAG.__dataclass_fields__["entity_extraction_use_json"].default
-print(json.dumps({"rerank": QueryParam().enable_rerank, "json_extraction": json_default}))
+print(json.dumps({
+    "rerank": QueryParam().enable_rerank,
+    "json_extraction": json_default,
+    "verbose": utils.VERBOSE_DEBUG,
+    "timing": utils.PERFORMANCE_TIMING_LOGS,
+}))
 """,
         ],
         cwd=REPO_ROOT,
@@ -56,45 +77,13 @@ print(json.dumps({"rerank": QueryParam().enable_rerank, "json_extraction": json_
             **os.environ,
             "PYTHONPATH": str(REPO_ROOT),
             "PYTHON_DOTENV_DISABLED": "1",
-            "RERANK_BY_DEFAULT": rerank,
-            "ENTITY_EXTRACTION_USE_JSON": json_extraction,
+            **env,
         },
         capture_output=True,
         text=True,
         check=True,
     )
 
-    assert json.loads(result.stdout) == {
-        "rerank": True,
-        "json_extraction": expected_json,
-    }
-    assert f"WARNING: Environment variable {warn_key}='ture'" in result.stderr
-
-
-@pytest.mark.parametrize("alias", [" ON ", "1"])
-def test_utils_boolean_env_aliases(alias: str) -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import json
-import lightrag.utils as utils
-
-print(json.dumps({"verbose": utils.VERBOSE_DEBUG, "timing": utils.PERFORMANCE_TIMING_LOGS}))
-""",
-        ],
-        cwd=REPO_ROOT,
-        env={
-            **os.environ,
-            "PYTHONPATH": str(REPO_ROOT),
-            "PYTHON_DOTENV_DISABLED": "1",
-            "VERBOSE": alias,
-            "LIGHTRAG_PERFORMANCE_TIMING_LOGS": alias,
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    assert json.loads(result.stdout) == {"verbose": True, "timing": True}
+    assert json.loads(result.stdout) == expected
+    for key in warn_keys:
+        assert f"WARNING: Environment variable {key}='ture'" in result.stderr
