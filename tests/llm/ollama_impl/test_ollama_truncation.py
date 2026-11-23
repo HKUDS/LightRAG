@@ -39,8 +39,9 @@ async def _complete(response: dict, **kwargs):
 
 async def test_ollama_length_done_reason_marks_partial_content_truncated():
     """done_reason == "length" (num_predict exhausted) flags the response,
-    and non-empty content is still returned for salvage, never raised."""
-    raw_json = '{"entities":[{"name":"Ali'
+    and non-empty content is still returned for salvage, never raised --
+    unstripped, so the padding must survive."""
+    raw_json = ' {"entities":[{"name":"Ali '
 
     result, _ = await _complete(
         {"message": {"content": raw_json}, "done_reason": "length"}

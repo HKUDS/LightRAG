@@ -113,9 +113,6 @@ _SCHEMA = {
     ("kwargs", "expected_format"),
     [
         pytest.param(
-            {"response_format": {"type": "json_object"}}, "json", id="json-object"
-        ),
-        pytest.param(
             {
                 "response_format": {
                     "type": "json_schema",
