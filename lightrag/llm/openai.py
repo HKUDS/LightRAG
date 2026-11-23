@@ -1213,7 +1213,8 @@ async def openai_embed(
                 or set(indices) != set(range(len(texts)))
             ):
                 raise ValueError(
-                    "OpenAI-compatible API returned invalid embedding indices"
+                    f"OpenAI-compatible API returned invalid embedding indices "
+                    f"for {len(texts)} texts (first 10: {indices[:10]})"
                 )
             rows = sorted(rows, key=lambda row: row.index)
 
