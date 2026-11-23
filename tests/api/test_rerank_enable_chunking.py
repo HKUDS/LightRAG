@@ -6,54 +6,18 @@ instead of being silently read as ``False``.
 """
 
 import asyncio
-import sys
 
 import pytest
-
-from lightrag.api import config
 
 pytestmark = pytest.mark.offline
 
 
-class _Constructed(Exception):
-    """Stops startup once the stubbed LightRAG constructor captured its kwargs."""
-
-
 @pytest.fixture
-def cohere_rerank_calls(monkeypatch, tmp_path):
+def cohere_rerank_calls(monkeypatch, prepare_startup):
     """Build the server with a stubbed Cohere rerank and return its call kwargs."""
 
     def run(enable_chunking: str | None) -> dict:
-        monkeypatch.setattr(config, "_global_args", None)
-        monkeypatch.setattr(config, "_initialized", False)
-        for key, value in {
-            "LLM_BINDING": "openai",
-            "EMBEDDING_BINDING": "openai",
-            "RERANK_BINDING": "cohere",
-            "UI_TEMPLATES_DIR": "",
-            "AUTH_ACCOUNTS": "",
-        }.items():
-            monkeypatch.setenv(key, value)
-        monkeypatch.delenv("RERANK_MAX_TOKENS_PER_DOC", raising=False)
-        if enable_chunking is None:
-            monkeypatch.delenv("RERANK_ENABLE_CHUNKING", raising=False)
-        else:
-            monkeypatch.setenv("RERANK_ENABLE_CHUNKING", enable_chunking)
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "lightrag-server",
-                "--working-dir",
-                str(tmp_path / "rag"),
-                "--input-dir",
-                str(tmp_path / "inputs"),
-            ],
-        )
-        args = config.initialize_config(force=True)
-
         import lightrag.rerank as rerank
-        from lightrag.api import lightrag_server as server
 
         rerank_calls: list[dict] = []
 
@@ -64,21 +28,16 @@ def cohere_rerank_calls(monkeypatch, tmp_path):
             return []
 
         monkeypatch.setattr(rerank, "cohere_rerank", fake_cohere_rerank)
+        startup = prepare_startup(
+            {
+                "RERANK_BINDING": "cohere",
+                "RERANK_MAX_TOKENS_PER_DOC": None,
+                "RERANK_ENABLE_CHUNKING": enable_chunking,
+            }
+        )
 
-        captured: list[dict] = []
-
-        def construct(**kwargs):
-            captured.append(kwargs)
-            raise _Constructed
-
-        monkeypatch.setattr(server, "LightRAG", construct)
-        monkeypatch.setattr(server, "check_frontend_build", lambda: (False, False))
-        monkeypatch.setattr(server, "check_workspace_frontend_build", lambda: False)
-        with pytest.raises(_Constructed):
-            server.create_app(args)
-        assert len(captured) == 1
-
-        asyncio.run(captured[0]["rerank_model_func"](query="q", documents=["d"]))
+        rerank_func = startup.constructor_kwargs()["rerank_model_func"]
+        asyncio.run(rerank_func(query="q", documents=["d"]))
         assert len(rerank_calls) == 1
         return rerank_calls[0]
 

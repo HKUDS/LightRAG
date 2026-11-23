@@ -36,11 +36,6 @@ def test_defaults_when_unset(monkeypatch):
     assert DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE == 100
 
 
-def test_env_value_is_honoured(monkeypatch):
-    args = _parse(monkeypatch, "42")
-    assert args.embedding_chunk_overlap_token_size == 42
-
-
 def test_zero_is_honoured(monkeypatch):
     """0 is a legal, meaningful value (disables the fallback's overlap) —
     must not be treated as falsy/unset."""

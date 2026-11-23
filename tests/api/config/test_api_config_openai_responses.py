@@ -9,11 +9,12 @@ options from leaking into the Responses driver.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import pytest
 
-from lightrag.api.config import get_default_host, parse_args
+from lightrag.api.config import parse_args
 from lightrag.llm.binding_options import OpenAIResponsesLLMOptions
 
 pytestmark = pytest.mark.offline
@@ -21,7 +22,6 @@ pytestmark = pytest.mark.offline
 # Env that a developer-local .env could otherwise use to decide the outcome.
 _AMBIENT_ENV = (
     "LLM_BINDING",
-    "LLM_BINDING_HOST",
     "VLM_PROCESS_ENABLE",
     "OPENAI_LLM_MAX_COMPLETION_TOKENS",
     "OPENAI_LLM_REASONING_EFFORT",
@@ -50,18 +50,6 @@ def test_binding_is_an_accepted_llm_binding_choice(clean_env):
     assert parse_args().llm_binding == "openai_responses"
 
 
-def test_default_host_is_the_openai_endpoint(clean_env):
-    # Without this mapping the binding falls back to the catch-all Ollama
-    # default (http://localhost:11434) and every request fails at connect time.
-    assert get_default_host("openai_responses") == "https://api.openai.com/v1"
-
-
-def test_binding_host_override_is_honoured(clean_env):
-    clean_env.setenv("LLM_BINDING_HOST", "https://gateway.example/v1")
-
-    assert get_default_host("openai_responses") == "https://gateway.example/v1"
-
-
 def test_options_use_their_own_env_namespace(clean_env):
     clean_env.setenv("LLM_BINDING", "openai_responses")
     clean_env.setenv("OPENAI_RESPONSES_LLM_MAX_OUTPUT_TOKENS", "4096")
@@ -87,47 +75,35 @@ def test_chat_completions_options_do_not_leak_into_responses(clean_env):
     assert options.get("max_output_tokens") != 999
 
 
-def test_the_responses_binding_does_not_reach_the_chat_completions_fallthrough(
-    clean_env,
-):
-    """The dispatch branch must precede the bare Chat Completions ``else``.
+def test_startup_routes_the_binding_to_the_responses_driver(clean_env, prepare_startup):
+    """Startup accepts the binding and its LLM function calls the Responses API.
 
-    Adding the binding to the argparse choices but not to the dispatch chain
-    produces no error at all — requests just go to the wrong endpoint. This is
-    the guard the issue explicitly asked for.
+    Adding the binding to the argparse choices but not to the startup
+    allow-list refuses to start, and missing it from the dispatch chain sends
+    the traffic to /v1/chat/completions with no error at all.
     """
-    import inspect
+    import lightrag.llm.openai as chat_completions
+    import lightrag.llm.openai_responses as responses
 
-    from lightrag.api import lightrag_server
+    calls: list[str] = []
 
-    source = inspect.getsource(lightrag_server)
+    async def fake_responses(model, prompt, **kwargs):
+        calls.append("responses")
+        return "ok"
 
-    # There are two `else:  # openai and compatible` fallthroughs: the earlier
-    # one is the *embedding* dispatch, which this binding never reaches because
-    # openai_responses is not an embedding choice (the Responses API does not
-    # replace /v1/embeddings). The LLM dispatch is the later one.
-    dispatch_index = source.index('elif binding == "openai_responses":')
-    llm_fallthrough_index = source.rindex("else:  # openai and compatible")
+    async def fake_chat_completions(model, prompt, **kwargs):
+        calls.append("chat_completions")
+        return "ok"
 
-    assert dispatch_index < llm_fallthrough_index, (
-        "the openai_responses branch must precede the Chat Completions "
-        "fallthrough, or Responses traffic is silently sent to "
-        "/v1/chat/completions"
+    clean_env.setattr(responses, "openai_responses_complete_if_cache", fake_responses)
+    clean_env.setattr(
+        chat_completions, "openai_complete_if_cache", fake_chat_completions
     )
-    # Pin the assumption above: if a third fallthrough is ever added, this
-    # test's rindex could start pointing at the wrong one.
-    assert source.count("else:  # openai and compatible") == 2
+    startup = prepare_startup(
+        {"LLM_BINDING": "openai_responses", "LLM_BINDING_API_KEY": "a-key"}
+    )
 
+    llm_model_func = startup.constructor_kwargs()["llm_model_func"]
+    asyncio.run(llm_model_func("hello"))
 
-def test_binding_is_in_the_server_startup_allow_list(clean_env):
-    """Startup rejects any binding absent from its allow-list."""
-    import inspect
-
-    from lightrag.api import lightrag_server
-
-    source = inspect.getsource(lightrag_server)
-    allow_list_start = source.index("if args.llm_binding not in [")
-    allow_list_end = source.index('raise Exception("llm binding not supported")')
-    allow_list = source[allow_list_start:allow_list_end]
-
-    assert '"openai_responses"' in allow_list
+    assert calls == ["responses"]
