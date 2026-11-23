@@ -1890,20 +1890,28 @@ class RebuildTool:
     async def _run_snapshot_restore(self) -> bool:
         """Restore from the tagged snapshot; validation precedes any mutation.
         Zero re-embedding is the hard gate: the counted stub must report 0.
+        Corrupt/refused vector targets go through the same private-backup
+        recovery as a normal rebuild before the restore drops them.
         """
         from lightrag.kg.lancedb_impl import storage_options_from_env
         from lightrag.tools.snapshot_restore import open_snapshot, restore_workspace_snapshot
 
         snap = self.snapshot
-        options = storage_options_from_env() if snap.uri.startswith("s3://") else None
+        # dest selects the credential dialect: s3:// needs aws_* keys, oss://
+        # the native OSS keys; calling without it returns the wrong dialect.
+        options = storage_options_from_env(snap.uri) if snap.uri.startswith(("s3://", "oss://")) else None
         tables = open_snapshot(snap.uri, snap.tag,
-                               dim=self.embedding_func.embedding_dim, storage_options=options)
+                               dim=self.embedding_func.embedding_dim,
+                               model_name=self.embedding_func.model_name,
+                               storage_options=options)
         print(f"\nSnapshot: {snap.uri} (tag {snap.tag!r})")
         for name, table in tables.items():
             print(f"  {name}: {table.count_rows():,} rows")
         print("\nVectors are restored WITHOUT re-embedding; vector storages are dropped")
         print("and rewritten, KV/graph overwritten; doc_status and LLM cache stay empty")
         print("(README_REBUILD_VDB.md).")
+        if self.corrupt_vdbs:
+            print("Corrupt vector files will be backed up before they are dropped.")
         confirm = input("\nProceed with the snapshot restore? (yes/no): ").strip().lower()
         if confirm != "yes":
             print("\n✓ Restore cancelled")
@@ -1918,6 +1926,9 @@ class RebuildTool:
         stats = await restore_workspace_snapshot(
             tables, rag, self.global_config,
             batch_size=snap.batch_size, concurrency=snap.concurrency,
+            # Same backup/recovery flow as a normal rebuild: a corrupt or
+            # refused container is preserved before the restore drops it.
+            before_drop=lambda label: self.recover_incompatible([label]),
         )
         for label, target_stats in stats.items():
             await self.commit_baseline(label, target_stats)

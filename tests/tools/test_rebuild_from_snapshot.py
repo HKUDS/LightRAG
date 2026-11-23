@@ -2,12 +2,14 @@
 
 Each test pins one clause of the snapshot-restore rules: exact source/vector
 fidelity with zero embedding calls, idempotent re-run, fail-before-mutation
-on missing tag/table/dimension/vector, unsupported-backend refusal, and the
-interrupted-restore heal-by-rerun path. CLI tests drive the real
+on missing tag/table/dimension/vector/model, unsupported-backend refusal,
+remote credential dialects, the corrupt-target private backup before drop,
+and the interrupted-restore heal-by-rerun path. CLI tests drive the real
 ``lightrag-rebuild-vdb --from-snapshot`` entry point.
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import lancedb
@@ -24,7 +26,7 @@ from lightrag.kg.networkx_impl import NetworkXStorage
 from lightrag.kg.noop_vector_db_impl import NoopVectorDBStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.namespace import NameSpace
-from lightrag.tools.rebuild_vdb import main
+from lightrag.tools.rebuild_vdb import RebuildTool, SnapshotSource, main
 from lightrag.tools.snapshot_restore import (
     RestoreError,
     open_snapshot,
@@ -221,10 +223,11 @@ async def test_open_snapshot_dimension_mismatch_fails_loud(tmp_path):
         open_snapshot(dest, "snap", dim=DIM + 1)
 
 
-async def test_open_snapshot_null_vector_fails_loud(tmp_path):
-    dest = str(tmp_path / "hand-lake")
+def hand_built_snapshot(dest: str, *, model_name: str, entity_vector) -> None:
+    """A minimal tagged lake with independent rows; the schema metadata carries
+    ``model_name`` (empty string = unknown model, as older exports wrote)."""
     db = lancedb.connect(dest)
-    schemas = _schemas(DIM, MODEL_NAME)
+    schemas = _schemas(DIM, model_name)
     vector = expected_vector("x")
     rows = {
         "docs": [{"id": "doc-1", "content": "body"}],
@@ -233,7 +236,7 @@ async def test_open_snapshot_null_vector_fails_loud(tmp_path):
                     "embedding": vector}],
         "entities": [{"id": "ent-x", "entity_name": "X", "entity_type": "person",
                       "description": "d", "source_id": "chunk-1", "file_path": "a.txt",
-                      "embedding": None}],
+                      "embedding": entity_vector}],
         "relations": [{"id": "rel-x", "src_id": "X", "tgt_id": "Y", "keywords": "k",
                        "description": "d", "source_id": "chunk-1", "weight": 1.0,
                        "file_path": "a.txt", "embedding": vector}],
@@ -242,8 +245,81 @@ async def test_open_snapshot_null_vector_fails_loud(tmp_path):
         table = db.create_table(name, data=pa.Table.from_pylist(data, schema=schemas[name]))
         table.tags.create("snap", table.version)
 
+
+async def test_open_snapshot_null_vector_fails_loud(tmp_path):
+    dest = str(tmp_path / "hand-lake")
+    hand_built_snapshot(dest, model_name=MODEL_NAME, entity_vector=None)
     with pytest.raises(RestoreError, match="without a stored vector"):
         open_snapshot(dest, "snap", dim=DIM)
+
+
+@pytest.mark.parametrize("target_model", ["other-model", MODEL_NAME],
+                         ids=["mismatch", "match"])
+async def test_open_snapshot_embedding_model_identity(tmp_path, target_model):
+    """A recorded model that differs from the target refuses before any
+    mutation; the same model opens the full snapshot."""
+    dest, _ = await seeded_snapshot(tmp_path)
+    if target_model == MODEL_NAME:
+        tables = open_snapshot(dest, "snap", dim=DIM, model_name=target_model)
+        assert {name: table.count_rows() for name, table in tables.items()} == {
+            "docs": len(DOCS), "chunks": len(CHUNKS),
+            "entities": len(NODES), "relations": len(EDGES)}
+    else:
+        with pytest.raises(RestoreError, match="incompatible query space"):
+            open_snapshot(dest, "snap", dim=DIM, model_name=target_model)
+
+
+async def test_open_snapshot_unknown_model_metadata_warns_but_accepts(
+        tmp_path, lightrag_log_records):
+    """Empty model metadata (older snapshot) cannot be verified: accept with
+    a warning rather than breaking backward compatibility."""
+    dest = str(tmp_path / "hand-lake")
+    hand_built_snapshot(dest, model_name="", entity_vector=expected_vector("x"))
+    tables = open_snapshot(dest, "snap", dim=DIM, model_name=MODEL_NAME)
+    assert set(tables) == {"docs", "chunks", "entities", "relations"}
+    assert any(r.levelno == logging.WARNING and "cannot be verified" in r.getMessage()
+               for r in lightrag_log_records)
+
+
+@pytest.mark.parametrize("uri,expected_options", [
+    ("s3://bucket/lake", {"aws_access_key_id": "oss-ak",
+                          "aws_secret_access_key": "oss-sk",
+                          "virtual_hosted_style_request": "true",
+                          "aws_region": "us-east-1"}),
+    ("oss://bucket/lake", {"access_key_id": "oss-ak",
+                           "access_key_secret": "oss-sk",
+                           "region": "cn-hangzhou"}),
+], ids=["s3", "oss"])
+async def test_snapshot_restore_remote_credentials_and_model_wiring(
+        uri, expected_options, monkeypatch):
+    """The tool must hand open_snapshot the dest-translated credential dialect
+    (s3 -> aws_*, oss -> native) and the configured model name. OSS creds are
+    set for both cases: without dest translation s3:// wrongly receives the
+    native keys and oss:// wrongly receives None."""
+    for var in ("OSS_DEFAULT_SECRET_ID", "OSS_DEFAULT_SECRET_KEY",
+                "OSS_DEFAULT_SECRET_TOKEN", "oss_access_ak", "oss_access_sk",
+                "OSS_ENDPOINT", "oss_endpoint", "OSS_REGION",
+                "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                "AWS_ENDPOINT_URL", "AWS_ENDPOINT", "AWS_REGION"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("OSS_ACCESS_KEY_ID", "oss-ak")
+    monkeypatch.setenv("OSS_ACCESS_KEY_SECRET", "oss-sk")
+    tool = RebuildTool(snapshot=SnapshotSource(uri=uri, tag="snap"))
+    tool.embedding_func = EmbeddingFunc(embedding_dim=DIM, func=CountingEmbedder(),
+                                        model_name=MODEL_NAME)
+    captured = {}
+
+    def capture_open(dest, tag, **kwargs):
+        captured.update(kwargs, dest=dest, tag=tag)
+        raise RestoreError("capture-stop")
+
+    monkeypatch.setattr("lightrag.tools.snapshot_restore.open_snapshot", capture_open)
+    with pytest.raises(RestoreError, match="capture-stop"):
+        await tool._run_snapshot_restore()
+    assert captured["dest"] == uri
+    assert captured["storage_options"] == expected_options
+    assert captured["model_name"] == MODEL_NAME
+    assert captured["dim"] == DIM
 
 
 async def test_restore_missing_storages_refused(tmp_path):
@@ -355,6 +431,45 @@ def test_cli_restores_snapshot_into_fresh_workspace(tmp_path, monkeypatch, capsy
     main(["--from-snapshot", dest, "--tag", "snap", "--batch-size", "2", "--concurrency", "1"])
 
     assert "Snapshot restore embedding calls: 0" in capsys.readouterr().out
+
+    async def read_back():
+        initialize_share_data()
+        embedder = CountingEmbedder()
+        embedder.armed = True
+        target, _ = await build_target(tmp_path, embedder)
+        await assert_restored_matches_seed(target)
+        assert embedder.export_calls == 0
+        for storage in (target.full_docs, target.text_chunks,
+                        target.chunk_entity_relation_graph, target.entities_vdb,
+                        target.relationships_vdb, target.chunks_vdb):
+            await storage.finalize()
+        finalize_share_data()
+
+    asyncio.run(read_back())
+
+
+def test_cli_snapshot_restore_backs_up_corrupt_target_before_drop(
+        tmp_path, monkeypatch, capsys):
+    """A corrupt vector target setup tolerated must be privately backed up
+    before the restore drops it -- the snapshot may lack rows the corrupt
+    file still holds, so dropping it unbacked destroys the only copy."""
+    dest, _ = asyncio.run(seeded_snapshot(tmp_path))
+    finalize_share_data()
+    asyncio.run(register_workspace(tmp_path))
+    _cli_env(monkeypatch, tmp_path)
+    corrupt = tmp_path / "restored" / "vdb_entities.json"
+    corrupt.parent.mkdir(parents=True, exist_ok=True)
+    original = b'{"matrix": "truncated'
+    corrupt.write_bytes(original)
+
+    main(["--from-snapshot", dest, "--tag", "snap", "--batch-size", "2", "--concurrency", "1"])
+
+    out = capsys.readouterr().out
+    assert "corrupt file preserved at" in out
+    assert "Snapshot restore embedding calls: 0" in out
+    backups = list((tmp_path / "restored").glob("vdb_entities.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
 
     async def read_back():
         initialize_share_data()

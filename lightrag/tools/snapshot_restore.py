@@ -5,8 +5,8 @@ Rules for callers:
   vector storages are disposable derived indexes. Run against a QUIESCED
   workspace (no writers); the rebuild CLI installs a counted fail-loud
   embedding stub, and any embed attempt aborts the run.
-- ``tables`` must come from ``open_snapshot``, which verifies tag, dimension
-  and vector completeness BEFORE any mutation.
+- ``tables`` must come from ``open_snapshot``, which verifies tag, dimension,
+  vector completeness and embedding-model identity BEFORE any mutation.
 - Vectors come from the snapshot's embedding columns, seeded into the
   deferred-embedding buffer's vector cache (FileBackedSnapshotContract,
   *Deferred-embedding protocol*); the embedding function is never called.
@@ -15,6 +15,16 @@ Rules for callers:
 - Sources of truth are restored first (full_docs/text_chunks KV + graph),
   then each vector target is dropped and rewritten. An interrupted run leaves
   a partial index that a re-run heals (idempotent); the snapshot loses nothing.
+- ``before_drop(label)`` runs immediately before each vector target's drop.
+  The rebuild CLI wires it to the corrupt/incompatible backup-recovery flow
+  (``recover_incompatible``), so a refused container is privately backed up
+  before it is destroyed; a caller that supplies no hook must not point this
+  at a container whose unreadable rows are the only copy.
+- Prefer an EMPTY target. Over a populated workspace the KV/graph upserts are
+  additive while vector targets are replaced, so pre-existing source rows
+  absent from the tag survive as orphans without vectors -- retention, not
+  loss of snapshot content (Consistency without transactions). A same-snapshot
+  re-run stays idempotent; there is no rejection of a populated target.
 - Residues: doc_status, the LLM cache and the chunk-tracking/recovery-anchor
   KV namespaces are not in the snapshot; a restored workspace serves queries,
   but delete/retry lack their anchors until re-ingestion. README_REBUILD_VDB.md.
@@ -23,7 +33,7 @@ Rules for callers:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 import lancedb
@@ -39,6 +49,10 @@ from lightrag.utils import logger
 
 if TYPE_CHECKING:
     from lightrag import LightRAG
+
+# Schema-metadata key the cold export stamps on every table (lancedb_impl
+# _schemas); empty bytes when the exporting model was unknown.
+_EMBEDDING_MODEL_KEY = b"lightrag.embedding_model"
 
 # Content-less chunks legitimately carry no vector; every other row must.
 _NULL_VECTOR_FILTERS = {
@@ -56,11 +70,16 @@ class RestoreError(RuntimeError):
 
 
 def open_snapshot(
-    dest: str, tag: str, *, dim: int, storage_options: dict[str, str] | None = None
+    dest: str, tag: str, *, dim: int, model_name: str | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> dict[str, LanceTable]:
     """Open the four snapshot tables checked out at ``tag``, fully validated.
     Raises ``RestoreError`` (blank tag, missing table/tag, empty table, dim
-    mismatch, missing vector) before the caller may mutate anything.
+    mismatch, missing vector, embedding-model mismatch) before the caller may
+    mutate anything. ``model_name`` is the target's embedding model: a recorded
+    snapshot model that differs is an incompatible query space and refuses;
+    an unrecorded model (older snapshot) or an unnamed target only warns,
+    because the identity cannot be verified either way.
     """
     if not isinstance(tag, str) or not tag.strip():
         raise RestoreError("tag must be a non-empty string")
@@ -85,6 +104,20 @@ def open_snapshot(
         missing = tables[name].count_rows(filter=null_filter)
         if missing:
             raise RestoreError(f"snapshot table {name!r} has {missing} vector-eligible row(s) without a stored vector at tag {tag!r}")
+    for name, table in tables.items():
+        recorded = (table.schema.metadata or {}).get(_EMBEDDING_MODEL_KEY, b"").decode()
+        if recorded and model_name and recorded != model_name:
+            raise RestoreError(
+                f"snapshot table {name!r} was embedded with model {recorded!r}, "
+                f"configured embedding model is {model_name!r}; vectors from another "
+                "embedding space are an incompatible query space"
+            )
+        if not recorded or not model_name:
+            logger.warning(
+                f"Snapshot table {name!r}: embedding model cannot be verified "
+                f"(snapshot={recorded!r}, target={model_name!r}); proceeding on the "
+                "operator's assurance that the spaces match"
+            )
     return tables
 
 
@@ -115,11 +148,15 @@ def _chunk_payload(row: dict[str, Any], global_config: dict[str, Any]) -> dict[s
 async def restore_workspace_snapshot(
     tables: dict[str, LanceTable], rag: LightRAG, global_config: dict[str, Any], *,
     batch_size: int = 500, concurrency: int = 3,
+    before_drop: Callable[[str], Awaitable[None]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Restore sources + the three vector targets; returns per-target stats.
     Caller rules are in the module docstring. ``rag`` may be any object
-    exposing the six INITIALIZED storages and ``embedding_func``. Failures
-    propagate; nothing is swallowed.
+    exposing the six INITIALIZED storages and ``embedding_func``.
+    ``before_drop(label)`` is awaited right before that target's drop; the
+    rebuild CLI wires it to the backup-recovery flow so corrupt or refused
+    containers are preserved before destruction. Failures propagate; nothing
+    is swallowed.
     """
     graph = rag.chunk_entity_relation_graph
     storages = (rag.full_docs, rag.text_chunks, graph, rag.entities_vdb, rag.relationships_vdb, rag.chunks_vdb)
@@ -150,6 +187,8 @@ async def restore_workspace_snapshot(
                              build_payload) -> dict[str, Any]:
         async with semaphore:
             stats = _new_stats(label, table.count_rows())
+            if before_drop is not None:
+                await before_drop(label)
             await _drop_vdb(vdb, label)
             for rows in _pages(table, batch_size):
                 vectors = {r["id"]: r["embedding"] for r in rows if r["embedding"] is not None}
