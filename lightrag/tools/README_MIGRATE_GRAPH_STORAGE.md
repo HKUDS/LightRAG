@@ -44,6 +44,18 @@ variables already set in the shell, so run it from the directory the server
 is started from, with the same environment, or it may connect to a different
 database or workspace than the server uses.
 
+In a Docker Compose deployment, run it in a one-off container of the
+`lightrag` service, which gets the server's mounted `.env` and the service's
+`environment:` block:
+
+```bash
+docker compose -f docker-compose.final.yml run --rm --no-deps lightrag \
+  python -m lightrag.tools.migrate_graph_storage
+```
+
+[DockerDeployment.md](../../docs/DockerDeployment.md#migrate-from-pggraphstorage-to-pgtablegraphstorage)
+has the whole Compose procedure, from the backup to the image switch.
+
 The tool only reads its configuration and never writes it: the server keeps
 using whatever `LIGHTRAG_GRAPH_STORAGE` says until you change it yourself —
 see [Switching the server to the new backend](#switching-the-server-to-the-new-backend).
@@ -168,10 +180,15 @@ AGE graph. Switch it yourself, with every LightRAG writer still stopped:
 The source graph is only read, never modified or deleted, so the AGE data
 stays where it was. Rolling back means setting `LIGHTRAG_GRAPH_STORAGE` back
 to `PGGraphStorage` — but anything written after the switch exists only in
-the new tables, so roll back before the server ingests new documents. Once
-you no longer need the AGE graph, removing it (and moving off the AGE-enabled
-PostgreSQL image, see [DockerDeployment.md](../../docs/DockerDeployment.md))
-is a separate, manual step.
+the new tables, so roll back before the server ingests new documents.
+
+Once you no longer need the AGE graph, remove it yourself, **before** moving
+off the AGE-enabled PostgreSQL image. PostgreSQL still starts on an image
+without AGE while the graph is in the database, but the graph tables use
+AGE's column type, so every later `pg_dump` of the database fails with
+`could not access file "age"`. The commands, and the recovery for an image
+that was already switched, are in
+[DockerDeployment.md](../../docs/DockerDeployment.md#migrate-from-pggraphstorage-to-pgtablegraphstorage).
 
 ## What makes it refuse
 
