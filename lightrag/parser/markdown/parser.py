@@ -81,6 +81,7 @@ from lightrag.parser.markdown.raw_cache import (
     native_md_options_signature,
 )
 from lightrag.parser.native_base import NativeExtractRuntime, NativeParserBase
+from lightrag.parser.param_schema import _parse_bool
 from lightrag.parser.text_decoding import decode_text_bytes
 from lightrag.utils import logger
 
@@ -302,7 +303,19 @@ def _env_bool(key: str, default: bool) -> bool:
     raw = os.getenv(key)
     if raw is None:
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on", "t", "y")
+    if not raw.strip():
+        return False
+    parsed = _parse_bool(raw)
+    if parsed is not None:
+        return parsed
+    logger.warning(
+        "Environment variable %s=%r is not a recognized boolean "
+        "(expected one of 1/true/yes/on/t/y/0/false/no/off/f/n), using default %r",
+        key,
+        raw,
+        default,
+    )
+    return default
 
 
 def _env_int(key: str, default: int) -> int:

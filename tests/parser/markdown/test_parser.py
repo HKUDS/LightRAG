@@ -572,6 +572,36 @@ def test_remote_image_downloaded_when_enabled(monkeypatch):
     assert asset["data"] == _PNG_BYTES
 
 
+@pytest.mark.parametrize(
+    ("env_value", "expected_kinds", "warn_keys"),
+    [
+        pytest.param("ture", ["local"], {"NATIVE_MD_IMAGE_DOWNLOAD_ENABLED"}),
+        pytest.param("n", [], set()),
+        pytest.param("", [], set()),
+    ],
+)
+def test_remote_image_download_env_bool(
+    env_value, expected_kinds, warn_keys, monkeypatch, lightrag_log_records
+):
+    monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", env_value)
+    _patch_download(monkeypatch)
+
+    _, _, meta = _make_parser()._extract_text(
+        "# H\n\n![x](http://host/y.png)\n", bundle_root=None
+    )
+
+    assert [
+        drawing["kind"] for drawing in meta["md_drawings"].values()
+    ] == expected_kinds
+    bool_warnings = [
+        record
+        for record in lightrag_log_records
+        if "is not a recognized boolean" in record.msg
+    ]
+    assert {record.args[0] for record in bool_warnings} == warn_keys
+    assert len(bool_warnings) == len(warn_keys)
+
+
 def test_remote_image_failure_kept_external_by_default(monkeypatch):
     monkeypatch.setenv("NATIVE_MD_IMAGE_DOWNLOAD_ENABLED", "true")
     monkeypatch.delenv("NATIVE_MD_IMAGE_DOWNLOAD_REQUIRED", raising=False)
