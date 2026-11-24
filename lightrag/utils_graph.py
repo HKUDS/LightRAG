@@ -1794,10 +1794,31 @@ async def _edit_entity_impl(
     # the acceptable one: a shrink failure skips this flush, leaving vector
     # records a re-issued edit rewrites and `lightrag-rebuild-vdb` restores,
     # rather than a tracking row nothing but the offline tool can heal.
-    await _persist_graph_updates(
-        entities_vdb=entities_vdb,
-        relationships_vdb=relationships_vdb,
-    )
+    #
+    # A rename that fails here raises `VectorStorageConsistencyError`, as the
+    # final flush of `_merge_entities_impl` does: the rename is durable by now,
+    # and the retry a bare error invites is refused because the new name
+    # already exists. A non-rename edit keeps the bare error, since re-issuing
+    # it rewrites these records. On a deferred-embedding backend (NanoVectorDB,
+    # the default) the embedding call runs in this flush, not in the upsert
+    # above, so the wrapper around that upsert never sees it.
+    try:
+        await _persist_graph_updates(
+            entities_vdb=entities_vdb,
+            relationships_vdb=relationships_vdb,
+        )
+    except Exception as e:
+        if not is_renaming:
+            raise
+        raise VectorStorageConsistencyError(
+            f"Vector storage flush failed after renaming entity "
+            f"`{original_entity_name}` to `{entity_name}`: {e}. The rename is "
+            "durable -- the knowledge graph (the authoritative source) already "
+            "carries the new name, so re-issuing the rename is refused -- but the "
+            "vector storage may not mirror it yet. No data is lost. Stop the "
+            "LightRAG server and run the offline rebuild tool "
+            "(lightrag-rebuild-vdb) to restore consistency."
+        ) from e
 
     logger.info(f"Entity Edit: `{entity_name}` successfully updated")
     return await get_entity_info(
