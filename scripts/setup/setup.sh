@@ -1162,6 +1162,9 @@ select_storage_backends() {
     log_info "To move to PGTableGraphStorage without indexing the documents again," \
       "stop LightRAG and run 'python -m lightrag.tools.migrate_graph_storage --apply'" \
       "while the AGE-enabled PostgreSQL is still running, then choose it here."
+    log_info "For a Docker Compose deployment, follow 'Migrate from PGGraphStorage to" \
+      "PGTableGraphStorage' in docs/DockerDeployment.md: it runs the tool in a" \
+      "one-off container and removes the AGE graph before the PostgreSQL image is switched."
   fi
 
   while true; do
