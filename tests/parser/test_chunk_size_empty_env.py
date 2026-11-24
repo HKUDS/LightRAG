@@ -176,3 +176,24 @@ def test_malformed_chunk_size_envs_raise_in_lightrag_init(
             embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
             llm_model_func=lambda *a, **k: "ok",
         )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        pytest.param("\n\n", "\n\n", id="paragraph-break"),
+        pytest.param("\t", "\t", id="tab"),
+        pytest.param("|", "|", id="visible"),
+        pytest.param("", None, id="blank-slot"),
+        pytest.param(" None ", None, id="literal-none"),
+    ],
+)
+def test_chunk_f_split_by_character_keeps_whitespace_separators(
+    env_value: str, expected: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``CHUNK_F_SPLIT_BY_CHARACTER="\n\n"`` in .env reaches the process as two
+    # newlines; dropping it as blank silently turned paragraph splitting off.
+    monkeypatch.setenv("CHUNK_F_SPLIT_BY_CHARACTER", env_value)
+    cfg = default_chunker_config()["fixed_token"]
+    assert cfg["split_by_character"] == expected
