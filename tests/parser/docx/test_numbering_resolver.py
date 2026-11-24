@@ -283,7 +283,9 @@ def test_ilvl_outside_ooxml_domain_is_rejected_not_looped() -> None:
     assert r.last_abstract_id is None
 
 
-@pytest.mark.parametrize("ilvl", [-1, 9, 999999])
+# One ``0 <= ilvl <= 8`` check; a large looped value is
+# test_ilvl_outside_ooxml_domain_is_rejected_not_looped.
+@pytest.mark.parametrize("ilvl", [-1, 9])
 @pytest.mark.parametrize("num_id", ["100", None])
 def test_out_of_range_ilvl_values_are_rejected(ilvl, num_id) -> None:
     r = _resolver()
@@ -384,9 +386,14 @@ def test_letter_labels_preserve_ordinals_after_first_alphabet(num_fmt, lvl_text)
             assert label == lvl_text.replace("%1", letters)
 
 
-@pytest.mark.parametrize("num_fmt", ["lowerLetter", "upperLetter"])
-@pytest.mark.parametrize("count", [-1, 0, 79, 2147483647])
-@pytest.mark.parametrize("override", [False, True])
+# The start source only picks the counter before the shared range and
+# ``_to_alpha`` checks: every count on lowerLetter from the abstract start,
+# plus one case for the override source and one for upperLetter.
+@pytest.mark.parametrize(
+    ("num_fmt", "count", "override"),
+    [("lowerLetter", count, False) for count in (0, 79, 2147483647)]
+    + [("lowerLetter", 79, True), ("upperLetter", 79, False)],
+)
 def test_large_letter_starts_fall_back_before_allocating(num_fmt, count, override):
     """Every count here is outside ``_to_alpha``'s 1-78 domain — below it as well
     as above — so each falls back to decimal AND is recorded."""
@@ -521,9 +528,14 @@ def test_provenance_is_none_when_nothing_renders() -> None:
     assert r.last_label_format is None
 
 
-@pytest.mark.parametrize("lvl_text", ["(%1)", "%1)"])
-@pytest.mark.parametrize("num_fmt", ["lowerRoman", "upperRoman"])
-@pytest.mark.parametrize("count", [1, 2, 3])
+# The classifier's full 1-39 sweep over both formats and paren shapes is
+# test_parenthesized_roman_list_full_domain (test_smart_heading_style_key.py);
+# here, the resolver's wiring at 2 ("ii", which reads as alphabetic 35 without
+# the carried numFmt), once per format and per paren shape.
+@pytest.mark.parametrize(
+    ("lvl_text", "num_fmt", "count"),
+    [("(%1)", "lowerRoman", 2), ("%1)", "upperRoman", 2)],
+)
 def test_parenthesized_roman_lists_keep_roman_ordinals(lvl_text, num_fmt, count):
     """The widened paren patterns accept repeated letters, so "(ii)" from a
     Roman list reaches them. _P_ROMAN cannot claim it — it only matches a
@@ -561,10 +573,25 @@ def test_japanese_counting_renders_chinese_numerals() -> None:
     assert r.unsupported_formats == set()
 
 
-@pytest.mark.parametrize("num_fmt", _COUNTING_FORMATS)
+# All four families convert through the same ``_to_chinese``, so the values
+# are swept on japaneseCounting (the regression's format) and each other family
+# keeps 10, the value that tells positional counting from digit-by-digit.
 @pytest.mark.parametrize(
-    ("count", "expected"),
-    [(1, "一"), (2, "二"), (10, "十"), (11, "十一"), (20, "二十"), (99, "九十九")],
+    ("num_fmt", "count", "expected"),
+    [
+        ("japaneseCounting", count, expected)
+        # 1, 2 and 11 are test_japanese_counting_renders_chinese_numerals.
+        for count, expected in (
+            (10, "十"),
+            (20, "二十"),
+            (99, "九十九"),
+        )
+    ]
+    + [
+        (num_fmt, 10, "十")
+        for num_fmt in _COUNTING_FORMATS
+        if num_fmt != "japaneseCounting"
+    ],
 )
 def test_counting_families_are_positional(num_fmt, count, expected) -> None:
     """10 must render 十, not 一〇: only values past 9 tell a positional counting
@@ -577,26 +604,14 @@ def test_counting_families_are_positional(num_fmt, count, expected) -> None:
     [
         (1, "一"),
         (10, "一〇"),
-        (11, "一一"),
         (20, "二〇"),
         (99, "九九"),
-        (100, "一〇〇"),
     ],
 )
 def test_ideograph_digital_is_digit_by_digit(count, expected) -> None:
     """``ideographDigital`` is NOT a counting system: per [MS-DOCX] 1/10/100 are
     U+4E00 / U+4E00U+3007 / U+4E00U+3007U+3007 (一 / 一〇 / 一〇〇)."""
     assert _label(_fmt_resolver("ideographDigital", "%1"), count) == expected
-
-
-def test_ideograph_digital_does_not_reuse_the_counting_converter() -> None:
-    """Pins the two families apart, so ideographDigital cannot be "simplified"
-    into the counting table: they only diverge from 10 upward."""
-    assert NumberingResolver._to_ideograph_digital(10) == "一〇"
-    assert NumberingResolver._to_chinese(10) == "十"
-    assert NumberingResolver._to_ideograph_digital(10) != NumberingResolver._to_chinese(
-        10
-    )
 
 
 def test_unknown_format_degrades_to_decimal_but_is_reported() -> None:
@@ -705,7 +720,12 @@ def test_ideograph_traditional_renders_the_ten_stems() -> None:
     assert r.out_of_range_formats == set()
 
 
-@pytest.mark.parametrize("count", [-1, 0, 11, 21])
+@pytest.mark.parametrize(
+    "count",
+    [
+        11,
+    ],
+)
 def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
     """Regression for #3934: ``(n - 1) % 10`` made item 11 render 甲 like item 1,
     and kept zero / negative counts inside the stem string. Both directions
@@ -718,8 +738,13 @@ def test_ideograph_traditional_falls_back_instead_of_wrapping(count) -> None:
     assert warnings == {"numbering_out_of_range_formats": 1}
 
 
-@pytest.mark.parametrize("num_fmt", sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS))
-@pytest.mark.parametrize("count", [0, -1])
+# The out-of-range check is one ``count < 1`` test shared by every format, so
+# every format is checked at 0 and the first one also at -1.
+@pytest.mark.parametrize(
+    ("num_fmt", "count"),
+    [(num_fmt, 0) for num_fmt in sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS)]
+    + [(sorted(NumberingResolver.POSITIVE_DOMAIN_FORMATS)[0], -1)],
+)
 def test_non_positive_counts_are_recorded_for_every_positive_domain_format(
     num_fmt, count
 ) -> None:

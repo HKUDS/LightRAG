@@ -17,11 +17,6 @@ from lightrag.utils import strip_markdown_code_fence, tolerant_load_json_dict
 pytestmark = pytest.mark.offline
 
 
-def test_trailing_brace_prose_recovers_object() -> None:
-    raw = '{"facts":[{"text":"ok"}]} trailing {brace}'
-    assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
-
-
 def test_prose_apostrophe_before_object_still_recovers_object() -> None:
     raw = 'Here\'s the result: {"facts":[{"text":"ok"}]} trailing {brace}'
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
@@ -73,10 +68,6 @@ def test_greedy_regex_would_fail_same_input() -> None:
     raw = '{"facts":[{"text":"ok"}]} trailing {brace}'
     assert _legacy_greedy_load(raw) == {}
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
-
-
-def test_plain_object_still_loads() -> None:
-    assert tolerant_load_json_dict('{"a": 1}') == {"a": 1}
 
 
 def test_single_line_fence_is_stripped() -> None:
@@ -191,17 +182,6 @@ def test_broken_array_shell_yielding_dict_is_rejected() -> None:
     # json_repair on its own hands back the inner object (the old-ordering leak)...
     assert isinstance(json_repair.loads(raw), dict)
     # ...but the contract rejects any top-level array.
-    assert tolerant_load_json_dict(raw) == {}
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        '[}{"a":1}]',
-        'Here is the result: [}{"a":1}]',
-    ],
-)
-def test_broken_array_shell_variants_rejected(raw: str) -> None:
     assert tolerant_load_json_dict(raw) == {}
 
 

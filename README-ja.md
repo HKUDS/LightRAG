@@ -46,9 +46,12 @@
 
 </div>
 
-<div align="center" style="margin: 30px 0;">
-  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
-</div>
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
+    <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="LightRAG の GitHub Star アカウントが自己申告した所属。掲載機関は 2026 年 11 月 23 日時点で確認された 304 機関から選んだものです。Star は個人によるものです。">
+  </picture>
+</p>
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
@@ -596,7 +599,7 @@ LightRAG は、農業、コンピュータサイエンス、法律、混合ド�
 
 所有元のチャンクが存在せず、現存するどのチャンクからも参照されていない LLM キャッシュレコードを削除します。これらのレコードはドキュメントの削除では消去されず、抽出プロンプトとその結果を保持しています。既定では報告のみを行い、`--apply` を指定すると、厳密な読み取りでチャンクが存在しないことを確認してから削除します。
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 default モードのキャッシュ（抽出・要約・マルチモーダル解析・スマート見出し判定）を KV ストレージバックエンド間で移行し、workspace の分離を保ちます。
 

@@ -87,7 +87,10 @@ async def test_client_config_headers_reach_requests(monkeypatch, operation):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "configs", [None, {}, {"default_headers": None}, {"default_headers": {}}]
+    # None takes the ``client_configs is None`` branch; every other empty
+    # shape reaches the same ``.get("default_headers") or {}``.
+    "configs",
+    [None, {"default_headers": None}],
 )
 async def test_missing_custom_headers_keep_lightrag_defaults(monkeypatch, configs):
     monkeypatch.setenv("DASHSCOPE_WORKSPACE_ID", "  environment-workspace  ")

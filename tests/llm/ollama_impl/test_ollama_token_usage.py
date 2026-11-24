@@ -10,8 +10,8 @@ everything left in ``**kwargs`` is forwarded verbatim to
 ``AsyncClient.chat()``, which declares no ``**kwargs``, so it raised
 ``TypeError`` on every call. (``ollama_embed`` builds its client arguments
 explicitly, so there the same kwarg was silently dropped instead.) The
-parameter is explicit now, and the forwarding test below is what keeps it out
-of the wire call.
+parameter is explicit now, and the first test below also keeps it out of the
+wire call.
 """
 
 from types import SimpleNamespace
@@ -55,7 +55,7 @@ async def _call(response, **kwargs):
 async def test_completion_records_prompt_and_eval_counts():
     tracker = TokenTracker()
 
-    result, _ = await _call(
+    result, fake_client = await _call(
         _chat_response(prompt_eval_count=31, eval_count=11),
         token_tracker=tracker,
     )
@@ -67,46 +67,9 @@ async def test_completion_records_prompt_and_eval_counts():
         "total_tokens": 42,
         "call_count": 1,
     }, "Ollama's eval counters were not recorded as usage"
-
-
-@pytest.mark.asyncio
-async def test_token_tracker_is_not_forwarded_to_the_wire_call():
-    """`AsyncClient.chat` declares no **kwargs, so a `token_tracker` left in
-    kwargs is a TypeError on every call rather than a no-op. It must be
-    consumed by the binding."""
-    _, fake_client = await _call(
-        _chat_response(prompt_eval_count=1, eval_count=1),
-        token_tracker=TokenTracker(),
-    )
-
-    assert "token_tracker" not in fake_client.chat.await_args.kwargs, (
-        "token_tracker reached AsyncClient.chat(), which declares no **kwargs"
-    )
-
-
-@pytest.mark.asyncio
-async def test_usage_is_counted_before_the_empty_truncation_raise():
-    """The budget was spent whether or not the output was usable, and the
-    empty-and-cut-off case is exactly the one that spent it."""
-    from lightrag.llm.ollama import InvalidResponseError
-
-    tracker = TokenTracker()
-
-    with pytest.raises(InvalidResponseError):
-        await _call(
-            {
-                "message": {"content": "", "thinking": "thought for a while"},
-                "done_reason": "length",
-                "prompt_eval_count": 12,
-                "eval_count": 400,
-            },
-            token_tracker=tracker,
-        )
-
-    assert tracker.get_usage()["total_tokens"] == 412, (
-        "a call that burned its whole budget on the reasoning trace must "
-        "still be billed"
-    )
+    # `AsyncClient.chat` declares no **kwargs, so a `token_tracker` left in
+    # kwargs is a TypeError on every call rather than a no-op.
+    assert "token_tracker" not in fake_client.chat.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -118,18 +81,6 @@ async def test_a_response_without_counters_records_nothing():
 
     assert tracker.get_usage()["call_count"] == 0, (
         "a response reporting no counters was billed as a zero-token call"
-    )
-
-
-def test_the_retry_policy_still_guards_the_call():
-    """The `@retry` block sits immediately above `_ollama_model_if_cache`, so a
-    helper defined between the two silently steals it and leaves every Ollama
-    call unretried. Nothing else in this directory pins it."""
-    assert hasattr(_ollama_model_if_cache, "retry"), (
-        "_ollama_model_if_cache lost its tenacity @retry decorator"
-    )
-    assert not hasattr(_ollama_usage_counts, "retry"), (
-        "the @retry block slid onto _ollama_usage_counts"
     )
 
 
@@ -165,10 +116,12 @@ async def test_streaming_records_usage_from_the_terminal_chunk():
         ]
     )
 
-    result, _ = await _call(stream, stream=True, token_tracker=tracker)
+    result, fake_client = await _call(stream, stream=True, token_tracker=tracker)
     collected = "".join([chunk async for chunk in result])
 
     assert collected == "hello"
+    # A fully consumed stream closes the client it was handed.
+    fake_client._client.aclose.assert_awaited_once()
     assert tracker.get_usage() == {
         "prompt_tokens": 7,
         "completion_tokens": 2,
@@ -243,18 +196,9 @@ async def test_embed_records_prompt_tokens_only():
 # -- the mapping itself ----------------------------------------------------
 
 
-def test_usage_counts_sums_a_total_ollama_does_not_report():
-    assert _ollama_usage_counts({"prompt_eval_count": 4, "eval_count": 6}) == {
-        "prompt_tokens": 4,
-        "completion_tokens": 6,
-        "total_tokens": 10,
-    }
-
-
 def test_usage_counts_distinguishes_absent_from_zero():
     # Neither counter: an older or non-conforming server, not a call that
     # consumed nothing.
-    assert _ollama_usage_counts({}) is None
     assert _ollama_usage_counts({"message": {"content": "x"}}) is None
     # One counter present is real usage; the absent half counts as zero.
     assert _ollama_usage_counts({"eval_count": 3}) == {

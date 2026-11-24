@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 
 from lightrag.operate import _process_json_extraction_result
-from lightrag.utils import tolerant_load_json_dict
 
 pytestmark = pytest.mark.offline
 
@@ -51,10 +50,3 @@ async def test_process_json_extraction_top_level_array_yields_nothing() -> None:
     )
     assert nodes == {}
     assert edges == {}
-
-
-def test_helper_recovers_same_trailing_brace_object() -> None:
-    """Helper-level companion to the wiring test above."""
-    recovered = tolerant_load_json_dict(_TRAILING_BRACE_JSON)
-    assert recovered["entities"][0]["name"] == "Alice"
-    assert recovered["relationships"][0]["target"] == "Acme"

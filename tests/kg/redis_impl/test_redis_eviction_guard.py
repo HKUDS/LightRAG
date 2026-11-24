@@ -94,13 +94,6 @@ def _kv_storage(workspace: str = "evict-ws"):
 
 
 @pytest.mark.asyncio
-async def test_noeviction_server_initializes(fake):
-    storage = _doc_status_storage()
-    await storage.initialize()
-    assert storage._initialized is True
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("policy", ["allkeys-lru", "allkeys-lfu", "allkeys-random"])
 async def test_allkeys_policy_with_a_memory_cap_refuses_to_start(fake, policy):
     """Every allkeys-* policy can evict a TTL-less key, so all of them refuse."""
@@ -112,28 +105,19 @@ async def test_allkeys_policy_with_a_memory_cap_refuses_to_start(fake, policy):
 
 
 @pytest.mark.asyncio
-async def test_full_docs_kv_is_guarded_too(fake):
-    """full_docs is a system of record as much as doc_status is."""
-    fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
-    storage = _kv_storage()
-    with pytest.raises(StorageControlPlaneError, match="evicting cache"):
-        await storage.initialize()
+async def test_rejected_policy_still_refuses_later_storages(fake, monkeypatch):
+    """A failed startup must not let later instances bypass the same policy.
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("first_factory", [_doc_status_storage, _kv_storage])
-@pytest.mark.parametrize("retry_factory", [_doc_status_storage, _kv_storage])
-async def test_rejected_policy_still_refuses_later_storages(
-    fake, monkeypatch, first_factory, retry_factory
-):
-    """A failed startup must not let later instances bypass the same policy."""
+    The first storage is a full_docs KV and the retry a doc_status store, so
+    this one case also pins that both systems of record run the guard.
+    """
     monkeypatch.delenv("REDIS_ALLOW_EVICTION_POLICY", raising=False)
     fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
 
     with pytest.raises(StorageControlPlaneError, match="evicting cache"):
-        await first_factory().initialize()
+        await _kv_storage().initialize()
 
-    retry = retry_factory(workspace="retry-ws")
+    retry = _doc_status_storage(workspace="retry-ws")
     try:
         with pytest.raises(StorageControlPlaneError, match="evicting cache"):
             await retry.initialize()
@@ -142,26 +126,21 @@ async def test_rejected_policy_still_refuses_later_storages(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("allow_eviction", [False, True])
-async def test_rejected_policy_can_recover_on_later_startup(
-    fake, monkeypatch, caplog, allow_eviction
-):
+async def test_rejected_policy_can_recover_on_later_startup(fake, monkeypatch, caplog):
+    """A rejection is not cached: a later startup re-reads the policy and honours
+    an override set in the meantime (the warning proves the check re-ran)."""
     monkeypatch.delenv("REDIS_ALLOW_EVICTION_POLICY", raising=False)
     fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
     with pytest.raises(StorageControlPlaneError, match="evicting cache"):
         await _doc_status_storage().initialize()
 
-    if allow_eviction:
-        monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", "true")
-    else:
-        fake.config_values["maxmemory-policy"] = "noeviction"
+    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", "true")
 
     retry = _kv_storage()
     try:
         with capture_lightrag_logs(caplog):
             await retry.initialize()
-        if allow_eviction:
-            assert "configured to EVICT" in caplog.text
+        assert "configured to EVICT" in caplog.text
     finally:
         await retry.finalize()
 
@@ -208,7 +187,8 @@ async def test_explicit_override_downgrades_to_a_warning(fake, monkeypatch, capl
 
     from lightrag.utils import logger
 
-    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", "true")
+    # A non-literal spelling: the flag must go through get_env_value.
+    monkeypatch.setenv("REDIS_ALLOW_EVICTION_POLICY", " Yes ")
     fake.config_values = {"maxmemory": "1073741824", "maxmemory-policy": "allkeys-lru"}
     storage = _doc_status_storage()
     with capture_lightrag_logs(caplog):

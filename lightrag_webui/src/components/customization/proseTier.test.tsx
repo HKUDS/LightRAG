@@ -20,28 +20,29 @@ const css = readFileSync(join(import.meta.dir, '..', '..', 'index.css'), 'utf8')
  * can see it, because the test DOM has no stylesheet at all.
  */
 describe('prose tier registration', () => {
-  test('the typography plugin is registered in index.css', () => {
-    expect(css).toContain('@plugin \'@tailwindcss/typography\';')
-  })
-
-  test('inline code is not wrapped in the plugin default backticks', () => {
-    expect(css).toMatch(/\.prose code::before,\s*\.prose code::after\s*{\s*content: '';/)
-  })
-
-  test('index.css defines the inherit-color palette', () => {
-    expect(css).toContain('.prose-inherit-color {')
-    // The runs that were unreadable on a colored bubble: each must resolve to
-    // the container's own color rather than to a prose-tier one.
-    for (const token of [
-      '--tw-prose-body: currentColor',
-      '--tw-prose-headings: currentColor',
-      '--tw-prose-links: currentColor',
-      '--tw-prose-bold: currentColor',
-      '--tw-prose-code: currentColor',
-      '--tw-prose-quotes: currentColor'
-    ]) {
-      expect(css).toContain(token)
-    }
+  test('index.css registers the plugin, its code override and the inherit-color palette', () => {
+    // Each claim is checked separately and the misses collected, so a failure
+    // names what is gone rather than only that something is.
+    const required: [string, boolean][] = [
+      ['typography plugin', css.includes('@plugin \'@tailwindcss/typography\';')],
+      // Inline code is not wrapped in the plugin's default backticks.
+      [
+        'code backtick override',
+        /\.prose code::before,\s*\.prose code::after\s*{\s*content: '';/.test(css)
+      ],
+      ['.prose-inherit-color', css.includes('.prose-inherit-color {')],
+      // The runs that were unreadable on a colored bubble: each must resolve
+      // to the container's own color rather than to a prose-tier one.
+      ...[
+        '--tw-prose-body: currentColor',
+        '--tw-prose-headings: currentColor',
+        '--tw-prose-links: currentColor',
+        '--tw-prose-bold: currentColor',
+        '--tw-prose-code: currentColor',
+        '--tw-prose-quotes: currentColor'
+      ].map((token): [string, boolean] => [token, css.includes(token)])
+    ]
+    expect(required.filter(([, present]) => !present).map(([name]) => name)).toEqual([])
   })
 })
 

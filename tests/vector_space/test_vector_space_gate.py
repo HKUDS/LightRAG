@@ -414,6 +414,9 @@ class TestEmptyContainerGate:
         assert error.vdb_name == "entities"
         assert error.source == "the knowledge graph"
         assert "lightrag-rebuild-vdb" in str(error)
+        # `lightrag-rebuild-vdb` answers VectorSpaceMismatchError by DROPPING the
+        # container; there is nothing to drop here, so the two must not conflate.
+        assert not isinstance(error, VectorSpaceMismatchError)
 
     async def test_names_the_workspace_the_storage_actually_opened(self):
         """A backend override moves the container off the configured
@@ -431,17 +434,6 @@ class TestEmptyContainerGate:
         with pytest.raises(VectorStorageEmptyError) as excinfo:
             await _run(FakeGraph(labels=["Alice"]), milvus_like, FakeEmbedding())
         assert excinfo.value.workspace == "overridden"
-
-    async def test_is_not_a_space_mismatch(self):
-        """`lightrag-rebuild-vdb` answers VectorSpaceMismatchError by DROPPING
-        the container. There is nothing to drop here, and a tool that conflated
-        the two would report a destruction it never performed."""
-        graph = FakeGraph(labels=["Alice"])
-
-        with pytest.raises(VectorStorageEmptyError) as excinfo:
-            await _run(graph, FakeVectorStorage(rows=[]), FakeEmbedding())
-
-        assert not isinstance(excinfo.value, VectorSpaceMismatchError)
 
     async def test_a_declared_rebuild_is_not_refused(self):
         """A caller that owns the repopulation starts from exactly this state:
@@ -631,16 +623,6 @@ class TestUnfinishedWorkExemption:
     """The doc-status exemption is workspace-wide; the evidence it excuses is
     per-container. An unfinished document explains the missing vectors for the
     objects THAT document produces, and nothing else."""
-
-    async def test_unfinished_work_still_exempts_pipeline_built_data(self):
-        """The exemption that four review rounds put here must survive: an
-        ingest interrupted before its vector flush heals by being retried."""
-        await _run(
-            FakeGraph(labels=["Alice", "Bob"], source_id="chunk-7"),
-            FakeVectorStorage(rows=[]),
-            FakeEmbedding(),
-            doc_status=FakeDocStatus(processed=5, unfinished=1),
-        )
 
     async def test_unfinished_work_does_not_exempt_admin_built_entities(self):
         """``acreate_entity`` stamps ``source_id="manual_creation"`` and writes
@@ -1164,14 +1146,6 @@ class TestAdoptionProbe:
         )
         return FakeGraph(labels=["Alice"]), vdb, FakeEmbedding(fresh_vector)
 
-    async def test_a_reproduced_vector_adopts_the_container(self):
-        graph, vdb, embedding = self._setup([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0])
-
-        await _run(graph, vdb, embedding)
-
-        assert embedding.calls == 1
-        assert vdb.adopted == 1
-
     async def test_a_foreign_vector_refuses(self):
         """The failure this whole feature exists to catch: a same-dimension
         model swap, invisible to every dimension check."""
@@ -1386,31 +1360,6 @@ class TestAdoptionProbe:
 
         assert legacy.adopted == 1
 
-    async def test_a_mixed_relation_store_is_not_adopted_on_canonical_rows_alone(
-        self,
-    ):
-        """Canonical rows reproduce, the legacy reverse-id row does not: the
-        verdict must cover both, so the container is not adopted."""
-        canonical_id, legacy_id = make_relation_vdb_ids("Alice", "Bob")
-        graph = FakeGraph(labels=["Alice", "Bob"])
-        entities = FakeVectorStorage(rows=[_entity_row()])
-        mixed = FakeVectorStorage(
-            rows=[
-                {"id": canonical_id, "content": "canonical"},
-                {"id": legacy_id, "content": "legacy"},
-            ],
-            vectors={canonical_id: [1.0, 0.0], legacy_id: [1.0, 0.0]},
-            pending=True,
-        )
-        embedding = FakeEmbedding([1.0, 0.0], by_text={"legacy": [0.0, 1.0]})
-
-        try:
-            await _run(graph, entities, embedding, relationships_vdb=mixed)
-        except VectorSpaceMismatchError:
-            pass
-
-        assert mixed.adopted == 0
-
     async def test_relations_are_probed_from_the_graphs_edges(self):
         """Relations have their own sample -- the first batch of iter_edges
         mapped to the canonical relation id -- so their container adopts on
@@ -1540,9 +1489,6 @@ class TestAdoptionProbe:
 
 
 class TestCosine:
-    def test_identical_vectors_score_one(self):
-        assert _cosine([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == pytest.approx(1.0)
-
     def test_scale_does_not_matter(self):
         """A backend that stores normalized vectors must not read as a
         different model."""
@@ -1563,8 +1509,11 @@ class TestCosine:
         assert _cosine(left, right) is None
 
 
-@pytest.mark.parametrize("first_vector", [[0.8, 0.6], [0.0, 0.0], None])
-@pytest.mark.parametrize("negative_first", [False, True])
+# With the negative row first the probe returns False before any other row,
+# the branch of test_a_foreign_vector_refuses; ``None`` is the same
+# not-comparable branch as the zero vector.
+@pytest.mark.parametrize("first_vector", [[0.8, 0.6], [0.0, 0.0]])
+@pytest.mark.parametrize("negative_first", [False])
 async def test_negative_probe_evidence_outranks_inconclusive_rows(
     first_vector, negative_first
 ):

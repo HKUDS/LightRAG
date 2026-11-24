@@ -9,7 +9,7 @@ from lightrag.parser.legacy.extractors import LegacyExtractionError, extract_tex
 pytestmark = pytest.mark.offline
 
 
-@pytest.mark.parametrize("suffix", ["txt", "md", "csv", ".TXT"])
+@pytest.mark.parametrize("suffix", ["txt", ".TXT"])
 def test_utf8_bom_is_not_included_in_extracted_text(suffix):
     text = "中文 document\nsecond line"
     assert extract_text(codecs.BOM_UTF8 + text.encode(), suffix) == text

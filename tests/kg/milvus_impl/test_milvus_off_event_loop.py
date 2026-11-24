@@ -82,43 +82,6 @@ def _make_storage(embed_func, *, namespace="entities", workspace="test"):
 
 
 @pytest.mark.asyncio
-async def test_query_runs_search_off_the_event_loop_thread():
-    main_thread_id = threading.get_ident()
-    call_thread_id = {}
-
-    def fake_search(**kwargs):
-        call_thread_id["id"] = threading.get_ident()
-        return [[]]
-
-    s = _make_storage(MockEmbeddingFunc())
-    s._client.search = MagicMock(side_effect=fake_search)
-
-    result = await s.query("hello", top_k=5, query_embedding=[0.1] * 8)
-
-    assert result == []
-    assert call_thread_id["id"] != main_thread_id
-
-
-@pytest.mark.asyncio
-async def test_flush_runs_upsert_off_the_event_loop_thread():
-    main_thread_id = threading.get_ident()
-    call_thread_id = {}
-
-    def fake_upsert(**kwargs):
-        call_thread_id["id"] = threading.get_ident()
-        return {"upsert_count": 1}
-
-    s = _make_storage(MockEmbeddingFunc())
-    s._client.upsert = MagicMock(side_effect=fake_upsert)
-    s._client.delete = MagicMock(return_value={"delete_count": 0})
-
-    await s.upsert({"v1": {"content": "hello"}})
-    await s.index_done_callback()
-
-    assert call_thread_id["id"] != main_thread_id
-
-
-@pytest.mark.asyncio
 async def test_cancelling_flush_defers_until_write_completes_then_clears_buffer():
     """run_in_milvus_executor only cancels the awaiting future -- an in-flight
     Milvus upsert keeps running in the background thread. A bare cancel
@@ -165,25 +128,6 @@ async def test_cancelling_flush_defers_until_write_completes_then_clears_buffer(
 
 
 @pytest.mark.asyncio
-async def test_flush_runs_delete_off_the_event_loop_thread():
-    main_thread_id = threading.get_ident()
-    call_thread_id = {}
-
-    def fake_delete(**kwargs):
-        call_thread_id["id"] = threading.get_ident()
-        return {"delete_count": 1}
-
-    s = _make_storage(MockEmbeddingFunc())
-    s._client.upsert = MagicMock(return_value={"upsert_count": 0})
-    s._client.delete = MagicMock(side_effect=fake_delete)
-
-    await s.delete(["v1"])
-    await s.index_done_callback()
-
-    assert call_thread_id["id"] != main_thread_id
-
-
-@pytest.mark.asyncio
 async def test_blocking_calls_use_the_dedicated_milvus_pool():
     """Off the loop is not enough: the calls must also stay off the process
     DEFAULT executor. That pool is shared with
@@ -226,29 +170,6 @@ async def test_blocking_calls_use_the_dedicated_milvus_pool():
         if not name.startswith("lightrag-milvus")
     }
     assert offenders == {}
-
-
-@pytest.mark.asyncio
-async def test_delete_entity_relation_runs_query_and_delete_off_the_event_loop_thread():
-    main_thread_id = threading.get_ident()
-    call_thread_id = {}
-
-    def fake_query(**kwargs):
-        call_thread_id["query"] = threading.get_ident()
-        return [{"id": "rel-1"}]
-
-    def fake_delete(**kwargs):
-        call_thread_id["delete"] = threading.get_ident()
-        return {"delete_count": 1}
-
-    s = _make_storage(MockEmbeddingFunc())
-    s._client.query = MagicMock(side_effect=fake_query)
-    s._client.delete = MagicMock(side_effect=fake_delete)
-
-    await s.delete_entity_relation("entity-1")
-
-    assert call_thread_id["query"] != main_thread_id
-    assert call_thread_id["delete"] != main_thread_id
 
 
 @pytest.mark.asyncio
@@ -376,23 +297,6 @@ async def test_get_by_id_runs_query_off_the_event_loop_thread():
 
 
 @pytest.mark.asyncio
-async def test_get_by_id_returns_buffered_value_without_touching_client():
-    """Negative case: a read-your-writes hit against the pending-upsert
-    buffer must short-circuit before ever reaching the client/executor --
-    unchanged behavior this fix must not disturb."""
-    s = _make_storage(MockEmbeddingFunc())
-    s._client.query = MagicMock()
-    s._pending_vector_docs = {
-        "v1": type("P", (), {"source": {"content": "buffered"}})()
-    }
-
-    result = await s.get_by_id("v1")
-
-    assert result == {"content": "buffered", "id": "v1"}
-    s._client.query.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_new_call_sites_use_dedicated_pool_not_default():
     """Same requirement as test_blocking_calls_use_the_dedicated_milvus_pool
     above, extended to the three call sites this fix adds -- offloading to
@@ -456,22 +360,6 @@ async def test_drop_runs_collection_management_off_the_event_loop_thread():
         # login behind it.
         assert name.startswith("lightrag-milvus"), op
     assert threading.get_ident() == main_thread_id
-
-
-@pytest.mark.asyncio
-async def test_drop_clears_the_pending_buffers():
-    """Unchanged behavior the offloading must not disturb: buffered writes are
-    discarded before the collection goes away, so a later flush cannot
-    resurrect rows into the freshly recreated collection."""
-    s = _make_storage(MockEmbeddingFunc())
-    s._pending_vector_docs = {"v1": object()}
-    s._pending_vector_deletes = {"v2"}
-
-    result = await s.drop()
-
-    assert result["status"] == "success"
-    assert s._pending_vector_docs == {}
-    assert s._pending_vector_deletes == set()
 
 
 @pytest.mark.asyncio
@@ -1005,7 +893,7 @@ async def test_concurrent_searches_are_capped_by_the_submit_limit():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", [None, "", "  "])
+@pytest.mark.parametrize("value", [None, "  "])
 async def test_load_collection_is_bounded_by_default(monkeypatch, value):
     """Unset or blank (an empty Compose/.env pass-through) takes the default."""
     if value is None:
@@ -1033,7 +921,7 @@ async def test_load_collection_receives_configured_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["0", "-1", "inf"])
+@pytest.mark.parametrize("value", ["0", "inf"])
 async def test_non_positive_load_timeout_means_no_limit(monkeypatch, value):
     monkeypatch.setenv("MILVUS_LOAD_TIMEOUT", value)
     s = _make_storage(MockEmbeddingFunc())

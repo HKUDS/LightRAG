@@ -37,7 +37,9 @@ from lightrag.utils import EmbeddingFunc  # noqa: E402
 pytestmark = pytest.mark.offline
 
 DIM = 8
-BLOCK_SECONDS = 0.2
+# A blocked loop gives exactly zero beats however long the window; a live one
+# beats within one 5 ms GIL switch interval, so 0.05 s keeps a wide margin.
+BLOCK_SECONDS = 0.05
 
 
 class _DeterministicEmbed:

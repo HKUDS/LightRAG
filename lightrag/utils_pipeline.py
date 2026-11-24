@@ -194,11 +194,7 @@ def build_chunks_dict_from_chunking_result(
                 if key and key not in seen:
                     seen.add(key)
                     seed_cache_list.append(key)
-        stored_chunk = {
-            k: v
-            for k, v in dp.items()
-            if k not in ("_source_span", "_source_span_unavailable")
-        }
+        stored_chunk = {k: v for k, v in dp.items() if k != "_source_span"}
         chunks[chunk_key] = {
             **stored_chunk,
             "full_doc_id": doc_id,

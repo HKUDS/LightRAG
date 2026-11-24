@@ -60,9 +60,7 @@ def test_an_explicit_value_always_wins(monkeypatch, explicit):
     assert parse_args().whitelist_paths == explicit
 
 
-@pytest.mark.parametrize(
-    "api_key,expected",
-    [(None, "/health,/api/*"), ("", "/health,/api/*"), ("k", "/health")],
-)
-def test_default_whitelist_paths(api_key, expected):
-    assert default_whitelist_paths(api_key) == expected
+def test_an_empty_key_counts_as_no_key():
+    # No key and a key are driven through parse_args above; an empty one only
+    # reaches the helper this way.
+    assert default_whitelist_paths("") == "/health,/api/*"

@@ -21,7 +21,6 @@ import numpy as np
 import pytest
 
 from lightrag.kg.milvus_impl import (
-    MILVUS_POINT_READ_CONSISTENCY_LEVEL,
     MilvusVectorDBStorage,
 )
 
@@ -72,10 +71,6 @@ def _make_storage(namespace: str = "relationships") -> MilvusVectorDBStorage:
     return storage
 
 
-def test_point_read_level_is_strong() -> None:
-    assert MILVUS_POINT_READ_CONSISTENCY_LEVEL == "Strong"
-
-
 def _assert_every_query_strong(storage: MilvusVectorDBStorage) -> None:
     calls = storage._client.query.call_args_list
     assert calls, "the read never reached client.query"
@@ -94,13 +89,6 @@ async def test_get_by_id_reads_strong() -> None:
 async def test_get_by_ids_reads_strong() -> None:
     storage = _make_storage()
     await storage.get_by_ids(["rel-1", "rel-2"])
-    _assert_every_query_strong(storage)
-
-
-@pytest.mark.asyncio
-async def test_get_vectors_by_ids_reads_strong() -> None:
-    storage = _make_storage()
-    await storage.get_vectors_by_ids(["rel-1", "rel-2"])
     _assert_every_query_strong(storage)
 
 

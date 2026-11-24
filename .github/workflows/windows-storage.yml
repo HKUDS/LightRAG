@@ -9,6 +9,9 @@ on:
       - 'lightrag/tools/rebuild_vdb.py'
       - 'lightrag/kg/nano_vector_db_impl.py'
       - 'lightrag/kg/faiss_impl.py'
+      # Both vector stores publish through atomic_write, whose rename semantics
+      # are the Windows-specific part the drop tests exercise.
+      - 'lightrag/file_atomic.py'
       - 'tests/kg/test_vector_drop_errors.py'
       - 'tests/kg/nano_impl/test_nano_drop.py'
       - 'tests/kg/faiss_impl/test_faiss_drop.py'
@@ -26,6 +29,9 @@ on:
       - 'lightrag/tools/rebuild_vdb.py'
       - 'lightrag/kg/nano_vector_db_impl.py'
       - 'lightrag/kg/faiss_impl.py'
+      # Both vector stores publish through atomic_write, whose rename semantics
+      # are the Windows-specific part the drop tests exercise.
+      - 'lightrag/file_atomic.py'
       - 'tests/kg/test_vector_drop_errors.py'
       - 'tests/kg/nano_impl/test_nano_drop.py'
       - 'tests/kg/faiss_impl/test_faiss_drop.py'

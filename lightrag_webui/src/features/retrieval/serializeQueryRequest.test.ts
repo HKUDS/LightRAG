@@ -1,6 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'fs'
-import { join } from 'path'
 import { serializeQueryRequest } from './serializeQueryRequest'
 import type { QuerySettings } from '@/stores/querySettings'
 import type { MessageWithError } from '@/types/retrieval'
@@ -38,18 +36,6 @@ const historyFixture: MessageWithError[] = [
 ]
 
 describe('serializer equivalence', () => {
-  test.each([...ALL_MODES])(
-    'mode=%s: same settings + same explicit history + same question ⇒ field-identical bodies',
-    (mode) => {
-      const a = serializeQueryRequest(baseSettings(mode), 'what is RAG', historyFixture)
-      const b = serializeQueryRequest(baseSettings(mode), 'what is RAG', historyFixture)
-      expect(a).toEqual(b)
-      // history_turns is a client-side expansion knob the server never
-      // declared: it must be stripped from every request body.
-      expect('history_turns' in a).toBe(false)
-    }
-  )
-
   test('non-bypass modes send an empty conversation_history (history_turns=0)', () => {
     for (const mode of ALL_MODES.filter((m) => m !== 'bypass')) {
       const body = serializeQueryRequest(baseSettings(mode), 'q', historyFixture)
@@ -69,35 +55,42 @@ describe('serializer equivalence', () => {
     ])
   })
 
-  test('the snapshot is an INPUT: only_need_* pass through unmodified (clamping lives in the page layer)', () => {
-    const settings = {
-      ...baseSettings('mix'),
-      only_need_context: true,
-      only_need_prompt: true
+  // The snapshot is an INPUT: the serializer performs no clamping, so a
+  // snapshot that carries a value keeps it in every mode (the ADMIN page passes
+  // its snapshot unmodified; the workspace page clamps before calling). This
+  // replaces a source scan for the substring `only_need`. The two switches take
+  // UNEQUAL values too, so copying one into the other is caught; a branch keyed
+  // on something other than the mode (the question, the history) would escape.
+  test.each(
+    ALL_MODES.flatMap((mode) =>
+      [[true, true], [true, false], [false, true], [false, false]].map(
+        ([context, prompt]) => [mode, `context=${context} prompt=${prompt}`, context, prompt] as const
+      )
+    )
+  )(
+    'mode=%s: only_need_* (%s) pass through unmodified',
+    (mode, _label, context, prompt) => {
+      const settings = {
+        ...baseSettings(mode),
+        only_need_context: context,
+        only_need_prompt: prompt
+      }
+      const body = serializeQueryRequest(settings, 'q', historyFixture)
+      expect({ context: body.only_need_context, prompt: body.only_need_prompt }).toEqual({
+        context,
+        prompt
+      })
     }
-    const body = serializeQueryRequest(settings, 'q', [])
-    // The serializer itself performs no clamping — a snapshot that carries
-    // true keeps true (the ADMIN page passes its snapshot unmodified; the
-    // workspace page clamps before calling).
-    expect(body.only_need_context).toBe(true)
-    expect(body.only_need_prompt).toBe(true)
-  })
+  )
 
   test('response_type and include_progress are set uniformly', () => {
     const body = serializeQueryRequest(baseSettings('mix'), 'q', [])
     expect(body.response_type).toBe('Multiple Paragraphs')
     expect(body.include_progress).toBe(true)
     expect(body.query).toBe('q')
-  })
-})
-
-describe('serializer source purity', () => {
-  test('the shared serializer contains no only_need_* branch (clamping must stay in the composition layer)', () => {
-    // If the serializer grew a branch on these fields, the workspace could
-    // bypass the equivalence contract while every behavioral test still
-    // passes — so pin it at the source level.
-    const source = readFileSync(join(import.meta.dir, 'serializeQueryRequest.ts'), 'utf8')
-    expect(source.includes('only_need')).toBe(false)
+    // history_turns is a client-side expansion knob the server never
+    // declared: it must be stripped from every request body.
+    expect('history_turns' in body).toBe(false)
   })
 })
 

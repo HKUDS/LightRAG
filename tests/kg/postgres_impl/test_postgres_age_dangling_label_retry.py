@@ -76,36 +76,27 @@ def test_dangling_label_error_in_graph_schema_is_transient(shape):
 @pytest.mark.parametrize(
     "cause",
     [
-        pytest.param(_undefined_table("other_graph.garbage"), id="other-schema"),
         pytest.param(
             _undefined_table(f"{GRAPH}_2.garbage"), id="schema-sharing-a-prefix"
         ),
-        pytest.param(_undefined_table("garbage"), id="unqualified"),
         pytest.param(_undefined_table(f"{GRAPH}.base"), id="real-label-base"),
-        pytest.param(_undefined_table(f"{GRAPH}.DIRECTED"), id="real-label-DIRECTED"),
-        pytest.param(
-            _undefined_table(f"{GRAPH}._ag_label_vertex"), id="real-label-vertex"
-        ),
-        pytest.param(_undefined_table(f"{GRAPH}._ag_label_edge"), id="real-label-edge"),
         pytest.param(
             asyncpg.PostgresError(f'relation "{GRAPH}.garbage" does not exist'),
             id="not-undefined-table-error",
         ),
         pytest.param(_undecodable("other_graph"), id="undecodable-other-schema"),
-        pytest.param(
-            UnicodeDecodeError("utf-8", b"\x9c some other payload", 0, 1, "invalid"),
-            id="undecodable-unrelated",
-        ),
     ],
 )
 def test_other_errors_are_not_transient(cause):
     assert _is_transient_graph_write_error(_wrapped(cause)) is False
 
 
-@pytest.mark.parametrize("shape", sorted(DANGLING_SHAPES))
-def test_dangling_label_error_without_graph_name_is_not_transient(shape):
-    """A wrapper that does not name its graph cannot be matched, so it fails fast."""
-    cause = DANGLING_SHAPES[shape]()
+def test_dangling_label_error_without_graph_name_is_not_transient():
+    """A wrapper that does not name its graph cannot be matched, so it fails fast.
+
+    The graph-name check runs before the per-shape dispatch, so one shape suffices.
+    """
+    cause = DANGLING_SHAPES["undefined_table"]()
     assert _is_transient_graph_write_error(_wrapped(cause, graph_name=None)) is False
     bare = PGGraphQueryException("write failed")
     bare.__cause__ = cause
@@ -225,7 +216,9 @@ def _prepare(monkeypatch, path_name, make_cause, failures):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shape", sorted(DANGLING_SHAPES))
+# Both shapes are classified by test_dangling_label_error_in_graph_schema_is_transient;
+# each path's retry wiring does not depend on the shape.
+@pytest.mark.parametrize("shape", ["undefined_table"])
 @pytest.mark.parametrize("path_name", sorted(WRITE_PATHS))
 async def test_write_path_retries_dangling_label_error(monkeypatch, path_name, shape):
     path, storage, attempts = _prepare(
@@ -242,8 +235,10 @@ async def test_write_path_retries_dangling_label_error(monkeypatch, path_name, s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("shape", sorted(DANGLING_SHAPES))
-@pytest.mark.parametrize("path_name", sorted(WRITE_PATHS))
+# That a retry continues after one failure is tenacity's; one path checks the
+# harness, the per-path retry is the test above.
+@pytest.mark.parametrize("shape", ["undefined_table"])
+@pytest.mark.parametrize("path_name", ["upsert_node"])
 async def test_write_path_recovers_after_one_dangling_label_error(
     monkeypatch, path_name, shape
 ):
@@ -258,7 +253,9 @@ async def test_write_path_recovers_after_one_dangling_label_error(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path_name", sorted(WRITE_PATHS))
+# The retry test above pins every path's decorator; three paths suffice to show
+# it is the shared predicate, not a blanket retry.
+@pytest.mark.parametrize("path_name", sorted(set(WRITE_PATHS) - {"upsert_edge"}))
 async def test_write_path_fails_fast_on_missing_real_label(monkeypatch, path_name):
     path, storage, attempts = _prepare(
         monkeypatch, path_name, lambda: _undefined_table(f"{GRAPH}.base"), failures=10

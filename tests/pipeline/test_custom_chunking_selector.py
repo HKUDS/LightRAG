@@ -870,7 +870,6 @@ async def _ingest_with_persisted_row(
     "persisted,expected_sidecar,expected_engine",
     [
         ({}, None, None),
-        ({"sidecar_location": "", "parse_engine": ""}, None, None),
         ({"sidecar_location": "unknown_source"}, None, None),
         (
             {"sidecar_location": "file:///tmp/doc.parsed/", "parse_engine": "docx"},

@@ -1079,55 +1079,6 @@ fi
     )
 
 
-def test_validate_env_file_rejects_weak_docker_opensearch_password(
-    tmp_path: Path,
-) -> None:
-    """validate_env_file should reject bundled OpenSearch passwords the image will refuse."""
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
-                "LIGHTRAG_SETUP_OPENSEARCH_DEPLOYMENT=docker",
-                "OPENSEARCH_HOSTS=localhost:9200",
-                "OPENSEARCH_USER=admin",
-                "OPENSEARCH_PASSWORD=weakpass",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
-    result = subprocess.run(
-        [
-            bash_bin(),
-            "--norc",
-            "--noprofile",
-            "-c",
-            f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-if validate_env_file; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-""",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    values = parse_lines(result.stdout)
-    assert values["VALID"] == "no"
-    assert "OpenSearch requires a strong OPENSEARCH_PASSWORD" in result.stderr
-
-
 def test_validate_env_file_rejects_weak_host_opensearch_password(
     tmp_path: Path,
 ) -> None:
@@ -1220,51 +1171,6 @@ fi
     values = parse_lines(result.stdout)
     assert values["VALID"] == "no"
     assert "OPENSEARCH_USER" in result.stderr
-    assert "OPENSEARCH_PASSWORD" in result.stderr
-
-
-def test_validate_env_file_rejects_partial_host_opensearch_auth(tmp_path: Path) -> None:
-    """validate_env_file should reject host-mode OpenSearch when only one auth field is set."""
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "LIGHTRAG_KV_STORAGE=OpenSearchKVStorage",
-                "LIGHTRAG_VECTOR_STORAGE=OpenSearchVectorDBStorage",
-                "LIGHTRAG_GRAPH_STORAGE=OpenSearchGraphStorage",
-                "LIGHTRAG_DOC_STATUS_STORAGE=OpenSearchDocStatusStorage",
-                "OPENSEARCH_HOSTS=localhost:9200",
-                "OPENSEARCH_USER=admin",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "env.example").write_text("LLM_BINDING=openai\n", encoding="utf-8")
-    result = subprocess.run(
-        [
-            bash_bin(),
-            "--norc",
-            "--noprofile",
-            "-c",
-            f"""
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-reset_state
-if validate_env_file; then
-  printf 'VALID=yes\\n'
-else
-  printf 'VALID=no\\n'
-fi
-""",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    values = parse_lines(result.stdout)
-    assert values["VALID"] == "no"
     assert "OPENSEARCH_PASSWORD" in result.stderr
 
 

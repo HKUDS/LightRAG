@@ -118,7 +118,11 @@ def test_zero_disables_the_check(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "bad", [-1, "50", None, True], ids=["neg", "str", "none", "bool"]
+    # A non-int (str), and bool, which isinstance(int) would let through; a
+    # non-positive limit is test_zero_disables_the_check's branch.
+    "bad",
+    ["50", True],
+    ids=["str", "bool"],
 )
 def test_a_malformed_limit_disables_the_check_instead_of_refusing_everything(
     monkeypatch, bad

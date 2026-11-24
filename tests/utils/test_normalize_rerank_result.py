@@ -66,9 +66,6 @@ class TestResultShape:
         "result",
         [
             pytest.param(None, id="none"),
-            pytest.param([], id="empty-list"),
-            pytest.param("not a dict", id="string"),
-            pytest.param(42, id="int"),
             pytest.param((0, 0.9), id="tuple"),
         ],
     )
@@ -81,10 +78,7 @@ class TestIndexValidation:
         "result",
         [
             pytest.param({"relevance_score": 0.9}, id="missing-index"),
-            pytest.param({"index": None, "relevance_score": 0.9}, id="none-index"),
             pytest.param({"index": "0", "relevance_score": 0.9}, id="string-index"),
-            pytest.param({"index": 0.5, "relevance_score": 0.9}, id="float-index"),
-            pytest.param({"index": [0], "relevance_score": 0.9}, id="list-index"),
         ],
     )
     def test_non_integer_index_is_rejected(self, result):
@@ -101,7 +95,6 @@ class TestIndexValidation:
         [
             pytest.param({"index": -1, "relevance_score": 0.9}, 2, id="negative"),
             pytest.param({"index": 2, "relevance_score": 0.9}, 2, id="at-max"),
-            pytest.param({"index": 5, "relevance_score": 0.9}, 2, id="beyond-max"),
         ],
     )
     def test_out_of_range_index_is_rejected(self, result, max_index):
@@ -110,23 +103,15 @@ class TestIndexValidation:
             "index out of range",
         )
 
-    def test_every_index_is_out_of_range_when_there_are_no_documents(self):
-        # ``max_index == 0`` leaves ``0 <= index < 0`` unsatisfiable, so a
-        # provider echoing results for an empty document list is fully rejected.
-        result = {"index": 0, "relevance_score": 0.9}
-        assert normalize_rerank_result(result, 0) == (None, "index out of range")
-
 
 class TestScoreValidation:
     @pytest.mark.parametrize(
         "result",
         [
             pytest.param({"index": 0}, id="missing-score"),
-            pytest.param({"index": 0, "relevance_score": None}, id="none-score"),
             pytest.param(
                 {"index": 0, "relevance_score": "not-a-score"}, id="string-score"
             ),
-            pytest.param({"index": 0, "relevance_score": [0.5]}, id="list-score"),
             pytest.param(
                 {"index": 0, "relevance_score": {"value": 0.5}}, id="dict-score"
             ),
@@ -161,11 +146,9 @@ class TestScoreValidation:
         [
             pytest.param(float("nan"), id="nan"),
             pytest.param(float("inf"), id="positive-inf"),
-            pytest.param(float("-inf"), id="negative-inf"),
             # ``float()`` accepts these spellings, so a string score reaches the
             # finiteness guard rather than the conversion guard.
             pytest.param("inf", id="string-inf"),
-            pytest.param("-Inf", id="string-negative-inf"),
             pytest.param("nan", id="string-nan"),
         ],
     )

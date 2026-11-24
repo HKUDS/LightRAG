@@ -328,6 +328,33 @@ ENV_BOOL_TRUE_WORDS = ("true", "1", "yes", "t", "on")
 ENV_BOOL_FALSE_WORDS = ("false", "0", "no", "f", "off", "")
 
 
+def parse_bool_setting(
+    name: str, value: str, default: bool, source: str = "Environment variable"
+) -> bool:
+    """Parse a boolean setting with the ``get_env_value(..., bool)`` rules.
+
+    ``value`` is matched trimmed and case-insensitively against
+    ``ENV_BOOL_TRUE_WORDS`` / ``ENV_BOOL_FALSE_WORDS`` (blank reads as
+    ``False``). Anything else logs a warning naming ``source`` and ``name``
+    and returns ``default``. Use it for settings read from somewhere other
+    than the environment alone, such as an env-over-``config.ini`` lookup.
+    """
+    text = value.strip().lower()
+    if text in ENV_BOOL_TRUE_WORDS:
+        return True
+    if text in ENV_BOOL_FALSE_WORDS:
+        return False
+    logger.warning(
+        f"{source} %s=%r is not a recognized boolean "
+        "(expected one of %s), using default %r",
+        name,
+        value,
+        "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
+        default,
+    )
+    return default
+
+
 def get_env_value(
     env_key: str, default: any, value_type: type = str, special_none: bool = False
 ) -> any:
@@ -358,20 +385,7 @@ def get_env_value(
         return None
 
     if value_type is bool:
-        text = value.strip().lower()
-        if text in ENV_BOOL_TRUE_WORDS:
-            return True
-        if text in ENV_BOOL_FALSE_WORDS:
-            return False
-        logger.warning(
-            "Environment variable %s=%r is not a recognized boolean "
-            "(expected one of %s), using default %r",
-            env_key,
-            value,
-            "/".join(w for w in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS if w),
-            default,
-        )
-        return default
+        return parse_bool_setting(env_key, value, default)
 
     # Handle list type with JSON parsing
     if value_type is list:
@@ -473,10 +487,8 @@ if TYPE_CHECKING:
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
-PERFORMANCE_TIMING_LOGS = (
-    os.getenv("LIGHTRAG_PERFORMANCE_TIMING_LOGS", "false").lower() == "true"
-)
+VERBOSE_DEBUG = get_env_value("VERBOSE", False, bool)
+PERFORMANCE_TIMING_LOGS = get_env_value("LIGHTRAG_PERFORMANCE_TIMING_LOGS", False, bool)
 
 
 def verbose_debug(msg: str, *args, **kwargs):
@@ -4562,14 +4574,6 @@ def _map_child_span(
     return {"start": abs_start, "end": abs_end}
 
 
-# U+FFFD. A token window whose boundary splits a multi-byte UTF-8 character
-# (any non-ASCII char: 2-byte Latin/Greek, 3-byte CJK and symbols, 4-byte emoji)
-# decodes the partial bytes to this character. Shared by the fixed-token chunker,
-# this function and sidecar backfill so the three agree on what a boundary
-# artifact is.
-_REPLACEMENT_CHAR = "\ufffd"
-
-
 def enforce_chunk_token_limit_before_embedding(
     chunking_result: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     tokenizer: Tokenizer,
@@ -4600,14 +4604,9 @@ def enforce_chunk_token_limit_before_embedding(
     cannot be trusted at all, and this raises ``ChunkBlockMatchError`` rather
     than silently emitting a wrong span — the same failure sidecar backfill
     itself would eventually surface, just earlier and with better context.
-    A span recovered by stripping boundary U+FFFD, or a parent with no span
-    whose content still contains U+FFFD, is not that divergence: the children
-    are marked ``_source_span_unavailable`` (popped before the chunk dict is
-    stored) so backfill degrades them instead of failing the document. The
-    recovered case is recognized by the content minus its leading/trailing
-    U+FFFD matching the source slice; interior U+FFFD that the source itself
-    contains does not disqualify it. Content that does not reconcile with the
-    source slice still raises.
+    A parent without a usable span gives its children none either, whatever
+    its content holds; for a chunk eligible for backfill that fails the
+    document there.
 
     Known limitation -- ``sidecar`` is not re-scoped for pre-sidecar chunks:
     this function runs BEFORE :func:`lightrag.sidecar.backfill.backfill_chunk_sidecars`
@@ -4681,7 +4680,6 @@ def enforce_chunk_token_limit_before_embedding(
         # O(parent length)).
         projection: list[int] | None = None
         parent_start = parent_end = None
-        span_unavailable = False
         if isinstance(parent_span, dict):
             try:
                 parent_start = int(parent_span["start"])
@@ -4694,32 +4692,7 @@ def enforce_chunk_token_limit_before_embedding(
                 parent_start = parent_end = None
 
             if parent_start is not None and parent_end - parent_start != len(content):
-                # A span recovered by stripping boundary U+FFFD is not a
-                # verbatim slice of the chunk beside it. Child offsets cannot
-                # be projected (a ZWJ sequence makes the width gap unequal to
-                # the replacement count). Mark the children unavailable
-                # instead of raising. Interior U+FFFD is allowed: the source
-                # comparison below proves it is the source's own character.
-                # Content that does not reconcile with the source slice is
-                # still a real divergence.
-                boundary_artifact = False
-                if source_content and (
-                    content.startswith(_REPLACEMENT_CHAR)
-                    or content.endswith(_REPLACEMENT_CHAR)
-                ):
-                    stripped = content.strip(_REPLACEMENT_CHAR)
-                    if stripped:
-                        source_slice = source_content[parent_start:parent_end]
-                        stripped_compact = "".join(stripped.split())
-                        if source_slice == stripped or (
-                            stripped_compact
-                            and stripped_compact == "".join(source_slice.split())
-                        ):
-                            boundary_artifact = True
-                if boundary_artifact:
-                    span_unavailable = True
-                    parent_start = parent_end = None
-                elif source_content:
+                if source_content:
                     projection = _parent_to_source_projection(
                         source_content, parent_start, parent_end, content
                     )
@@ -4736,13 +4709,6 @@ def enforce_chunk_token_limit_before_embedding(
                     # _map_child_span is never reached with an untrustworthy
                     # direct-arithmetic assumption).
                     parent_start = parent_end = None
-        if parent_start is None and _REPLACEMENT_CHAR in content:
-            # No usable parent span (probe failed, or a boundary-recovered
-            # span we refused to project). Children that no longer contain
-            # U+FFFD must degrade instead of failing backfill. A literal
-            # U+FFFD is not itself the marker.
-            span_unavailable = True
-
         total_parts = len(spans)
         for i, span in enumerate(spans, 1):
             piece = content[span.start : span.end]
@@ -4760,19 +4726,15 @@ def enforce_chunk_token_limit_before_embedding(
             if isinstance(base_chunk_id, str) and base_chunk_id.strip():
                 new_dp["chunk_id"] = f"{base_chunk_id}-s{i:02d}"
 
-            if span_unavailable:
-                new_dp.pop("_source_span", None)
-                new_dp["_source_span_unavailable"] = True
+            child_span = None
+            if parent_start is not None:
+                child_span = _map_child_span(
+                    span.start, span.end, parent_start, parent_end, projection
+                )
+            if child_span is not None:
+                new_dp["_source_span"] = child_span
             else:
-                child_span = None
-                if parent_start is not None:
-                    child_span = _map_child_span(
-                        span.start, span.end, parent_start, parent_end, projection
-                    )
-                if child_span is not None:
-                    new_dp["_source_span"] = child_span
-                elif "_source_span" in new_dp:
-                    new_dp.pop("_source_span", None)
+                new_dp.pop("_source_span", None)
 
             new_dp["split_type"] = "hard_fallback"
             new_dp["split_part"] = i
@@ -5082,6 +5044,20 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     return new_loop
 
 
+def _markdown_table_cell(value: Any) -> str:
+    """Render ``value`` as one cell of a Markdown table row.
+
+    A literal ``|`` ends a cell, so a value holding one (common in text
+    extracted from tables) would spill into the next column, and a line break
+    would end the row. Escape the pipe, doubling any backslashes right before
+    it so a stored ``\\|`` cannot cancel the escape, and turn line breaks into
+    ``<br>``. A value with neither is written unchanged, so any other Markdown
+    it holds renders as it always did.
+    """
+    text = re.sub(r"(\\*)\|", lambda m: m.group(1) * 2 + "\\|", str(value))
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
+
+
 async def aexport_data(
     chunk_entity_relation_graph,
     entities_vdb,
@@ -5320,7 +5296,9 @@ async def aexport_data(
                 # Write rows
                 for entity in entities_data:
                     mdfile.write(
-                        "| " + " | ".join(str(v) for v in entity.values()) + " |\n"
+                        "| "
+                        + " | ".join(_markdown_table_cell(v) for v in entity.values())
+                        + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -5338,7 +5316,9 @@ async def aexport_data(
                 # Write rows
                 for relation in relations_data:
                     mdfile.write(
-                        "| " + " | ".join(str(v) for v in relation.values()) + " |\n"
+                        "| "
+                        + " | ".join(_markdown_table_cell(v) for v in relation.values())
+                        + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -5359,7 +5339,9 @@ async def aexport_data(
                 for relationship in relationships_data:
                     mdfile.write(
                         "| "
-                        + " | ".join(str(v) for v in relationship.values())
+                        + " | ".join(
+                            _markdown_table_cell(v) for v in relationship.values()
+                        )
                         + " |\n"
                     )
             else:
@@ -7440,6 +7422,7 @@ class TokenTracker:
 
     def reset(self):
         self.prompt_tokens = 0
+        self.cached_prompt_tokens: int | None = None
         self.completion_tokens = 0
         self.total_tokens = 0
         self.call_count = 0
@@ -7461,24 +7444,33 @@ class TokenTracker:
         self.completion_tokens += completion_tokens
         self.total_tokens += total_tokens
         self.call_count += 1
+        cached_tokens = token_counts.get("cached_prompt_tokens")
+        if cached_tokens is not None:
+            self.cached_prompt_tokens = (self.cached_prompt_tokens or 0) + cached_tokens
 
     def get_usage(self):
         """Get current usage statistics."""
-        return {
+        usage = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "call_count": self.call_count,
         }
+        if self.cached_prompt_tokens is not None:
+            usage["cached_prompt_tokens"] = self.cached_prompt_tokens
+        return usage
 
     def __str__(self):
         usage = self.get_usage()
-        return (
+        summary = (
             f"LLM call count: {usage['call_count']}, "
             f"Prompt tokens: {usage['prompt_tokens']}, "
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
+        if self.cached_prompt_tokens is not None:
+            summary += f", Cached prompt tokens: {self.cached_prompt_tokens}"
+        return summary
 
 
 async def apply_rerank_if_enabled(

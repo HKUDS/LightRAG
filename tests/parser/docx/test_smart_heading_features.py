@@ -344,21 +344,6 @@ def test_textbox_content_excluded_from_features(tmp_path) -> None:
     assert feats.visible_char_count == 4  # 宿主标题, textbox text excluded
 
 
-def test_visible_char_count_excludes_generated_text(tmp_path) -> None:
-    """``visible_char_count`` counts only source ``w:t`` characters.
-
-    Auto-numbering labels (prepended at read time) and <sup>/<equation>/
-    placeholder markup never enter run_features, so they cannot skew FS_base
-    weighting."""
-    doc = Document()
-    para = doc.add_paragraph()
-    para.add_run("正文内容").font.size = Pt(12)  # 4 visible source chars
-
-    path = _save(doc, tmp_path)
-    feats = _features_for(path, 0)
-    assert feats.visible_char_count == 4
-
-
 def test_first_line_size_restat_for_softbreak(tmp_path) -> None:
     doc = Document()
     para = doc.add_paragraph()
@@ -405,7 +390,6 @@ def _xml_para(body: str):
         "<w:br/>",
         '<w:br w:type="textWrapping"/>',
         '<w:br w:type="page"/>',
-        '<w:br w:type="column"/>',
         "<w:cr/>",
         "<w:noBreakHyphen/>",
     ],
@@ -848,13 +832,11 @@ def _zero_width_formula_paragraph(doc, tag: str, prefix: str):
     return para
 
 
-@pytest.mark.parametrize(
-    "zero_width", ZERO_WIDTH_CHARS, ids=lambda c: f"U+{ord(c):04X}"
-)
+# One zero-width character per placeholder tag: every character goes through
+# the same _has_visible_char predicate, swept in
+# test_visible_char_and_pad_scan_share_one_definition.
 @pytest.mark.parametrize("tag", ["w:drawing", "m:oMath"])
-def test_zero_width_prefix_does_not_hide_leading_placeholder(
-    zero_width, tag, tmp_path
-) -> None:
+def test_zero_width_prefix_does_not_hide_leading_placeholder(tag, tmp_path) -> None:
     """ZWSP → drawing/OMML → tabs → text: the invisible prefix must not read as
     "text came first".
 
@@ -865,7 +847,7 @@ def test_zero_width_prefix_does_not_hide_leading_placeholder(
     users actually hit (these characters arrive via web/PDF copy-paste).
     """
     doc = Document()
-    para = _zero_width_formula_paragraph(doc, tag, zero_width)
+    para = _zero_width_formula_paragraph(doc, tag, ZERO_WIDTH_CHARS[0])
     assert leading_nontext_content(para._p) is True
     assert _first_record_pad(doc, tmp_path) == ("center", 0.0)
 

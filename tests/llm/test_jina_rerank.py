@@ -10,7 +10,7 @@ Jina's explicit False is what puts the key in the request at all. None of
 this request-shape or api-key-resolution behavior was exercised anywhere in
 the test suite before this file: existing coverage in
 tests/chunker/test_rerank_chunking.py only drives cohere_rerank, and
-tests/test_ali_rerank.py only drives the nested "aliyun" format.
+tests/llm/test_ali_rerank.py only drives the nested "aliyun" format.
 """
 
 from unittest.mock import patch

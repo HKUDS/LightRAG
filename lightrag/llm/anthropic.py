@@ -37,9 +37,10 @@ from lightrag.api import __api_version__
 class InvalidResponseError(Exception):
     """A non-streaming response with no text content block.
 
-    Raised only when the stop reason is not ``max_tokens`` (that case raises
-    ``EmptyTruncatedResponseError``). Nothing retries it: the SDK is this
-    binding's only retry layer and does not retry a successful response.
+    A response with no text block that hit the output or context token limit
+    raises ``EmptyTruncatedResponseError`` instead. Nothing retries this error:
+    the SDK is this binding's only retry layer and does not retry a successful
+    response.
     """
 
     pass
@@ -298,15 +299,13 @@ async def anthropic_complete_if_cache(
             ]
             content = "".join(text_blocks) if text_blocks else None
             stop_reason = getattr(response, "stop_reason", None)
-            if content is None:
-                if stop_reason == "max_tokens":
-                    # A thinking model can spend the whole output budget on
-                    # the reasoning trace and never reach a text block. Raise
-                    # the shared EmptyTruncatedResponseError, as the OpenAI
-                    # and Gemini bindings do, so the message names the knob
-                    # to turn. Nothing retries a 200 response here (the SDK
-                    # is the only retry layer), and the same prompt and
-                    # budget would fail identically anyway.
+            hit_context_limit = stop_reason == "model_context_window_exceeded"
+            truncated = stop_reason == "max_tokens" or hit_context_limit
+            if content is None or (truncated and not content.strip()):
+                if truncated:
+                    # Reasoning can use the remaining budget before any visible
+                    # text is produced. Retrying the same prompt and limits
+                    # would not make more room for the answer.
                     block_types = [
                         getattr(block, "type", None) for block in response.content
                     ]
@@ -321,23 +320,28 @@ async def anthropic_complete_if_cache(
                         content_block_types=block_types,
                         thinking_len=thinking_len,
                     )
-                    # Judged by block type, not thinking_len: a
-                    # redacted_thinking block has no readable length but
-                    # still spent budget on reasoning.
-                    hint = empty_length_truncated_hint(
-                        "consider raising max_tokens or lowering "
-                        "thinking.budget_tokens",
-                        reasoning_consumed_budget=any(
-                            t in ("thinking", "redacted_thinking") for t in block_types
-                        ),
+                    if hit_context_limit:
+                        hint = "shorten the input or use a model with a larger context window"
+                    else:
+                        # Redacted thinking spends budget despite having no
+                        # readable length.
+                        hint = empty_length_truncated_hint(
+                            "consider raising max_tokens or lowering "
+                            "thinking.budget_tokens",
+                            reasoning_consumed_budget=any(
+                                t in ("thinking", "redacted_thinking")
+                                for t in block_types
+                            ),
+                        )
+                    message = (
+                        f"Anthropic API returned no usable text ({diagnostics}): {hint}"
                     )
-                    message = f"Anthropic API returned no text content block ({diagnostics}): {hint}"
                     logger.error(message)
                     raise EmptyTruncatedResponseError(message)
                 raise InvalidResponseError(
                     f"Anthropic API returned no text content block (stop_reason={stop_reason})"
                 )
-            if stop_reason == "max_tokens":
+            if truncated:
                 content = TruncatedResponse(content)
             return content
         finally:

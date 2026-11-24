@@ -306,15 +306,28 @@ async def test_zhipu_stop_finish_reason_keeps_plain_response(monkeypatch):
     assert result == "complete answer"
 
 
+class _FakeTracker:
+    def add_usage(self, token_counts):
+        pass
+
+
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_zhipu_complete_token_tracker_never_reaches_the_raw_client_call(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "name, value",
+    [("token_tracker", _FakeTracker()), ("stream", True)],
+    ids=["token_tracker", "stream"],
+)
+async def test_zhipu_complete_lightrag_only_kwargs_never_reach_the_raw_client_call(
+    monkeypatch, name, value
 ):
-    """token_tracker is a LightRAG-only concept, not a real Zhipu API field --
-    it must be consumed as a named parameter, never forwarded through
-    **kwargs into the raw client call."""
+    """token_tracker is LightRAG-only, and streaming is not implemented, so
+    neither may reach the client call: with stream=True the SDK returns a
+    Stream without ``.choices``, which the fake mimics."""
     captured_calls = []
+
+    class FakeStream:
+        pass
 
     class FakeClient(FakeClientBase):
         def __init__(self, api_key=None, **kwargs):
@@ -323,19 +336,18 @@ async def test_zhipu_complete_token_tracker_never_reaches_the_raw_client_call(
 
         def create(self, **kwargs):
             captured_calls.append(kwargs)
+            if kwargs.get("stream"):
+                return FakeStream()
             return _fake_chat_response(content="answer")
 
     zhipu_module = _load_zhipu_module(monkeypatch, FakeClient)
 
-    class FakeTracker:
-        def add_usage(self, token_counts):
-            pass
-
-    await zhipu_module.zhipu_complete_if_cache(
-        prompt="hello", api_key="test-key", token_tracker=FakeTracker()
+    result = await zhipu_module.zhipu_complete_if_cache(
+        prompt="hello", api_key="test-key", **{name: value}
     )
 
-    assert "token_tracker" not in captured_calls[0]
+    assert result == "answer"
+    assert name not in captured_calls[0]
 
 
 @pytest.mark.offline
@@ -574,14 +586,13 @@ _TRANSIENT_ERRORS = [
     pytest.param(lambda: FakeAPIStatusError(408), id="408-request-timeout"),
     pytest.param(lambda: FakeAPIStatusError(409), id="409-lock-timeout"),
     pytest.param(lambda: FakeAPIStatusError(500), id="500-internal"),
-    pytest.param(lambda: FakeAPIStatusError(503), id="503-flow-exceeded"),
     pytest.param(lambda: FakeAPIConnectionError("Connection error."), id="conn"),
-    pytest.param(lambda: FakeAPITimeoutError("Request timed out."), id="timeout"),
+    # 503 takes the same ``>= 500`` branch as 500, and the SDK's timeout error
+    # subclasses its connection error.
 ]
 
 _PERMANENT_ERRORS = [
     pytest.param(lambda: FakeAPIStatusError(400), id="400-bad-request"),
-    pytest.param(lambda: FakeAPIStatusError(401), id="401-auth"),
     pytest.param(lambda: FakeZaiError("api_key not provided"), id="zai-error"),
     pytest.param(lambda: ValueError("not an SDK error"), id="foreign"),
 ]
@@ -639,7 +650,11 @@ async def test_zhipu_complete_reraises_the_sdk_error_after_the_last_attempt(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize("make_error", _TRANSIENT_ERRORS)
+# The full table runs on zhipu_complete; embedding shares the predicate, so it
+# keeps one case per path into it: a retryable status and a connection error.
+@pytest.mark.parametrize(
+    "make_error", [p for p in _TRANSIENT_ERRORS if p.id in ("429-rate-limit", "conn")]
+)
 async def test_zhipu_embedding_retries_transient_zai_errors(monkeypatch, make_error):
     calls = []
     zhipu_module = _load_zhipu_module(

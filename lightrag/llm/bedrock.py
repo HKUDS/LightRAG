@@ -195,6 +195,8 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
         | retry_if_exception_type(BedrockConnectionError)
         | retry_if_exception_type(BedrockTimeoutError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError.
+    reraise=True,
 )
 async def bedrock_complete_if_cache(
     model,
@@ -574,6 +576,8 @@ async def bedrock_complete(
         | retry_if_exception_type(BedrockConnectionError)
         | retry_if_exception_type(BedrockTimeoutError)
     ),
+    # Surface the last attempt's own exception rather than tenacity.RetryError.
+    reraise=True,
 )
 async def bedrock_embed(
     texts: list[str],

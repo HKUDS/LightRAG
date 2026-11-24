@@ -14,8 +14,13 @@ from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.core.storage.kvstore import SimpleKVStore
 from pydantic import Field
 
+from lightrag.exceptions import APIConnectionError
 from lightrag.llm import llama_index_impl
-from lightrag.llm.llama_index_impl import llama_index_complete, llama_index_embed
+from lightrag.llm.llama_index_impl import (
+    llama_index_complete,
+    llama_index_complete_if_cache,
+    llama_index_embed,
+)
 from lightrag.utils import EmbeddingFunc
 
 pytestmark = pytest.mark.offline
@@ -234,3 +239,47 @@ async def test_llama_index_embed_reuses_cache_and_preserves_order() -> None:
 async def test_llama_index_embed_requires_embed_model():
     with pytest.raises(ValueError, match="embed_model must be provided"):
         await llama_index_embed.func(["a"])
+
+
+class _FailingModel:
+    """Stands in for both a llama_index LLM and an embed model; every call
+    raises the same exception instance."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def achat(self, messages, **kwargs):
+        self.calls += 1
+        raise self.error
+
+    async def aget_text_embedding_batch(self, texts):
+        self.calls += 1
+        raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda m: llama_index_complete_if_cache(m, "hi"), id="complete"),
+        pytest.param(
+            lambda m: llama_index_embed.func(["a"], embed_model=m), id="embed"
+        ),
+    ],
+)
+async def test_llama_index_adds_no_retry_layer(call):
+    """Retries belong to the llama_index model, which already retries its
+    provider's errors. The removed outer @retry matched only LightRAG's own
+    exception types, so it never fired on a real provider error and, when it
+    did, hid the error behind tenacity.RetryError. A LightRAG
+    APIConnectionError is the input it used to retry: it must now surface
+    unchanged after exactly one call."""
+    error = APIConnectionError(request=None)
+    model = _FailingModel(error)
+
+    with pytest.raises(APIConnectionError) as exc_info:
+        await call(model)
+
+    assert exc_info.value is error
+    assert model.calls == 1

@@ -481,7 +481,10 @@ async def _run_scan_rss(total: int, input_dir: str) -> dict[str, int]:
     # Real directory entries, created before the baseline so the test measures
     # discovery/classification/enqueue rather than fixture construction.
     for index in range(total):
-        (directory / f"rss-{index:09d}-{'x' * 80}.txt").touch()
+        path = directory / f"rss-{index:09d}-{'x' * 80}.txt"
+        # The path is new, so skip touch's attempt to update an existing file.
+        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o666)
+        os.close(fd)
 
     rag = _ScanRag()
     initialize_share_data()

@@ -43,8 +43,8 @@ def _make_storage(cls, namespace):
 @pytest.mark.parametrize(
     ("cls", "namespace"),
     [
+        # PGKVStorage.delete takes one path for every namespace.
         (PGKVStorage, NameSpace.KV_STORE_TEXT_CHUNKS),
-        (PGKVStorage, NameSpace.KV_STORE_FULL_DOCS),
         (PGDocStatusStorage, NameSpace.DOC_STATUS),
     ],
 )

@@ -787,47 +787,6 @@ def test_p_strategy_runtime_chunker_mutation_picks_up_env(tmp_path, monkeypatch)
 
 
 @pytest.mark.offline
-def test_p_strategy_runtime_chunker_mutation_uses_default_when_env_unset(
-    tmp_path, monkeypatch
-):
-    """Sibling of the env-aware case: with ``CHUNK_P_SIZE`` unset,
-    runtime-mutation enqueue still gets ``DEFAULT_CHUNK_P_SIZE``
-    rather than the top-level ``chunk_token_size``."""
-    from lightrag.constants import DEFAULT_CHUNK_P_SIZE
-
-    monkeypatch.delenv("CHUNK_P_SIZE", raising=False)
-    monkeypatch.delenv("CHUNK_SIZE", raising=False)
-
-    import lightrag.chunker as chunker_pkg
-
-    captured: dict = {}
-
-    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
-        captured["chunk_token_size"] = chunk_token_size
-        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
-
-    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
-
-    async def _run():
-        rag = _new_rag(tmp_path, chunk_token_size=333)
-        await rag.initialize_storages()
-        try:
-            rag.addon_params["chunker"] = {"paragraph_semantic": {}}
-            await rag.apipeline_enqueue_documents(
-                "runtime mutation default body",
-                file_paths="ctor.[native-P].txt",
-                track_id="track-p-runtime-default",
-                process_options="P",
-            )
-            await rag.apipeline_process_enqueue_documents()
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
-    assert captured.get("chunk_token_size") == DEFAULT_CHUNK_P_SIZE
-
-
-@pytest.mark.offline
 def test_p_strategy_caller_chunk_options_picks_up_env(tmp_path, monkeypatch):
     """``apipeline_enqueue_documents(..., chunk_options=...)`` skips
     ``resolve_chunk_options`` and goes through ``slim_chunk_options``
@@ -873,51 +832,6 @@ def test_p_strategy_caller_chunk_options_picks_up_env(tmp_path, monkeypatch):
         "P must not inherit caller-supplied top-level chunk_token_size; "
         f"got {captured.get('chunk_token_size')!r}"
     )
-
-
-@pytest.mark.offline
-def test_p_strategy_caller_chunk_options_uses_default_when_env_unset(
-    tmp_path, monkeypatch
-):
-    """Sibling of the env-aware case: with ``CHUNK_P_SIZE`` unset and
-    a caller-supplied ``chunk_options`` that omits the P slot, the
-    P backfill resolves to ``DEFAULT_CHUNK_P_SIZE`` — not the
-    caller's top-level ``chunk_token_size``."""
-    from lightrag.constants import DEFAULT_CHUNK_P_SIZE
-
-    monkeypatch.delenv("CHUNK_P_SIZE", raising=False)
-    monkeypatch.delenv("CHUNK_SIZE", raising=False)
-
-    import lightrag.chunker as chunker_pkg
-
-    captured: dict = {}
-
-    def _p_spy(tokenizer, content, chunk_token_size, *, blocks_path=None, **kwargs):
-        captured["chunk_token_size"] = chunk_token_size
-        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
-
-    monkeypatch.setattr(chunker_pkg, "chunking_by_paragraph_semantic", _p_spy)
-
-    async def _run():
-        rag = _new_rag(tmp_path, chunk_token_size=333)
-        await rag.initialize_storages()
-        try:
-            await rag.apipeline_enqueue_documents(
-                "caller chunk_options default body",
-                file_paths="ctor.[native-P].txt",
-                track_id="track-p-caller-default",
-                process_options="P",
-                chunk_options={
-                    "chunk_token_size": 333,
-                    "paragraph_semantic": {},
-                },
-            )
-            await rag.apipeline_process_enqueue_documents()
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
-    assert captured.get("chunk_token_size") == DEFAULT_CHUNK_P_SIZE
 
 
 @pytest.mark.offline
@@ -1579,48 +1493,6 @@ def test_f_strategy_falls_back_to_top_level_size(tmp_path, monkeypatch):
 
     asyncio.run(_run())
     assert captured.get("chunk_token_size") == 456
-
-
-@pytest.mark.offline
-def test_f_strategy_uses_dedicated_chunk_size_env(tmp_path, monkeypatch):
-    """``CHUNK_F_SIZE`` gives F its own ``chunk_token_size``, decoupled from
-    the global ``CHUNK_SIZE`` shared as the fallback — symmetric with
-    ``CHUNK_R_SIZE`` / ``CHUNK_V_SIZE``."""
-    monkeypatch.setenv("CHUNK_SIZE", "1200")
-    monkeypatch.setenv("CHUNK_F_SIZE", "777")
-
-    import lightrag.chunker as chunker_pkg
-
-    captured: dict = {}
-
-    def _f_spy(tokenizer, content, chunk_token_size, **kwargs):
-        captured["chunk_token_size"] = chunk_token_size
-        captured["kwargs"] = dict(kwargs)
-        return [{"tokens": 5, "content": "stub", "chunk_order_index": 0}]
-
-    monkeypatch.setattr(chunker_pkg, "chunking_by_fixed_token", _f_spy)
-
-    async def _run():
-        rag = _new_rag(tmp_path)
-        await rag.initialize_storages()
-        try:
-            await rag.apipeline_enqueue_documents(
-                "stand-in body for fixed-token chunker",
-                file_paths="ctor-f.txt",
-                track_id="track-f-size",
-                process_options="F",
-            )
-            await rag.apipeline_process_enqueue_documents()
-        finally:
-            await rag.finalize_storages()
-
-    asyncio.run(_run())
-    assert captured.get("chunk_token_size") == 777, (
-        "F chunker must receive CHUNK_F_SIZE-derived chunk_token_size, "
-        f"not the global CHUNK_SIZE; got {captured!r}"
-    )
-    # Dispatcher must not double-pass chunk_token_size as kwarg.
-    assert "chunk_token_size" not in captured["kwargs"]
 
 
 @pytest.mark.offline

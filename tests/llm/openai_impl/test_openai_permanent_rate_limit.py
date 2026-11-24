@@ -17,9 +17,6 @@ unchanged -- callers doing ``except RateLimitError`` / ``isinstance`` keep
 working, and the failure summary carries the provider's own message.
 """
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
 import httpx
 import pytest
 from openai import (
@@ -73,34 +70,6 @@ def _make_rate_limit_error(body: object, message: str | None = None) -> RateLimi
     )
 
 
-def _make_chat_client(error: Exception) -> SimpleNamespace:
-    return SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=AsyncMock(side_effect=error))
-        ),
-        close=AsyncMock(),
-    )
-
-
-class _FailingEmbeddingClient:
-    """Minimal async-context-manager client whose embeddings.create always fails."""
-
-    def __init__(self, error: Exception):
-        self.calls = 0
-        self._error = error
-        self.embeddings = SimpleNamespace(create=self._create)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def _create(self, **params):
-        self.calls += 1
-        raise self._error
-
-
 @pytest.fixture
 def no_retry_wait(monkeypatch):
     """Strip the exponential backoff so the retrying cases stay fast.
@@ -120,10 +89,14 @@ def no_retry_wait(monkeypatch):
 @pytest.mark.parametrize(
     "body, message",
     [
-        pytest.param(BUDGET_BODY, None, id="budget-unwrapped-body"),
-        pytest.param({"error": BUDGET_BODY}, None, id="budget-nested-envelope"),
-        pytest.param(QUOTA_BODY, None, id="quota-unwrapped-body"),
-        pytest.param({"error": QUOTA_BODY}, None, id="quota-nested-envelope"),
+        # One case per allow-list member and one per body shape; the two axes
+        # are independent, so their cross product is not needed. The body
+        # cases carry a message without the slug, so the rendered-message
+        # fallback cannot answer for the body probe.
+        pytest.param(BUDGET_BODY, "Error code: 429", id="budget-unwrapped-body"),
+        pytest.param(
+            {"error": QUOTA_BODY}, "Error code: 429", id="quota-nested-envelope"
+        ),
         pytest.param(
             None,
             "Error code: 429 - {'error': {'message': 'Budget has been exceeded! "
@@ -139,7 +112,6 @@ def test_permanent_spend_stop_is_detected(body, message):
 @pytest.mark.parametrize(
     "body",
     [
-        pytest.param(THROTTLE_BODY, id="throughput-throttle"),
         pytest.param({"error": THROTTLE_BODY}, id="nested-throughput-throttle"),
         pytest.param(None, id="no-body"),
         pytest.param("plain text error page", id="non-mapping-body"),
@@ -150,97 +122,15 @@ def test_ordinary_rate_limit_is_not_a_spend_stop(body):
 
 
 # ---------------------------------------------------------------------------
-# Retry behaviour -- the fix proof
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_complete_does_not_retry_budget_exceeded(monkeypatch, no_retry_wait):
-    """One attempt, and the provider's own RateLimitError reaches the caller."""
-    err = _make_rate_limit_error(BUDGET_BODY)
-    fake_client = _make_chat_client(err)
-    monkeypatch.setattr(
-        "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
-    )
-
-    with pytest.raises(RateLimitError) as excinfo:
-        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
-
-    assert fake_client.chat.completions.create.await_count == 1
-    # The actionable operator message survives instead of being wrapped away.
-    assert "Budget has been exceeded" in str(excinfo.value)
-
-
-@pytest.mark.asyncio
-async def test_complete_does_not_retry_insufficient_quota(monkeypatch, no_retry_wait):
-    """OpenAI's native exhausted-billing 429 is the same permanent stop."""
-    fake_client = _make_chat_client(_make_rate_limit_error(QUOTA_BODY))
-    monkeypatch.setattr(
-        "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
-    )
-
-    with pytest.raises(RateLimitError):
-        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
-
-    assert fake_client.chat.completions.create.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_complete_still_retries_ordinary_rate_limit(monkeypatch, no_retry_wait):
-    """A throughput 429 keeps its three attempts, then the original
-    RateLimitError -- not a tenacity.RetryError -- reaches the caller."""
-    err = _make_rate_limit_error(THROTTLE_BODY)
-    fake_client = _make_chat_client(err)
-    monkeypatch.setattr(
-        "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
-    )
-
-    with pytest.raises(RateLimitError) as excinfo:
-        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
-
-    assert fake_client.chat.completions.create.await_count == 3
-    assert "Rate limit reached" in str(excinfo.value)
-
-
-@pytest.mark.asyncio
-async def test_embed_does_not_retry_budget_exceeded(monkeypatch, no_retry_wait):
-    """LiteLLM meters embedding spend too, so the embed binding needs the same gate."""
-    fake_client = _FailingEmbeddingClient(_make_rate_limit_error(BUDGET_BODY))
-    monkeypatch.setattr(
-        "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
-    )
-
-    with pytest.raises(RateLimitError):
-        await openai_embed(["hello"])
-
-    assert fake_client.calls == 1
-
-
-@pytest.mark.asyncio
-async def test_embed_still_retries_ordinary_rate_limit(monkeypatch, no_retry_wait):
-    fake_client = _FailingEmbeddingClient(_make_rate_limit_error(THROTTLE_BODY))
-    monkeypatch.setattr(
-        "lightrag.llm.openai.create_openai_async_client", lambda **kw: fake_client
-    )
-
-    with pytest.raises(RateLimitError) as excinfo:
-        await openai_embed(["hello"])
-
-    assert fake_client.calls == 3
-    assert "Rate limit reached" in str(excinfo.value)
-
-
-# ---------------------------------------------------------------------------
-# HTTP level -- the SDK has a retry loop of its own
+# Retry behaviour, counted at the HTTP level
 # ---------------------------------------------------------------------------
 #
-# The tests above stub ``chat.completions.create``, so they never exercise the
-# transport and cannot see the OpenAI SDK's own retries. The SDK defaults to
+# These tests count the requests that actually reach the wire, so they see the
+# OpenAI SDK's own retry loop as well as tenacity's. The SDK defaults to
 # ``max_retries=2`` and its ``_should_retry`` is body-blind (it retries every
-# 429), so a permanent spend stop still cost three HTTP requests plus SDK
-# backoff even with the tenacity predicate in place. ``create_openai_async_client``
-# now builds the client with ``max_retries=0``; these tests count the requests
-# that actually reach the wire.
+# 429), so a permanent spend stop would cost three requests even with the
+# tenacity predicate in place; ``create_openai_async_client`` builds the client
+# with ``max_retries=0``, and a count of exactly one pins both.
 
 
 def _counting_transport(
@@ -273,59 +163,54 @@ def _client_factory(transport: httpx.MockTransport):
     return factory
 
 
+async def _call_complete():
+    return await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+
+
+async def _call_embed():
+    return await openai_embed(["hello"])
+
+
+# Which permanent type each entry point gets does not matter: the detection
+# table above covers every member, and both decorators share one predicate.
 @pytest.mark.parametrize(
-    "body",
+    "call, body",
     [
-        pytest.param(BUDGET_BODY, id="budget-exceeded"),
-        pytest.param(QUOTA_BODY, id="insufficient-quota"),
+        pytest.param(_call_complete, BUDGET_BODY, id="complete-budget-exceeded"),
+        pytest.param(_call_embed, QUOTA_BODY, id="embed-insufficient-quota"),
     ],
 )
 @pytest.mark.asyncio
 async def test_spend_stop_costs_exactly_one_http_request(
-    monkeypatch, no_retry_wait, body
+    monkeypatch, no_retry_wait, call, body
 ):
+    """One request, and the provider's own RateLimitError reaches the caller."""
     calls = [0]
     monkeypatch.setattr(
         "lightrag.llm.openai.create_openai_async_client",
         _client_factory(_counting_transport(calls, body)),
     )
 
-    with pytest.raises(RateLimitError):
-        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+    with pytest.raises(RateLimitError) as excinfo:
+        await call()
 
     assert calls[0] == 1
+    # The actionable operator message survives instead of being wrapped away.
+    assert body["message"] in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
-    "body",
-    [
-        pytest.param(BUDGET_BODY, id="budget-exceeded"),
-        pytest.param(QUOTA_BODY, id="insufficient-quota"),
-    ],
+    "call", [_call_complete, _call_embed], ids=["complete", "embed"]
 )
 @pytest.mark.asyncio
-async def test_embed_spend_stop_costs_exactly_one_http_request(
-    monkeypatch, no_retry_wait, body
-):
-    calls = [0]
-    monkeypatch.setattr(
-        "lightrag.llm.openai.create_openai_async_client",
-        _client_factory(_counting_transport(calls, body)),
-    )
-
-    with pytest.raises(RateLimitError):
-        await openai_embed(["hello"])
-
-    assert calls[0] == 1
-
-
-@pytest.mark.asyncio
 async def test_ordinary_429_costs_exactly_the_tenacity_attempts(
-    monkeypatch, no_retry_wait
+    monkeypatch, no_retry_wait, call
 ):
-    """With the SDK loop off, the request count is the tenacity attempt count.
+    """A throughput 429 keeps its three attempts, then the original
+    RateLimitError -- not a tenacity.RetryError -- reaches the caller.
 
-    Previously this was 3 x 3: the outer loop multiplied with the SDK's own.
+    With the SDK loop off, the request count is the tenacity attempt count;
+    it used to be 3 x 3, the outer loop multiplied with the SDK's own.
     """
     calls = [0]
     monkeypatch.setattr(
@@ -333,16 +218,11 @@ async def test_ordinary_429_costs_exactly_the_tenacity_attempts(
         _client_factory(_counting_transport(calls, THROTTLE_BODY)),
     )
 
-    with pytest.raises(RateLimitError):
-        await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
+    with pytest.raises(RateLimitError) as excinfo:
+        await call()
 
     assert calls[0] == 3
-
-
-def test_sdk_retries_are_off_by_default():
-    from lightrag.llm.openai import create_openai_async_client
-
-    assert create_openai_async_client(api_key="k").max_retries == 0
+    assert "Rate limit reached" in str(excinfo.value)
 
 
 def test_client_configs_can_restore_sdk_retries():
@@ -382,7 +262,9 @@ async def test_complete_retries_transient_statuses(
     assert excinfo.value.status_code == status_code
 
 
-@pytest.mark.parametrize("status_code", [408, 409])
+# Both members are pinned on completion above; embed only has to prove that its
+# decorator carries the same predicate.
+@pytest.mark.parametrize("status_code", [408])
 @pytest.mark.asyncio
 async def test_embed_retries_transient_statuses(
     monkeypatch, no_retry_wait, status_code
@@ -400,7 +282,7 @@ async def test_embed_retries_transient_statuses(
     assert excinfo.value.status_code == status_code
 
 
-@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+@pytest.mark.parametrize("status_code", [400, 422])
 @pytest.mark.asyncio
 async def test_client_errors_still_fail_fast(monkeypatch, no_retry_wait, status_code):
     """Ownership transfer must not widen: the SDK never retried these either."""
@@ -427,14 +309,6 @@ def _disconnecting_transport(counter: list[int]) -> httpx.MockTransport:
         raise httpx.ConnectError("connection refused", request=request)
 
     return httpx.MockTransport(handler)
-
-
-async def _call_complete():
-    return await openai_complete_if_cache(model="gpt-4o-mini", prompt="hello")
-
-
-async def _call_embed():
-    return await openai_embed(["hello"])
 
 
 @pytest.mark.parametrize(

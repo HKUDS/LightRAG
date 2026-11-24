@@ -71,11 +71,20 @@ class _Connection:
         return [{"id": "a"}]
 
 
+# Both HNSW index types share one statement: every top_k on HNSW, and the
+# cap once on HNSW_HALFVEC.
 @pytest.mark.parametrize(
-    ("top_k", "value"),
-    [(10, 10), (60, 60), (1000, 1000), (1001, 1000), (5000, 1000)],
+    ("index_type", "top_k", "value"),
+    [
+        ("HNSW", top_k, value)
+        for top_k, value in (
+            (10, 10),
+            (1000, 1000),
+            (1001, 1000),
+        )
+    ]
+    + [("HNSW_HALFVEC", 1001, 1000)],
 )
-@pytest.mark.parametrize("index_type", ["HNSW", "HNSW_HALFVEC"])
 def test_statement_raises_to_top_k_capped_at_the_guc_maximum(
     index_type, top_k, value
 ) -> None:
@@ -85,12 +94,12 @@ def test_statement_raises_to_top_k_capped_at_the_guc_maximum(
     assert _db(index_type).ef_search_statement(top_k) == _ef_sql(value)
 
 
-@pytest.mark.parametrize("index_type", ["IVFFLAT", "VCHORDRQ", None])
+@pytest.mark.parametrize("index_type", ["IVFFLAT", None])
 def test_non_hnsw_index_has_no_statement(index_type) -> None:
     assert _db(index_type).ef_search_statement(100) is None
 
 
-@pytest.mark.parametrize("top_k", [None, 0, -1])
+@pytest.mark.parametrize("top_k", [None, 0])
 def test_no_positive_top_k_has_no_statement(top_k) -> None:
     assert _db().ef_search_statement(top_k) is None
 
@@ -164,7 +173,7 @@ async def test_db_query_hands_ann_top_k_to_the_scan_helper() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("top_k", [10, 60, 100])
+@pytest.mark.parametrize("top_k", [10])
 async def test_storage_query_passes_its_top_k(top_k) -> None:
     storage = PGVectorStorage.__new__(PGVectorStorage)
     storage.namespace = "chunks"

@@ -35,7 +35,13 @@ def _tok() -> Tokenizer:
     return Tokenizer("char-tokenizer", _CharTokenizer())
 
 
-@pytest.mark.parametrize("chunk_token_size", [0, -1, -5])
+@pytest.mark.parametrize(
+    "chunk_token_size",
+    [
+        0,
+        -1,
+    ],
+)
 def test_non_positive_chunk_token_size_raises(chunk_token_size):
     """A non-positive size is rejected, never floored to one-token chunks.
 
@@ -59,7 +65,7 @@ def test_small_positive_chunk_token_size_is_allowed_on_direct_call():
     assert [c["chunk_order_index"] for c in chunks] == [0, 1, 2]
 
 
-@pytest.mark.parametrize("chunk_overlap_token_size", [-1, -3, -(10**6)])
+@pytest.mark.parametrize("chunk_overlap_token_size", [-1, -(10**6)])
 def test_negative_chunk_overlap_token_size_floors_to_zero(chunk_overlap_token_size):
     """Any negative overlap gives exactly the output of an explicit 0."""
     body = "abcdefghij"

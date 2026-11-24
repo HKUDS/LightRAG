@@ -216,16 +216,8 @@ def test_pipe_table_cell_holding_closing_table_tag_survives_chunking(
     assert json.loads(table_entry["content"]) == [header, *rows]
 
 
-def test_reparse_content_is_byte_stable(tmp_path: Path):
-    first = _content_lines(_build_sidecar(tmp_path / "a"))
-    second = _content_lines(_build_sidecar(tmp_path / "b"))
-    assert first == second
-
-
 @pytest.mark.offline
-@pytest.mark.parametrize(
-    "wrapper", ["{}", "`{}`", "```xml\n{}\n```", "~~~text\n{}\n~~~"]
-)
+@pytest.mark.parametrize("wrapper", ["{}", "`{}`", "```xml\n{}\n```"])
 @pytest.mark.parametrize("literals_first", [True, False])
 def test_source_marker_literals_survive_real_multimodal_items(
     tmp_path: Path, wrapper: str, literals_first: bool

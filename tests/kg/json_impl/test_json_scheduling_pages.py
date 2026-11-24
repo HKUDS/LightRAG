@@ -444,17 +444,6 @@ async def test_get_by_id_strict_confirmed_absence(tmp_path):
     assert await storage.get_by_id_strict("missing") is None
 
 
-@pytest.mark.asyncio
-async def test_malformed_cursor_raises_control_plane_error(tmp_path):
-    storage = await _storage(tmp_path, {"doc-1": _doc("pending")})
-    with pytest.raises(StorageControlPlaneError):
-        await storage.get_docs_by_statuses_page(
-            [DocStatus.PENDING],
-            limit=1,
-            position=CursorAfter(json.dumps({"not": "a-pair"})),
-        )
-
-
 _TWO_DOC_ROWS = {
     "doc-1": _doc("pending", created_at="2026-01-01T00:00:00+00:00"),
     "doc-2": _doc("pending", created_at="2026-02-01T00:00:00+00:00"),

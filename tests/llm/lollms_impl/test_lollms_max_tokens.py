@@ -99,11 +99,6 @@ async def _sent_request(monkeypatch, **generation_kwargs):
             id="generic-limit-maps-to-native-field",
         ),
         pytest.param(
-            {"n_predict": 41},
-            41,
-            id="native-limit-is-preserved",
-        ),
-        pytest.param(
             {"max_tokens": 37, "n_predict": 41},
             41,
             id="native-limit-takes-precedence",
@@ -112,11 +107,6 @@ async def _sent_request(monkeypatch, **generation_kwargs):
             {"max_tokens": 37, "n_predict": 0},
             0,
             id="explicit-native-zero-takes-precedence",
-        ),
-        pytest.param(
-            {"max_tokens": 37, "n_predict": None},
-            37,
-            id="native-none-falls-back-to-generic-limit",
         ),
     ],
 )

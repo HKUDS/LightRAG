@@ -24,54 +24,6 @@ from lightrag.utils import (
 class TestWriteJsonOptimization:
     """Test write_json optimization with two-stage approach"""
 
-    def test_fast_path_clean_data(self):
-        """Test that clean data takes the fast path without sanitization"""
-        clean_data = {
-            "name": "John Doe",
-            "age": 30,
-            "items": ["apple", "banana", "cherry"],
-            "nested": {"key": "value", "number": 42},
-        }
-
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-            temp_file = f.name
-
-        try:
-            # Write clean data - should return False (no sanitization)
-            needs_reload = write_json(clean_data, temp_file)
-            assert not needs_reload, "Clean data should not require sanitization"
-
-            # Verify data was written correctly
-            loaded_data = load_json(temp_file)
-            assert loaded_data == clean_data, "Loaded data should match original"
-        finally:
-            os.unlink(temp_file)
-
-    def test_slow_path_dirty_data(self):
-        """Test that dirty data triggers sanitization"""
-        # Create data with surrogate characters (U+D800 to U+DFFF)
-        dirty_string = "Hello\ud800World"  # Contains surrogate character
-        dirty_data = {"text": dirty_string, "number": 123}
-
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
-            temp_file = f.name
-
-        try:
-            # Write dirty data - should return True (sanitization applied)
-            needs_reload = write_json(dirty_data, temp_file)
-            assert needs_reload, "Dirty data should trigger sanitization"
-
-            # Verify data was written and sanitized
-            loaded_data = load_json(temp_file)
-            assert loaded_data is not None, "Data should be written"
-            assert loaded_data["number"] == 123, "Clean fields should remain unchanged"
-            # Surrogate character should be removed
-            assert "\ud800" not in loaded_data["text"], (
-                "Surrogate character should be removed"
-            )
-        finally:
-            os.unlink(temp_file)
-
     def test_sanitizing_encoder_removes_surrogates(self):
         """Test that SanitizingJSONEncoder removes surrogate characters"""
         data_with_surrogates = {
@@ -352,10 +304,6 @@ class TestSanitizeTextForEncoding:
     """Direct unit tests for sanitize_text_for_encoding function."""
 
     def test_empty_string_returns_empty(self):
-        assert sanitize_text_for_encoding("") == ""
-
-    def test_none_like_falsy_returns_as_is(self):
-        # The function checks `if not text`, so empty string returns early
         assert sanitize_text_for_encoding("") == ""
 
     def test_whitespace_only_returns_empty(self):

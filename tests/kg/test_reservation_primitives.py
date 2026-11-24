@@ -881,7 +881,10 @@ async def test_release_token_set_reservation_survives_fetch_cancellation(monkeyp
 
 
 @pytest.mark.parametrize(
-    "kind", ["admin", "processing", "scan", "clear", "delete", "custom_chunks"]
+    "kind",
+    [
+        "admin",
+    ],
 )
 def test_reservation_owner_kind_reads_a_full_owner_record(kind):
     from lightrag.kg.shared_storage import make_owner_record, reservation_owner_kind

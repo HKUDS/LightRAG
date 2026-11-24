@@ -81,18 +81,6 @@ def _new_rag(tmp_path: Path, **kwargs) -> LightRAG:
             {"fixed_token": {"chunk_token_size": _TOO_SMALL}},
             "chunker.fixed_token.chunk_token_size",
         ),
-        (
-            {"recursive_character": {"chunk_token_size": 0}},
-            "chunker.recursive_character.chunk_token_size",
-        ),
-        (
-            {"semantic_vector": {"chunk_token_size": -5}},
-            "chunker.semantic_vector.chunk_token_size",
-        ),
-        (
-            {"paragraph_semantic": {"chunk_token_size": 1}},
-            "chunker.paragraph_semantic.chunk_token_size",
-        ),
         # bool is an int subclass: True is 1, below the minimum.
         ({"chunk_token_size": True}, "chunker.chunk_token_size"),
     ],

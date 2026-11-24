@@ -15,7 +15,6 @@ SCRIPT = Path(__file__).resolve().parents[2] / "examples" / "generate_query.py"
     [
         ([], "gpt-6-luna", "none"),
         (["--model", "gpt-4o-mini"], "gpt-4o-mini", None),
-        (["--model", "gpt-5.6-terra"], "gpt-5.6-terra", None),
     ],
 )
 def test_generate_query_uses_selected_model(

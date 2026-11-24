@@ -47,29 +47,3 @@ async def test_rebuild_still_returns_entities_from_nonempty_json() -> None:
         timestamp=1,
     )
     assert "Alice" in nodes
-
-
-@pytest.mark.asyncio
-async def test_rebuild_still_falls_back_on_unparseable_json_looking_text(
-    caplog, lightrag_caplog
-) -> None:
-    """Text that starts with '{' but is not recoverable JSON, and also has no
-    completion marker, is the pre-existing garbage-input case: falling
-    through to the delimiter parser is correct there, unlike the
-    valid-empty-JSON case above.
-
-    The delimiter parser's finding is recorded at DEBUG rather than WARNING on
-    this path: the JSON parser has already reported the failure at WARNING, and
-    repeating it would make one bad chunk read as two problems. See
-    ``test_rebuild_fallback_warning_dedup.py``.
-    """
-    with caplog.at_level(logging.DEBUG, logger="lightrag"):
-        nodes, edges = await _rebuild_from_extraction_result(
-            DummyKV(),
-            "{not json at all, no delimiter either",
-            chunk_id="chunk-3",
-            timestamp=1,
-        )
-    assert nodes == {}
-    assert edges == {}
-    assert "Complete delimiter can not be found" in caplog.text

@@ -15,7 +15,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from lightrag.exceptions import ConfigurationAnchorLockError
 from lightrag.kg import anchor_lock as al
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.namespace import SERVER_SCOPE
+from tests.config_store._rendezvous import release_when_ready
 from tests.config_store.test_config_store import FakeConfigKV
 
 pytestmark = pytest.mark.offline
@@ -136,17 +136,19 @@ async def test_without_file_locks_the_bind_proceeds_with_a_warning(
     assert any("bind lock" in w for w in warnings)
 
 
-def test_two_servers_starting_together_bind_exactly_one_identity(tmp_path):
+def test_two_servers_starting_together_bind_exactly_one_identity(
+    tmp_path, tmp_path_factory
+):
     """Two real process trees, one working directory, one shared store, both
     reading "no identity" at the same moment. Exactly one creates it; the
     other verifies against the anchor the first published -- never a second
     UUID left in the store under an anchor that names the first."""
     store = tmp_path / "store.json"
-    start_at = time.time() + 2.0
+    rendezvous = tmp_path_factory.mktemp("rendezvous")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
     procs = [
         subprocess.Popen(
-            [sys.executable, str(_PROBE), str(tmp_path), str(store), str(start_at)],
+            [sys.executable, str(_PROBE), str(tmp_path), str(store), str(rendezvous)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -154,6 +156,7 @@ def test_two_servers_starting_together_bind_exactly_one_identity(tmp_path):
         )
         for _ in range(2)
     ]
+    release_when_ready(rendezvous, procs)
     results = []
     for proc in procs:
         out, err = proc.communicate(timeout=60)

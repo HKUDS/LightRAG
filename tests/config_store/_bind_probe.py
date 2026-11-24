@@ -10,7 +10,8 @@ import asyncio
 import json
 import os
 import sys
-import time
+
+from _rendezvous import arrive_and_wait
 
 from lightrag import config_store as cs
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
@@ -46,10 +47,10 @@ class FileKV:
         return None
 
 
-async def main(working_dir: str, store: str, start_at: float) -> None:
+async def main(working_dir: str, store: str, rendezvous: str) -> None:
     initialize_share_data(workers=1)
     try:
-        time.sleep(max(0.0, start_at - time.time()))
+        arrive_and_wait(rendezvous)
         binding = await cs.bind_configuration_identity(
             FileKV(store),
             working_dir=working_dir,
@@ -63,4 +64,4 @@ async def main(working_dir: str, store: str, start_at: float) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1], sys.argv[2], float(sys.argv[3])))
+    asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3]))

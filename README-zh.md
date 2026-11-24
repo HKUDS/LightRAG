@@ -46,9 +46,12 @@
 
 </div>
 
-<div align="center" style="margin: 30px 0;">
-  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
-</div>
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
+    <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="LightRAG 的 GitHub Star 账号自报归属。图中机构选自 2026 年 11 月 23 日识别到的 304 家机构。Star 为个人行为。">
+  </picture>
+</p>
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
@@ -596,7 +599,7 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 删除所属文本块已不存在、且没有任何现存文本块仍在引用的 LLM 缓存记录。这些记录无法通过删除文档清除，仍保留抽取提示词及结果。默认仅报告，指定 `--apply` 后才删除，且必须先通过严格读取确认文本块已不存在。
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析、智能标题判定），并保持 workspace 隔离。
 

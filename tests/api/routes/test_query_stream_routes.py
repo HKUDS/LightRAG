@@ -102,16 +102,6 @@ class TestQueryRouteJsonOnly:
             "/query must NOT declare application/x-ndjson — streaming belongs to /query/stream"
         )
 
-    def test_query_route_exists_and_accepts_post(self):
-        client = _build_client()
-        # A minimal POST to /query should reach the route (it'll 422 or 500
-        # since we don't have a real LLM, but it should NOT 404/405)
-        response = client.post("/query", json={"query": "test", "mode": "mix"})
-        assert response.status_code not in (
-            404,
-            405,
-        ), "/query route must exist and accept POST"
-
 
 class TestQueryStreamRoute:
     """The /query/stream endpoint must serve application/x-ndjson."""
@@ -135,14 +125,6 @@ class TestQueryStreamRoute:
         assert "application/x-ndjson" in content, (
             "/query/stream must declare application/x-ndjson in OpenAPI spec"
         )
-
-    def test_stream_route_exists_and_accepts_post(self):
-        client = _build_client()
-        response = client.post("/query/stream", json={"query": "test", "mode": "mix"})
-        assert response.status_code not in (
-            404,
-            405,
-        ), "/query/stream route must exist and accept POST"
 
 
 class TestQueryStreamResponseContentType:

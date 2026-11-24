@@ -436,7 +436,9 @@ async def test_unsupported_vector_format_writes_skipped(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("extension", "metadata_segments"),
-    [("png", 0), ("jpg", 0), ("jpg", 1), ("jpg", 2)],
+    # One ``dims[0] < min_image_pixel`` branch; the JPEG segment scan is
+    # tests/llm/test_vlm_image_inputs.py::test_jpeg_dimensions_after_metadata.
+    [("png", 0), ("jpg", 0)],
 )
 async def test_tiny_image_writes_skipped_without_vlm_call(
     tmp_path, extension, metadata_segments
@@ -661,31 +663,10 @@ async def test_invalid_vlm_response_hard_fails(tmp_path):
                 {"name": "second", "description": "second result"},
             ]
         ),
-        "Here is the result: "
-        + json.dumps(
-            [
-                {"name": "first", "description": "first result"},
-                {"name": "second", "description": "second result"},
-            ]
-        ),
-        json.dumps(
-            [
-                {"name": "first", "description": "first result"},
-                {"name": "second", "description": "second result"},
-            ]
-        )[:-1],
-        "['note', {'name':'first','description':'first result'}]",
-        '[/* note */ {"name":"first","description":"first result"}]',
-        '[/* ] */ {"name":"first","description":"first result"}]',
     ],
     ids=[
         "missing-required-field",
         "top-level-array",
-        "prose-prefixed-top-level-array",
-        "truncated-top-level-array",
-        "repairable-leading-element-array",
-        "commented-top-level-array",
-        "bracket-in-comment-array",
     ],
 )
 async def test_table_extract_json_conformance_retry_succeeds(tmp_path, first_response):
@@ -1013,19 +994,11 @@ async def test_equation_equ_alias_accepted(tmp_path, caplog, lightrag_caplog):
 @pytest.mark.parametrize(
     "response",
     [
+        # The prose-prefix shapes are tolerant_load_json_dict's, pinned in
+        # test_tolerant_load_json_dict.py; this path needs one repairable case.
         '{"name": "fig-1", "type": "Chart", "description": "ok",}',
-        'Source: http://example {"name":"fig-1","type":"Chart","description":"ok"}',
-        'Here\'s the result: {"name":"fig-1","type":"Chart","description":"ok"} trailing {brace}',
-        'Result #1: {"name":"fig-1","type":"Chart","description":"ok"}',
-        'Note // result: {"name":"fig-1","type":"Chart","description":"ok"}',
     ],
-    ids=[
-        "trailing-comma",
-        "prose-url-prefix",
-        "prose-apostrophe-prefix",
-        "prose-hash-prefix",
-        "prose-slash-prefix",
-    ],
+    ids=["trailing-comma"],
 )
 async def test_repairable_json_is_accepted_without_retry(tmp_path, response):
     """Repairable / prose-wrapped VLM JSON must not unnecessarily trigger a
@@ -1636,7 +1609,7 @@ def test_table_content_format_label_html_and_json():
     assert "2-D" in json_label and "row" in json_label
 
 
-@pytest.mark.parametrize("bad", [None, "", "csv", "markdown"])
+@pytest.mark.parametrize("bad", [None, "csv"])  # one KeyError branch
 def test_table_content_format_label_rejects_unknown(bad):
     from lightrag.prompt_multimodal import table_content_format_label
 

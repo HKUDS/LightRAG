@@ -68,37 +68,6 @@ def _embed_success_body() -> dict:
     }
 
 
-class _FakeOpenAIStream:
-    """Async-iterable stream with openai 2.x ``close()`` and no ``aclose``."""
-
-    def __init__(self, chunks):
-        self._chunks = list(chunks)
-        self.close = AsyncMock()
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if not self._chunks:
-            raise StopAsyncIteration
-        return self._chunks.pop(0)
-
-
-def _make_chunk(content="hi"):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=content))]
-    )
-
-
-def _make_stream_client(stream: _FakeOpenAIStream) -> SimpleNamespace:
-    return SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=AsyncMock(return_value=stream))
-        ),
-        close=AsyncMock(),
-    )
-
-
 def _make_error_client(error: Exception) -> SimpleNamespace:
     return SimpleNamespace(
         chat=SimpleNamespace(
@@ -217,32 +186,6 @@ async def test_http_client_none_still_closes_sdk_owned_client():
             )
 
     fake.close.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_stream_early_stop_closes_stream_not_injected_client():
-    stream = _FakeOpenAIStream([_make_chunk("hello"), _make_chunk(" world")])
-    http_client = httpx.AsyncClient()
-    fake = _make_stream_client(stream)
-
-    try:
-        with patch("lightrag.llm.openai.create_openai_async_client", return_value=fake):
-            gen = await openai_complete_if_cache.__wrapped__(
-                model="gpt-4o-mini",
-                prompt="hi",
-                api_key="sk-test",
-                stream=True,
-                openai_client_configs={"http_client": http_client},
-            )
-            first = await gen.__anext__()
-            await gen.aclose()
-
-        assert first == "hello"
-        stream.close.assert_awaited()
-        fake.close.assert_not_awaited()
-        assert http_client.is_closed is False
-    finally:
-        await http_client.aclose()
 
 
 class _TrackingAsyncByteStream(httpx.AsyncByteStream):

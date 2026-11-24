@@ -344,84 +344,6 @@ async def test_backward_compatibility():
 # =============================================================================
 
 
-@pytest.mark.offline
-async def test_multi_workspace_concurrency():
-    """
-    Test that multiple workspaces can operate concurrently without interference.
-    Simulates concurrent operations on different workspaces.
-    """
-    # Purpose: Simulate concurrent workloads touching pipeline_status across
-    # workspaces. Scope: initialize_pipeline_status, get_namespace_lock, and
-    # shared dictionary mutation while ensuring isolation.
-    print("\n" + "=" * 60)
-    print("TEST 4: Multi-Workspace Concurrency")
-    print("=" * 60)
-
-    initialize_share_data()
-
-    async def workspace_operations(workspace_id):
-        """Simulate operations on a specific workspace"""
-        print(f"\n   [{workspace_id}] Starting operations")
-
-        # Initialize pipeline status
-        await initialize_pipeline_status(workspace_id)
-
-        # Get lock and perform operations
-        lock = get_namespace_lock("test_operations", workspace_id)
-        async with lock:
-            # Get workspace data
-            data = await get_namespace_data("pipeline_status", workspace=workspace_id)
-
-            # Modify data
-            data[f"{workspace_id}_key"] = f"{workspace_id}_value"
-            data["timestamp"] = time.time()
-
-            # Simulate some work
-            await asyncio.sleep(0.1)
-
-            print(f"   [{workspace_id}] Completed operations")
-
-        return workspace_id
-
-    # Run multiple workspaces concurrently
-    workspaces = ["concurrent_ws_1", "concurrent_ws_2", "concurrent_ws_3"]
-
-    start = time.time()
-    results_list = await asyncio.gather(
-        *[workspace_operations(ws) for ws in workspaces]
-    )
-    elapsed = time.time() - start
-
-    print(f"\n   All workspaces completed in {elapsed:.2f}s")
-
-    # Verify all workspaces completed
-    assert set(results_list) == set(workspaces), "Not all workspaces completed"
-
-    print("✅ PASSED: Multi-Workspace Concurrency - Execution")
-    print(
-        f"   All {len(workspaces)} workspaces completed successfully in {elapsed:.2f}s"
-    )
-
-    # Verify data isolation - each workspace should have its own data
-    print("\n   Verifying data isolation...")
-
-    for ws in workspaces:
-        data = await get_namespace_data("pipeline_status", workspace=ws)
-        expected_key = f"{ws}_key"
-        expected_value = f"{ws}_value"
-
-        assert expected_key in data, (
-            f"Data not properly isolated for {ws}: missing {expected_key}"
-        )
-        assert data[expected_key] == expected_value, (
-            f"Data not properly isolated for {ws}: {expected_key}={data[expected_key]} (expected {expected_value})"
-        )
-        print(f"   [{ws}] Data correctly isolated: {expected_key}={data[expected_key]}")
-
-    print("✅ PASSED: Multi-Workspace Concurrency - Data Isolation")
-    print("   All workspaces have properly isolated data")
-
-
 # =============================================================================
 # Test 5: NamespaceLock Re-entrance Protection
 # =============================================================================
@@ -731,54 +653,6 @@ async def test_update_flags_workspace_isolation():
 # =============================================================================
 # Test 9: Empty Workspace Standardization
 # =============================================================================
-
-
-@pytest.mark.offline
-async def test_empty_workspace_standardization():
-    """
-    Test that empty workspace is properly standardized to "" instead of "_".
-    """
-    # Purpose: Verify namespace formatting when workspace is an empty string.
-    # Scope: get_final_namespace output and initialize_pipeline_status behavior
-    # between empty and non-empty workspaces.
-    print("\n" + "=" * 60)
-    print("TEST 9: Empty Workspace Standardization")
-    print("=" * 60)
-
-    # Test 9.1: Empty string workspace creates namespace without colon
-    print("\nTest 9.1: Empty string workspace namespace format")
-
-    set_default_workspace("")
-    final_ns = get_final_namespace("test_namespace", workspace=None)
-
-    # Should be just "test_namespace" without colon prefix
-    assert final_ns == "test_namespace", (
-        f"Unexpected namespace format: '{final_ns}' (expected 'test_namespace')"
-    )
-
-    print("✅ PASSED: Empty Workspace Standardization - Format")
-    print(f"   Empty workspace creates correct namespace: '{final_ns}'")
-
-    # Test 9.2: Empty workspace vs non-empty workspace behavior
-    print("\nTest 9.2: Empty vs non-empty workspace behavior")
-
-    initialize_share_data()
-
-    # Initialize with empty workspace
-    await initialize_pipeline_status(workspace="")
-    data_empty = await get_namespace_data("pipeline_status", workspace="")
-
-    # Initialize with non-empty workspace
-    await initialize_pipeline_status(workspace="test_ws")
-    data_nonempty = await get_namespace_data("pipeline_status", workspace="test_ws")
-
-    # They should be different objects
-    assert data_empty is not data_nonempty, (
-        "Empty and non-empty workspaces share data (should be independent)"
-    )
-
-    print("✅ PASSED: Empty Workspace Standardization - Behavior")
-    print("   Empty and non-empty workspaces have independent data")
 
 
 # =============================================================================

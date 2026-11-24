@@ -324,14 +324,6 @@ def test_pipe_table_escaped_pipe_in_header_keeps_table():
     assert table["rows"] == [["1", "2"]]
 
 
-def test_pipe_table_escaped_backslash_still_splits():
-    # ``\\`` is a literal backslash, so the ``|`` after it is a real separator.
-    md = "| h1 | h2 |\n| --- | --- |\n| a \\\\| b |\n"
-    ex = _extract(md)
-    (table,) = ex.tables.values()
-    assert table["rows"] == [["a \\", "b"]]
-
-
 def test_escaped_pipe_only_line_over_thematic_break_is_not_a_table():
     # With no unescaped ``|`` the line has no column separator at all, so it is
     # a paragraph, even though its single cell matches the one-cell ``---``.
@@ -372,7 +364,6 @@ def test_escaped_backslash_body_row_splits_into_two_cells():
         ("a \\| b", False),  # escaped pipe: cell content, no separator
         ("a \\\\| b", True),  # escaped backslash, then a real separator
         ("a \\\\\\| b", False),  # escaped backslash, then an escaped pipe
-        ("a \\\\\\\\| b", True),  # two escaped backslashes, then a separator
     ],
 )
 def test_has_unescaped_pipe_agrees_with_the_row_splitter(line, expected):
@@ -838,14 +829,17 @@ def test_parenthesised_source_is_limited_in_length():
         # depth for a suffix no image could ever reach (230 MiB for 1 MB).
         "![x](a.png) " + ")" * 1_000_000,
         "![x](a(1).png) " + ")" * 1_000_000,
-        "![x](" + "(" * 1_000_000,
-        "![x](a(" + "()" * 500_000 + ")",
+        # These two are slow under tracemalloc, so they are shorter: an index
+        # over the whole line still takes about 4x the bound at this length.
+        "![x](" + "(" * 250_000,
+        "![x](a(" + "()" * 125_000 + ")",
         "![x](a b" + ".png)" * 200_000,
         "![x](a (b" + ".png) " * 200_000,
         # Code spans are skipped, never indexed: a whole-line list of backtick
-        # runs took 48 MiB for this line.
-        "![x](a.png) " + "`a" * 200_000,
-        "![x](a.png) " + "``a`" * 100_000,
+        # runs took 48 MiB for the first line at twice this length. Halved for
+        # speed, the list still takes 1.5x the bound or more.
+        "![x](a.png) " + "`a" * 100_000,
+        "![x](a.png) " + "``a`" * 50_000,
         "![x](a.png) " + "".join("`" * k + " " for k in range(1, 1_400)),
     ],
 )

@@ -222,7 +222,7 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 - `--host`: Server listening address (default: 0.0.0.0)
 - `--port`: Server listening port (default: 9621)
-- `--timeout`: LLM request timeout (default: 150 seconds)
+- `--timeout`: Base of the Gunicorn worker timeout, in seconds; the worker timeout is this value + 30 (default: 150). Ignored by `lightrag-server`; LLM requests use `LLM_TIMEOUT`
 - `--log-level`: Log level (default: INFO)
 - `--working-dir`: Database persistence directory (default: ./rag_storage)
 - `--input-dir`: Directory for uploaded files (default: ./inputs)
@@ -262,7 +262,7 @@ Using Docker Compose is the most convenient way to deploy and run the LightRAG S
 
 - Create a project directory.
 - Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
-- Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
+- Prepare the `.env` file: Duplicate the sample file [`env.example`](../env.example) to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
 - Start the LightRAG Server with the following command:
 
 ```shell
@@ -310,10 +310,10 @@ VLM_PROCESS_ENABLE=false
 LLM_BINDING=openai
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
 
 #######################################################################################
 ### Embedding Configuration (do not change after the first file is processed)
@@ -381,7 +381,7 @@ Use this after the basic document flow works. The MinerU official API avoids run
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 
 VLM_PROCESS_ENABLE=true
-VLM_LLM_MODEL=gpt-5-mini
+VLM_LLM_MODEL=gpt-6.1-terra
 
 MINERU_API_MODE=official
 MINERU_API_TOKEN=your_mineru_api_token
@@ -861,14 +861,14 @@ If a role is not configured, it inherits the base `LLM_*` settings. Minimal same
 
 ```bash
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
-EXTRACT_LLM_MODEL=gpt-5-mini
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
-VLM_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
+VLM_LLM_MODEL=gpt-6.1-terra
 ```
 
 **Recommended models by role:**
@@ -1060,6 +1060,8 @@ python -m lightrag.tools.migrate_graph_storage --apply
 
 Only the graph moves; vector and KV data are untouched and stay valid, because the migrated graph keeps the same entity and relation identities. The tool requires an empty target graph slice and refuses, before writing anything, on every construct it can see that would not survive the move — a node without a usable identity, a duplicate node id, a reciprocal edge pair, or a value PostgreSQL `jsonb` cannot store. If a write fails it removes exactly what that run wrote. One limit worth knowing: Apache AGE enumerates edges with `SELECT DISTINCT`, so two byte-identical relationships between the same pair arrive as one row and the tool cannot see that the graph's degree will change. Re-indexing remains the general guidance for changing storage backends — this is an advanced path for one specific pair. For preconditions, the report format, and the failure handling, refer to [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
+In a Docker Compose deployment, run the tool in a one-off container of the `lightrag` service and follow [Migrate from PGGraphStorage to PGTableGraphStorage](DockerDeployment.md#migrate-from-pggraphstorage-to-pgtablegraphstorage), which also removes the AGE graph before the PostgreSQL image is switched.
+
 ### LightRAG API Server Command Line Options
 
 | Parameter | Default | Description |
@@ -1068,7 +1070,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--port` | `9621` | Server port |
 | `--working-dir` | `./rag_storage` | Working directory for RAG storage |
 | `--input-dir` | `./inputs` | Directory containing uploaded/input documents |
-| `--timeout` | `150` | Gunicorn worker timeout and fallback request timeout |
+| `--timeout` | `150` | Base of the Gunicorn worker timeout in seconds (worker timeout = value + 30); not an LLM request timeout |
 | `--max-async` | `4` | Base maximum LLM concurrency; also the per-document chunk-extraction task limit (each entity/relation merge phase uses twice this task limit) |
 | `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `--verbose` | `False` | Verbose debug output, effective with debug logging |

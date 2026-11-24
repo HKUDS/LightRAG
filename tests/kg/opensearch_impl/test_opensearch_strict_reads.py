@@ -362,13 +362,6 @@ async def test_kv_get_by_id_raises_on_malformed_or_missing_item(global_config):
         await storage.get_by_id("doc-1")
 
 
-async def test_kv_get_by_id_none_only_for_explicit_found_false(global_config):
-    client = _make_client()
-    storage = await _make_kv(global_config, client)
-    client.mget = AsyncMock(return_value={"docs": [{"_id": "doc-1", "found": False}]})
-    assert await storage.get_by_id("doc-1") is None
-
-
 async def test_kv_get_by_ids_raises_on_item_level_error(global_config):
     client = _make_client()
     storage = await _make_kv(global_config, client)

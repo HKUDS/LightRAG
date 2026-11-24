@@ -546,7 +546,7 @@ class TestAllowedFieldsAndTypes:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "weight, expected",
-        [(2, 2.0), (2.5, 2.5), ("2.5", 2.5)],
+        [(2, 2.0), ("2.5", 2.5)],
     )
     async def test_relation_weight_is_normalized_to_float(self, rag, weight, expected):
         """A numeric string is accepted, and stored as a number.
@@ -568,7 +568,10 @@ class TestAllowedFieldsAndTypes:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "weight", ["nan", "NaN", "inf", "Infinity", "1e999", "-1e999"]
+        # One isfinite() check: a literal nan, and an overflow to inf. Other
+        # spellings only re-test float() parsing.
+        "weight",
+        ["nan", "1e999"],
     )
     async def test_relation_weight_rejects_strings_that_coerce_to_non_finite(
         self, rag, weight
@@ -593,7 +596,8 @@ class TestAllowedFieldsAndTypes:
         assert "AFTER" in rag.graphml_text()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("weight", [10**400, 2**63, -(10**400)])
+    # The int64 upper boundary, and the lower bound past where float() overflows.
+    @pytest.mark.parametrize("weight", [2**63, -(10**400)])
     async def test_relation_weight_rejects_oversized_integers(self, rag, weight):
         """A huge JSON integer must be a 400, not an uncaught OverflowError.
 
@@ -614,7 +618,8 @@ class TestAllowedFieldsAndTypes:
         assert "AFTER" in rag.graphml_text()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("weight", [True, "abc", NESTED, None])
+    # Non-scalars are also refused by test_unknown_key_with_non_scalar_value_is_refused.
+    @pytest.mark.parametrize("weight", [True, "abc", None])
     async def test_relation_weight_rejects_non_numbers(self, rag, weight):
         await rag.create_entity("REL_A")
         await rag.create_entity("REL_B")

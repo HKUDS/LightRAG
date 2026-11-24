@@ -7,7 +7,6 @@ evidence handed to the LLM vary between processes for the same query.
 """
 
 from copy import deepcopy
-from itertools import permutations
 from unittest.mock import AsyncMock
 
 import numpy as np
@@ -45,7 +44,11 @@ async def _select(entities, vectors, count, *, embedding=None, query_embedding=N
     return result, store
 
 
-@pytest.mark.parametrize("order", list(permutations(["chunk-a", "chunk-b", "chunk-c"])))
+# A permutation and its reverse: no hash- or name-ordered selection can pass both.
+_ORDERS = [("chunk-a", "chunk-b", "chunk-c"), ("chunk-c", "chunk-b", "chunk-a")]
+
+
+@pytest.mark.parametrize("order", _ORDERS)
 async def test_similarity_ties_preserve_candidate_order(order):
     vectors = {key: np.array([1.0, 0.0]) for key in order}
     result, store = await _select([{"sorted_chunks": list(order)}], vectors, 2)
@@ -89,7 +92,7 @@ async def test_ties_only_affect_equal_scores():
     assert result == ["best", "tie-b", "tie-a"]
 
 
-@pytest.mark.parametrize("order", list(permutations(["chunk-a", "chunk-b", "chunk-c"])))
+@pytest.mark.parametrize("order", _ORDERS)
 async def test_storage_error_fallback_preserves_candidate_order(order):
     class FailingStore:
         async def get_vectors_by_ids(self, ids):

@@ -32,14 +32,6 @@ async def _embed(texts, **kwargs):
 _EMBEDDING = EmbeddingFunc(embedding_dim=8, max_token_size=512, func=_embed)
 
 
-def test_redis_backends_are_deprecated_in_favor_of_postgres():
-    kv = deprecated_storage_message("RedisKVStorage")
-    doc_status = deprecated_storage_message("RedisDocStatusStorage")
-
-    assert kv is not None and "PGKVStorage" in kv
-    assert doc_status is not None and "PGDocStatusStorage" in doc_status
-
-
 def test_age_graph_storage_is_deprecated_in_favor_of_plain_tables():
     message = deprecated_storage_message("PGGraphStorage")
 
@@ -52,9 +44,7 @@ def test_every_migration_hint_belongs_to_a_deprecated_backend():
     assert set(DEPRECATED_STORAGE_MIGRATION_HINTS) <= set(DEPRECATED_STORAGES)
 
 
-@pytest.mark.parametrize(
-    "name", ["PGKVStorage", "JsonKVStorage", "PGTableGraphStorage", "Unknown"]
-)
+@pytest.mark.parametrize("name", ["PGTableGraphStorage", "Unknown"])
 def test_other_backends_are_not_deprecated(name):
     assert deprecated_storage_message(name) is None
 

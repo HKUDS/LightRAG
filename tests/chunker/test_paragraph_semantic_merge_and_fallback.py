@@ -463,22 +463,31 @@ def test_paragraph_semantic_fails_when_blocks_jsonl_is_not_utf8(tmp_path):
     assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
 
 
+_INVALID_CONTENT_FIELDS = {
+    "missing": {},
+    **{
+        name: {"content": value}
+        for name, value in (
+            ("null", None),
+            ("false", False),
+            ("empty-list", []),
+            ("list", ["text"]),
+        )
+    },
+}
+
+
+# Every invalid value goes through one ``isinstance(content, str)`` check:
+# all of them as the only content row, and one between valid rows.
 @pytest.mark.offline
 @pytest.mark.parametrize(
-    "content_fields",
-    [{}, *({"content": value} for value in (None, False, 0, [], {}, 42, ["text"]))],
-    ids=[
-        "missing",
-        "null",
-        "false",
-        "zero",
-        "empty-list",
-        "empty-object",
-        "number",
-        "list",
-    ],
+    ("content_fields", "partial"),
+    [
+        pytest.param(fields, False, id=f"{name}-False")
+        for name, fields in _INVALID_CONTENT_FIELDS.items()
+    ]
+    + [pytest.param({"content": None}, True, id="null-True")],
 )
-@pytest.mark.parametrize("partial", [False, True])
 def test_paragraph_semantic_rejects_invalid_content_row(
     tmp_path, content_fields, partial, lightrag_log_records
 ):
@@ -506,7 +515,7 @@ def test_paragraph_semantic_rejects_invalid_content_row(
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize("corrupt_row", [0, 1, 2])
+@pytest.mark.parametrize("corrupt_row", [0, 2])
 def test_paragraph_semantic_fails_for_partially_malformed_jsonl(
     tmp_path, corrupt_row, lightrag_log_records
 ):

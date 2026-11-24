@@ -31,7 +31,9 @@ from lightrag.kg.shared_storage import finalize_share_data, initialize_share_dat
 
 pytestmark = pytest.mark.offline
 
-BLOCK_SECONDS = 0.2
+# A blocked loop gives exactly zero beats however long the window; a live one
+# beats within one 5 ms GIL switch interval, so 0.05 s keeps a wide margin.
+BLOCK_SECONDS = 0.05
 
 
 class _Heartbeat:

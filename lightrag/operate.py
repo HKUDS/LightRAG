@@ -6164,6 +6164,7 @@ async def _apply_token_truncation(
     global_config: dict[str, str],
     query: str | None = None,
     system_prompt: str | None = None,
+    token_memo: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """
     Apply token-based truncation to entities and relations for LLM efficiency.
@@ -6183,6 +6184,9 @@ async def _apply_token_truncation(
     record naming an entity or relation that was not in this stage's input
     cannot be resolved back to an original, so it reaches the prompt but is
     dropped from ``filtered_*`` with a warning.
+
+    ``token_memo`` is forwarded to the total-budget fitter; see its docstring
+    for the per-request lifetime rule.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -6321,6 +6325,7 @@ async def _apply_token_truncation(
             query_param,
             global_config,
             system_prompt,
+            token_memo,
         )
         budget_exhausted = fitted is None
         entities_context, relations_context = fitted[:2] if fitted else ([], [])
@@ -6402,6 +6407,7 @@ def _fit_kg_context_to_total_budget(
     query_param: QueryParam,
     global_config: dict,
     system_prompt: str | None,
+    token_memo: dict[str, int] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], str, list[dict]] | None:
     """Keep whole ranked records under the rendered system-prompt/query budget.
 
@@ -6409,6 +6415,10 @@ def _fit_kg_context_to_total_budget(
     each source's prefix order; chunks use the remaining capacity. Return None
     when the empty context and required prompt alone cannot fit. Conversation
     history and provider message framing are outside this query-context budget.
+
+    ``token_memo`` optionally memoizes exact-text token counts across the fitter
+    calls of one request. It must be created per request and die with it; never
+    share one across requests. With None every count is a direct encode.
     """
     tokenizer = global_config["tokenizer"]
     limit = query_param.max_total_tokens
@@ -6418,17 +6428,38 @@ def _fit_kg_context_to_total_budget(
         global_config.get("user_prompt_prefix", ""),
         query_param.disable_user_prompt_prefix,
     ).slot
-    query_tokens = len(tokenizer.encode(query))
+
+    # INVARIANT: the memo dict is only read/written inside the single-worker
+    # tokenizer executor. All fitter invocations go through
+    # run_in_tokenizer_executor, which serializes access. Never touch the memo
+    # from event-loop code.
+    def count_tokens(text: str) -> int:
+        if token_memo is not None:
+            cached = token_memo.get(text)
+            if cached is not None:
+                return cached
+        count = len(tokenizer.encode(text))
+        if token_memo is not None:
+            token_memo[text] = count
+        return count
+
+    query_tokens = count_tokens(query)
+
+    # Graph records are serialized once per call, and only after the
+    # empty-context probe passes: the budget-exhaustion path must not pay
+    # serialization the per-probe shape never paid. render() joins slices of
+    # these lists; every graph argument it receives is a prefix of the input
+    # lists (graph_prefix and the per-source extensions only slice), so the
+    # record count indexes the matching JSON slice and the rendered prompt is
+    # byte-identical to per-record serialization.
+    entity_jsons: list[str] = []
+    relation_jsons: list[str] = []
 
     def render(entity_records, relation_records, chunk_records):
         references, rendered_chunks = generate_reference_list_from_chunks(chunk_records)
         context = PROMPTS["kg_query_context"].format(
-            entities_str="\n".join(
-                json.dumps(record, ensure_ascii=False) for record in entity_records
-            ),
-            relations_str="\n".join(
-                json.dumps(record, ensure_ascii=False) for record in relation_records
-            ),
+            entities_str="\n".join(entity_jsons[: len(entity_records)]),
+            relations_str="\n".join(relation_jsons[: len(relation_records)]),
             text_chunks_str=render_chunks_context_text(rendered_chunks),
             reference_list_str="\n".join(
                 f"[{ref['reference_id']}] {ref['file_path']}" for ref in references
@@ -6439,7 +6470,7 @@ def _fit_kg_context_to_total_budget(
             response_type=query_param.response_type or "Multiple Paragraphs",
             user_prompt=user_prompt,
         )
-        fits = len(tokenizer.encode(prompt)) + query_tokens <= limit
+        fits = count_tokens(prompt) + query_tokens <= limit
         return fits, (
             entity_records,
             relation_records,
@@ -6451,6 +6482,9 @@ def _fit_kg_context_to_total_budget(
     if not render([], [], [])[0]:
         logger.warning("max_total_tokens cannot fit the required query prompt")
         return None
+
+    entity_jsons = [json.dumps(record, ensure_ascii=False) for record in entities]
+    relation_jsons = [json.dumps(record, ensure_ascii=False) for record in relations]
 
     ranked = [
         (kind, records[index])
@@ -6671,10 +6705,14 @@ async def _build_context_str(
     relation_id_to_original: dict = None,
     progress_callback: ProgressCallback | None = None,
     system_prompt: str | None = None,
+    token_memo: dict[str, int] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
+
+    ``token_memo`` is forwarded to both total-budget fitter calls; see the
+    fitter's docstring for the per-request lifetime rule.
     """
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
@@ -6728,6 +6766,7 @@ async def _build_context_str(
         query_param,
         global_config,
         system_prompt,
+        token_memo,
     )
     if fitted is None:
         return budget_failure()
@@ -6830,6 +6869,7 @@ async def _build_context_str(
         query_param,
         global_config,
         system_prompt,
+        token_memo,
     )
     if fitted is None:
         return budget_failure()
@@ -6966,6 +7006,11 @@ async def _build_query_context(
     if user_prompt_prefix is not None:
         budget_config = {**budget_config, "user_prompt_prefix": user_prompt_prefix}
 
+    # One exact-text token-count memo per request, shared by the three fitter
+    # calls below (stage 2 and both stage-4 fits). It dies with this request;
+    # the fitter only reads/writes it inside the tokenizer executor.
+    token_memo: dict[str, int] = {}
+
     # Stage 2: Apply token truncation for LLM efficiency
     truncation_result = await _apply_token_truncation(
         search_result,
@@ -6973,6 +7018,7 @@ async def _build_query_context(
         budget_config,
         query=query,
         system_prompt=system_prompt,
+        token_memo=token_memo,
     )
 
     if truncation_result.get("token_budget_exceeded"):
@@ -7013,6 +7059,7 @@ async def _build_query_context(
         relation_id_to_original=truncation_result["relation_id_to_original"],
         progress_callback=progress_callback,
         system_prompt=system_prompt,
+        token_memo=token_memo,
     )
 
     # A budget failure also returns an empty context, so this covers both.

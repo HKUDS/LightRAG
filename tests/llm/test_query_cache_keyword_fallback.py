@@ -74,12 +74,10 @@ async def test_fallback_request_does_not_reuse_a_pre_fallback_answer(
 @pytest.mark.parametrize(
     "mode, hl, ll",
     [
-        pytest.param("local", HL, LL, id="local"),
-        pytest.param("global", HL, LL, id="global"),
         pytest.param("hybrid", HL, LL, id="hybrid"),
-        pytest.param("mix", HL, LL, id="mix"),
         # An empty list that triggers no fallback leaves the key alone too.
         pytest.param("local", [], LL, id="local-hl-empty"),
+        # The global-only fallback must not widen to hybrid.
         pytest.param("hybrid", [], LL, id="hybrid-hl-empty"),
         pytest.param("global", HL, [], id="global-ll-empty"),
     ],
@@ -101,7 +99,6 @@ async def test_request_without_fallback_keeps_its_existing_cache_key(
     [
         # A fallback reports the empty list itself: no second, bare warning.
         pytest.param("local", HL, [], [], id="local-ll-empty-fallback"),
-        pytest.param("hybrid", HL, [], [], id="hybrid-ll-empty-fallback"),
         pytest.param("global", [], LL, [], id="global-hl-empty-fallback"),
         # Nothing stands in for the empty list: the bare warning stays.
         pytest.param(

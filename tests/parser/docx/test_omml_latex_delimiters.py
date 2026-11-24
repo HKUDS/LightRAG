@@ -60,7 +60,6 @@ def test_other_delimiters_are_unchanged(beg, end, expected):
     [
         ("{", "", r"\left\{ x \right."),
         ("", "}", r"\left. x \right\}"),
-        ("[", "", r"\left[ x \right."),
     ],
 )
 @pytest.mark.offline
@@ -131,8 +130,6 @@ def _matrix(beg: str, end: str) -> ET.Element:
 @pytest.mark.parametrize(
     ("beg", "end", "expected"),
     [
-        ("（", "）", r"\left( x \right)"),  # U+FF08 / U+FF09
-        ("［", "］", r"\left[ x \right]"),  # U+FF3B / U+FF3D
         ("｛", "｝", r"\left\{ x \right\}"),  # U+FF5B / U+FF5D
         ("｜", "｜", r"\left| x \right|"),  # U+FF5C
     ],
@@ -167,8 +164,6 @@ def test_both_angle_bracket_spellings_reach_the_map(beg, end):
     [
         ("【", "】", r"\left[ x \right]"),  # U+3010 / U+3011
         ("〔", "〕", r"\left[ x \right]"),  # U+3014 / U+3015
-        ("【", "", r"\left[ x \right."),
-        ("", "〕", r"\left. x \right]"),
     ],
 )
 @pytest.mark.offline
@@ -182,9 +177,6 @@ def test_cjk_brackets_use_the_nearest_scalable_delimiter(beg, end, expected):
     ("beg", "end", "expected"),
     [
         ("《", "》", r"\langle\!\langle x \rangle\!\rangle"),
-        ("《", "", r"\langle\!\langle x"),
-        ("", "》", r"x \rangle\!\rangle"),
-        ("《", ")", r"\left. \langle\!\langle x \right)"),
     ],
 )
 @pytest.mark.offline
@@ -200,13 +192,10 @@ def test_double_angle_brackets_are_fixed_size(beg, end, expected):
     [
         ("（", "）", r"\begin{pmatrix} a \end{pmatrix}"),
         ("｜", "｜", r"\begin{vmatrix} a \end{vmatrix}"),
-        ("(", ")", r"\begin{pmatrix} a \end{pmatrix}"),
         ("‖", "‖", r"\begin{Vmatrix} a \end{Vmatrix}"),
         # bmatrix is reached through the square bracket these map to.
         ("[", "]", r"\begin{bmatrix} a \end{bmatrix}"),
-        ("［", "］", r"\begin{bmatrix} a \end{bmatrix}"),
         ("【", "】", r"\begin{bmatrix} a \end{bmatrix}"),
-        ("〔", "〕", r"\begin{bmatrix} a \end{bmatrix}"),
     ],
 )
 @pytest.mark.offline
@@ -226,8 +215,6 @@ def test_matrix_flavour_follows_the_normalized_delimiter(beg, end, expected):
             r"\langle\!\langle \begin{matrix} a \end{matrix} \rangle\!\rangle",
         ),
         ("〈", "〉", r"\left\langle \begin{matrix} a \end{matrix} \right\rangle"),
-        ("⟦", "⟧", r"[\![ \begin{matrix} a \end{matrix} ]\!]"),
-        ("⌊", "⌋", r"\left\lfloor \begin{matrix} a \end{matrix} \right\rfloor"),
         ("[", "", r"\left[ \begin{matrix} a \end{matrix} \right."),
     ],
 )

@@ -30,6 +30,7 @@ async def bedrock_endpoint(
         model = request.match_info["model"]
         requests.append(
             {
+                "model": model,
                 "body": body,
                 "session_token": request.headers.get("X-Amz-Security-Token"),
             }
@@ -58,9 +59,8 @@ async def bedrock_endpoint(
 @pytest.mark.parametrize(
     ("model", "dimension", "send_dimensions"),
     [
+        # v2 forwards ``dimensions`` unchanged; there is no allowed-value check.
         ("amazon.titan-embed-text-v2:0", 256, True),
-        ("amazon.titan-embed-text-v2:0", 512, True),
-        ("amazon.titan-embed-text-v2:0", 1024, True),
         ("amazon.titan-embed-text-v2:0", 1024, False),
         ("amazon.titan-embed-text-v1", 1536, True),
         ("cohere.embed-english-v3", 1024, True),
@@ -99,6 +99,7 @@ async def test_server_embedding_dimension(
 
     assert result.shape == (2, dimension)
     assert len(requests) == (1 if model.startswith("cohere.") else 2)
+    assert all(r["model"] == model for r in requests)
     if "v2" in model and send_dimensions:
         assert all(r["body"]["dimensions"] == dimension for r in requests)
     else:

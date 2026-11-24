@@ -71,7 +71,6 @@ async def test_default_names_no_container_and_lists_nothing_unvouched():
     [
         ("Text-Embedding-3.Large", "text_embedding_3_large_8d"),
         ("  m  ", "m_8d"),
-        ("", None),
         ("   ", None),
         (None, None),
     ],

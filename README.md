@@ -46,9 +46,12 @@
 
 </div>
 
-<div align="center" style="margin: 30px 0;">
-  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
-</div>
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
+    <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="Selected organizations among the 304 identified from self-reported LightRAG stargazer affiliations on GitHub on November 23, 2026. Stars are personal.">
+  </picture>
+</p>
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
@@ -596,7 +599,7 @@ Deletes query-mode LLM cache entries (`mix:*`, `hybrid:*`, `local:*`, `global:*`
 
 Deletes chunk-scoped LLM cache rows whose owning chunk no longer exists and that no live chunk still references — rows a document deletion could not reach, still holding the extraction prompt and its result. Reports by default; `--apply` deletes, and only after a strict read confirms the chunk is gone.
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 Migrates default-mode caches (extraction, summary, multimodal analysis, smart-heading) between KV storage backends, preserving workspace isolation.
 

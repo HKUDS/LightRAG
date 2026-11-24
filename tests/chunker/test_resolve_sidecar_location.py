@@ -159,7 +159,8 @@ def test_resolver_keeps_windows_lookalike_posix_names(path):
     assert resolved == resolve_sidecar_uri(location)
 
 
-@pytest.mark.parametrize("location", [None, "", SIDECAR_LOCATION_UNKNOWN])
+# None and "" share the one ``not location`` check.
+@pytest.mark.parametrize("location", [None, SIDECAR_LOCATION_UNKNOWN])
 def test_resolver_returns_none_without_a_known_sidecar(flavor, location):
     assert resolve_sidecar_location(location) is None
 
@@ -237,7 +238,11 @@ def test_windows_drops_a_trailing_backslash_in_the_uri_path(windows):
     assert resolved == PureWindowsPath("C:/tmp/report.parsed")
 
 
-@pytest.mark.parametrize(("location", "expected"), DRIVE_LOCATIONS)
+# POSIX refuses through two branches only, the literal drive in the path and the
+# legacy drive in the netloc, so one location of each form suffices here.
+@pytest.mark.parametrize(
+    ("location", "expected"), [DRIVE_LOCATIONS[0], DRIVE_LOCATIONS[3]]
+)
 def test_posix_rejects_both_drive_uri_forms(posix, location, expected):
     # Written on Windows: read on POSIX, C:/tmp would be another directory.
     with pytest.raises(ValueError, match=FOREIGN):
@@ -299,22 +304,10 @@ def test_windows_rejects_a_uri_path_that_names_no_local_directory(windows, locat
 
 @pytest.mark.parametrize(
     "location",
-    ["file:///C:tmp/report.parsed/", "file:///C|tmp/report.parsed/"],
-)
-def test_windows_reader_does_not_root_a_drive_relative_path(windows, location):
-    # CPython < 3.12's url2pathname reads C:tmp as C:\tmp; the pipeline's
-    # reader must refuse it on every version rather than pick a directory.
-    assert resolve_sidecar_uri(location) is None
-
-
-@pytest.mark.parametrize(
-    "location",
     [
         "file:///C:/tmp/report.parsed/",
         "file:///C:%5Ctmp/report.parsed/",
-        "file:///C:%5ctmp/report.parsed/",
         "file:///C:%2Ftmp/report.parsed/",
-        "file:///C:%2ftmp/report.parsed/",
         "file:///C|%2Ftmp/report.parsed/",
     ],
 )
@@ -322,19 +315,11 @@ def test_windows_reader_still_reads_a_rooted_drive_path(windows, location):
     assert resolve_sidecar_uri(location) == PureWindowsPath("C:/tmp/report.parsed")
 
 
-def test_posix_rejects_a_literal_drive_relative_uri(posix):
-    # A POSIX writer encodes ':' as %3A; a literal one was written on Windows.
-    with pytest.raises(ValueError, match=FOREIGN):
-        resolve_sidecar_location("file:///C:tmp/report.parsed/")
-
-
 @pytest.mark.parametrize(
     "location",
     [
         "s3://bucket/workspace/report.pdf.parsed/",
-        "http://example.com/report.pdf.parsed/",
         "/srv/inputs/__parsed__/report.pdf.parsed",
-        "__parsed__/report.pdf.parsed",
         "C:\\inputs\\__parsed__\\report.pdf.parsed",
         "file://fileserver/share/report.pdf.parsed/",
     ],

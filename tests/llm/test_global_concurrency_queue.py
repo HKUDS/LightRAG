@@ -214,7 +214,7 @@ async def test_user_timeout_while_waiting_for_slot_never_calls_func():
     )(func)
     try:
         with pytest.raises(TimeoutError, match="User timeout"):
-            await wrapped("never", _timeout=0.3)
+            await wrapped("never", _timeout=0.1)
         assert calls == []
         # The lease count is unchanged — the cancelled task never held one.
         assert await ss.global_concurrency_in_use(GROUP) == 1
@@ -1082,7 +1082,7 @@ async def test_forced_shutdown_cancels_running_call_once(
 
 
 @pytest.mark.parametrize("global_limit", [False, True])
-@pytest.mark.parametrize("drain_timeout", [None, 0.1])
+@pytest.mark.parametrize("drain_timeout", [None, 0.05])
 async def test_forced_shutdown_lets_an_abandoned_call_finish_cleanup(
     global_limit, drain_timeout
 ):
@@ -1101,7 +1101,9 @@ async def test_forced_shutdown_lets_an_abandoned_call_finish_cleanup(
         finally:
             cleaning.set()
             try:
-                await asyncio.sleep(0.3)
+                # Three times the drain timeout, so a graceful drain gives up
+                # while this still runs.
+                await asyncio.sleep(0.15)
                 cleanup["finished"] = True
             except asyncio.CancelledError:
                 cleanup["interrupted"] += 1
@@ -1142,7 +1144,7 @@ async def test_forced_shutdown_forces_a_call_stuck_in_cleanup(global_limit):
     entered = asyncio.Event()
     cleaning = asyncio.Event()
     cleanup = {"finished": False, "interrupted": 0}
-    cleanup_timeout = 0.3
+    cleanup_timeout = 0.1
 
     async def func():
         entered.set()
@@ -1241,9 +1243,11 @@ async def test_timeout_and_caller_cancel_cancel_running_call_once(global_limit, 
             await asyncio.sleep(30)
         finally:
             cleaning.set()
-            # Async teardown that outlasts the execution timeout below.
+            # Async teardown that outlasts the execution timeout below: twice
+            # its length, and both run on this loop's clock, so their order
+            # holds however late the loop runs.
             try:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
                 cleanup["finished"] = True
             except asyncio.CancelledError:
                 cleanup["interrupted"] += 1
@@ -1251,7 +1255,7 @@ async def test_timeout_and_caller_cancel_cancel_running_call_once(global_limit, 
 
     wrapped = lr_utils.priority_limit_async_func_call(
         1,
-        max_execution_timeout=0.3,
+        max_execution_timeout=0.1,
         queue_name="single cancel",
         concurrency_group=GROUP if global_limit else None,
     )(func)
@@ -1307,7 +1311,8 @@ async def test_abandoned_running_call_frees_worker(
         concurrency_group=GROUP if global_limit else None,
     )(func)
     call = asyncio.create_task(
-        wrapped("blocked", _timeout=0.5 if abandonment == "timeout" else None)
+        # ``func`` blocks until ``finally``, so a short user timeout cannot race it.
+        wrapped("blocked", _timeout=0.1 if abandonment == "timeout" else None)
     )
     try:
         await asyncio.wait_for(entered.wait(), timeout=2.0)

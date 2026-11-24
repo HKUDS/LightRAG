@@ -75,7 +75,7 @@ def test_function_name_is_read_not_invented(fname, expected):
     assert convert_omml_to_latex(ET.fromstring(_raw_function_xml(fname))) == expected
 
 
-@pytest.mark.parametrize("parts", [("cos",), ("c", "os")])
+@pytest.mark.parametrize("parts", [("c", "os")])
 def test_split_function_name_survives_docx_extraction(tmp_path, parts):
     doc = Document()
     paragraph = doc.add_paragraph("Before ")

@@ -75,14 +75,6 @@ def test_empty_and_whitespace_combinations(prefix, user_prompt):
         assert result.slot == "n/a"
 
 
-def test_slot_is_na_only_when_nothing_composed():
-    assert resolve_user_prompt(None, None).slot == "n/a"
-    assert resolve_user_prompt("", "").slot == "n/a"
-    # Whitespace-only is NOT nothing — it matches the pre-existing truthiness
-    # check `if query_param.user_prompt`.
-    assert resolve_user_prompt("   ", "").slot == "\n\n   "
-
-
 @pytest.mark.parametrize("empty", [None, ""])
 def test_empty_user_prompt_makes_the_prefix_the_whole_instruction(empty):
     """The governing rule: an empty user_prompt does not disable the prefix.
@@ -99,13 +91,6 @@ def test_empty_user_prompt_makes_the_prefix_the_whole_instruction(empty):
     assert result.slot == f"\n\n{prefix}"
 
 
-def test_na_requires_both_sides_empty():
-    """The placeholder is reached only when there is nothing at all to say."""
-    assert resolve_user_prompt(None, None).slot == "n/a"
-    assert resolve_user_prompt(None, "House style.").slot != "n/a"
-    assert resolve_user_prompt("Be concise.", None).slot != "n/a"
-
-
 def test_prefix_only_is_indistinguishable_from_a_caller_sending_it():
     """Why prompt.py needs no second placeholder."""
     prefix_only = resolve_user_prompt(None, "House style.")
@@ -119,10 +104,14 @@ def test_prefix_only_is_indistinguishable_from_a_caller_sending_it():
 # ---------------------------------------------------------------------------
 
 
+# None and "" are both "no prefix configured": the non-blank prompts with None,
+# and one with "". Blank prompts with either are
+# test_empty_and_whitespace_combinations, which asserts the same text.
 @pytest.mark.parametrize(
-    "user_prompt", [None, "", "   ", "Be concise.", " padded ", "多行\n文本"]
+    ("user_prompt", "prefix"),
+    [(user_prompt, None) for user_prompt in ("Be concise.", "多行\n文本")]
+    + [("Be concise.", "")],
 )
-@pytest.mark.parametrize("prefix", [None, ""])
 def test_unconfigured_prefix_preserves_legacy_cache_key_component(user_prompt, prefix):
     """``text`` must equal the expression the answer cache keyed on before.
 

@@ -46,9 +46,12 @@
 
 </div>
 
-<div align="center" style="margin: 30px 0;">
-  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
-</div>
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
+    <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="Organisasi pilihan dari 304 organisasi yang teridentifikasi dari afiliasi yang dilaporkan sendiri oleh para pemberi bintang LightRAG di GitHub pada 23 November 2026. Bintang bersifat pribadi.">
+  </picture>
+</p>
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
@@ -596,7 +599,7 @@ Menghapus entri LLM cache mode query (`mix:*`, `hybrid:*`, `local:*`, `global:*`
 
 Menghapus entri cache LLM yang chunk pemiliknya sudah tidak ada dan tidak lagi dirujuk oleh chunk lain yang masih ada. Entri ini tidak terjangkau oleh penghapusan dokumen dan masih menyimpan prompt ekstraksi beserta hasilnya. Secara default alat ini hanya melaporkan. Opsi `--apply` menghapus entri hanya setelah pembacaan ketat mengonfirmasi bahwa chunk sudah tidak ada.
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 Memigrasikan cache mode default (extraction, summary, analisis multimodal, smart-heading) antar-KV storage backend dengan tetap mempertahankan isolasi workspace.
 

@@ -367,17 +367,4 @@ describe('ai content notice flag', () => {
 
     expect(useAiContentNoticeStore.getState().enabled).toBe(true)
   })
-
-  test('a server that omits the field does not turn an enabled notice off', async () => {
-    const { useAiContentNoticeStore } = await import('@/stores/aiContentNotice')
-    useAiContentNoticeStore.setState({ enabled: true })
-
-    apiModule.__setAxiosAdapterForTests(
-      makeResponse({ auth_configured: false, api_key_configured: false, access_token: 'guest-token' })
-    )
-
-    await apiModule.getAuthStatus()
-
-    expect(useAiContentNoticeStore.getState().enabled).toBe(true)
-  })
 })

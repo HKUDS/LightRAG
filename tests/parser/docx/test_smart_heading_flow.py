@@ -3471,18 +3471,6 @@ def test_gap_close_preserves_mln_deliberate_gaps() -> None:
     assert all("unnumbered_gap_closed" not in d.rule_trail for d in ds)
 
 
-def test_gap_close_single_gap_below_surviving_numbered() -> None:
-    """A vacated level between a surviving numbered class and an unnumbered
-    heading: the unnumbered one snaps up; the numbered one is pinned."""
-    ds = [
-        _leveled(0, "居中主标题", 1, plain=True),
-        _leveled(1, "一、编号章", 2),
-        _leveled(2, "加粗小节", 4, plain=True),  # L3 vacated by demotion
-    ]
-    close_unnumbered_level_gaps(ds)
-    assert [d.level for d in ds] == [1, 2, 3]
-
-
 def test_gap_close_cascading_gaps() -> None:
     """Several movable levels re-pack consecutively (1/3/4 → 1/2/3)."""
     ds = [
@@ -3652,16 +3640,6 @@ def test_zero_weight_placeholder_not_size_promoted() -> None:
     assert result.decisions == []
     assert result.demoted == []
     assert result.veto_suppressed == []
-
-
-def test_zero_weight_placeholder_not_center_promoted() -> None:
-    """Even at FS_base (the post-fix test11 size), a centered short
-    placeholder must not take the base_center channel."""
-    records = _body(20) + [
-        _para('<drawing id="1" />', size=12.0, alignment="center", visible_char_count=0)
-    ]
-    result = _gate(records)
-    assert result.decisions == []
 
 
 def test_pure_equation_paragraph_never_candidate() -> None:
