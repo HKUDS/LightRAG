@@ -146,7 +146,7 @@ QUERY_OPENAI_LLM_REASONING_EFFORT=low
 
 - 必须设置 `{ROLE}_LLM_MODEL`。
 - 非 Bedrock provider 必须设置 `{ROLE}_LLM_BINDING_API_KEY`。
-- 如果没有设置 `{ROLE}_LLM_BINDING_HOST`，LightRAG 会尝试使用该 provider 的默认 host。
+- 如果没有设置 `{ROLE}_LLM_BINDING_HOST`，LightRAG 使用该 provider 的默认 host，不会继承 `LLM_BINDING_HOST`，即使 `openai` 与 `openai_responses` 走同一个网关也是如此；每次回落到该默认值时启动都会记录一条 warning。
 - provider 参数不继承基础 provider options，而是从空配置开始，只叠加角色专属 provider options。
 
 示例：基础使用 Ollama，本地抽取；最终回答改用 OpenAI：

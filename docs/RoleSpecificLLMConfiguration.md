@@ -146,7 +146,7 @@ If a role's `{ROLE}_LLM_BINDING` differs from the base `LLM_BINDING`, it is a cr
 
 - `{ROLE}_LLM_MODEL` must be set.
 - Non-Bedrock providers must set `{ROLE}_LLM_BINDING_API_KEY`.
-- If `{ROLE}_LLM_BINDING_HOST` is not set, LightRAG tries to use that provider's default host.
+- If `{ROLE}_LLM_BINDING_HOST` is not set, LightRAG uses that provider's default host and never inherits `LLM_BINDING_HOST`, even between `openai` and `openai_responses` on the same gateway; startup logs a warning whenever it falls back to that default.
 - Provider options do not inherit base provider options. They start empty and only apply role-specific provider options.
 
 Example: use Ollama as the base for local extraction, then use OpenAI for final answers:

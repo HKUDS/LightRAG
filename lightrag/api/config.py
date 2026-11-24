@@ -76,23 +76,22 @@ class DefaultRAGStorageConfig:
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
 
-def get_default_host(binding_type: str) -> str:
-    default_hosts = {
-        "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
-        "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
+def get_default_host(binding_type: str, *, use_llm_host: bool = True) -> str:
+    """Resolve a binding's endpoint, optionally applying the base host override."""
+    defaults = {
+        "ollama": "http://localhost:11434",
+        "lollms": "http://localhost:9600",
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
-        "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
-        "openai_responses": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
-        # Let boto3 select the regional Bedrock endpoint unless the user
-        # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
-        "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
-        # Let google-genai pick the correct default endpoint/version unless the
-        # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
-        "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
+        "openai": "https://api.openai.com/v1",
+        "openai_responses": "https://api.openai.com/v1",
+        # Let the SDK choose its regional endpoint unless explicitly overridden.
+        "bedrock": "DEFAULT_BEDROCK_ENDPOINT",
+        "gemini": "DEFAULT_GEMINI_ENDPOINT",
     }
-    return default_hosts.get(
-        binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
-    )  # fallback to ollama if unknown
+    default_host = defaults.get(binding_type, "http://localhost:11434")
+    if use_llm_host and binding_type != "azure_openai":
+        return os.getenv("LLM_BINDING_HOST", default_host)
+    return default_host
 
 
 def resolve_asymmetric_embedding_opt_in(
@@ -836,8 +835,13 @@ def parse_args() -> argparse.Namespace:
             if not role_model:
                 missing.append(model_key)
             if not role_host:
-                role_host = get_default_host(role_binding)
+                role_host = get_default_host(role_binding, use_llm_host=False)
                 setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+                logger.warning(
+                    f"Role '{spec.name}' ({role_binding}) has no {host_key}; "
+                    f"using the {role_binding} default host {role_host}, "
+                    "not LLM_BINDING_HOST"
+                )
             if role_binding != "bedrock" and not role_apikey:
                 missing.append(apikey_key)
             if missing:
