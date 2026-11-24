@@ -15,6 +15,7 @@ class PromptTokenizer(FakeTokenizer):
         self.mode = mode
         self.rendered_messages = []
         self.input_prompt = None
+        self.add_special_tokens = None
 
     def apply_chat_template(self, messages, **kwargs):
         self.rendered_messages.append(deepcopy(messages))
@@ -26,6 +27,7 @@ class PromptTokenizer(FakeTokenizer):
 
     def __call__(self, text, **kwargs):
         self.input_prompt = text
+        self.add_special_tokens = kwargs.get("add_special_tokens", True)
         return super().__call__(text, **kwargs)
 
 
@@ -71,6 +73,9 @@ async def test_chat_template_fallback_preserves_prompt_and_history(
                 contents[0] = "<system>Be concise</system>\n" + contents[0]
         expected = " | ".join(contents)
     assert tokenizer.input_prompt == expected
+    # A rendered chat template already carries its special tokens (e.g. BOS);
+    # only the raw fallback prompt needs the tokenizer to add them.
+    assert tokenizer.add_special_tokens is (mode == "missing")
     assert len(tokenizer.rendered_messages) == (
         2 if system_prompt and mode != "native" else 1
     )
