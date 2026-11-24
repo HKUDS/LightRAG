@@ -16,7 +16,13 @@ from tenacity import (
 from lightrag.utils import TruncatedResponse
 
 
+import itertools
 from functools import lru_cache
+
+# Every generate() call needs its own lmdeploy session: LightRAG runs LLM calls
+# concurrently, and lmdeploy refuses (409 REQUEST_CONFLICT) or, in older
+# releases, serializes a request on a session that is already generating.
+_session_ids = itertools.count(1)
 
 
 @lru_cache(maxsize=1)
@@ -202,7 +208,7 @@ async def lmdeploy_model_if_cache(
         gen_config=gen_config,
         do_preprocess=do_preprocess,
         stream_response=False,
-        session_id=1,
+        session_id=next(_session_ids),
     ):
         response += getattr(res, "text", getattr(res, "response", ""))
         if getattr(res, "finish_reason", None) is not None:
