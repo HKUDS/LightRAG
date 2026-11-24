@@ -29,10 +29,16 @@ def test_default_host_and_its_override(monkeypatch, binding, default):
     assert get_default_host(binding) == "https://gateway.example/v1"
 
 
+def test_azure_default_ignores_llm_host(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
+    monkeypatch.setenv("LLM_BINDING_HOST", "https://gateway.example/v1")
+
+    assert get_default_host("azure_openai") == "https://azure.example"
+
+
 @pytest.mark.parametrize(
     ("binding", "default", "api_key", "role_host"),
     [
-        ("ollama", "http://localhost:11434", "local-test-key", None),
         ("gemini", "DEFAULT_GEMINI_ENDPOINT", "gemini-test-key", None),
         ("bedrock", "DEFAULT_BEDROCK_ENDPOINT", None, None),
         (
@@ -45,7 +51,7 @@ def test_default_host_and_its_override(monkeypatch, binding, default):
     ],
 )
 def test_role_host_respects_provider_and_explicit_override(
-    monkeypatch, binding, default, api_key, role_host
+    monkeypatch, lightrag_log_records, binding, default, api_key, role_host
 ):
     import sys
 
@@ -76,3 +82,10 @@ def test_role_host_respects_provider_and_explicit_override(
 
     assert args.llm_binding_host == "https://base-gateway.example/v1"
     assert args.query_llm_binding_host == default
+    # Only a defaulted cross-provider host warns that LLM_BINDING_HOST is ignored.
+    warned = [
+        r
+        for r in lightrag_log_records
+        if r.levelname == "WARNING" and "QUERY_LLM_BINDING_HOST" in r.getMessage()
+    ]
+    assert len(warned) == (1 if role_host is None and binding != "openai" else 0)

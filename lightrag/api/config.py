@@ -837,6 +837,11 @@ def parse_args() -> argparse.Namespace:
             if not role_host:
                 role_host = get_default_host(role_binding, use_llm_host=False)
                 setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+                logger.warning(
+                    f"Role '{spec.name}' ({role_binding}) has no {host_key}; "
+                    f"using the {role_binding} default host {role_host}, "
+                    "not LLM_BINDING_HOST"
+                )
             if role_binding != "bedrock" and not role_apikey:
                 missing.append(apikey_key)
             if missing:
