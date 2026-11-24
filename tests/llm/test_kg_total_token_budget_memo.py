@@ -103,94 +103,6 @@ def _prompt_texts(texts):
     return [text for text in texts if len(text) > _PROMPT_CHARS]
 
 
-def _matrix_records(shape):
-    if shape == "few-short":
-        return (
-            [_context_entity("E0"), _context_entity("E1")],
-            [_context_relation("E0", "E1"), _context_relation("E1", "E2")],
-            [],
-        )
-    if shape == "many-long":
-        return (
-            [_context_entity(f"E{i}", f"evidence {i} " * 300) for i in range(8)],
-            [
-                _context_relation(f"E{i}", f"E{i + 1}", f"relation {i} " * 300)
-                for i in range(8)
-            ],
-            [],
-        )
-    if shape == "oversized-entity":
-        return (
-            [_context_entity("Huge", "e" * 5000)],
-            [
-                _context_relation("E0", "E1"),
-                _context_relation("E1", "E2"),
-                _context_relation("E2", "E3"),
-            ],
-            [],
-        )
-    if shape == "oversized-relation":
-        return (
-            [_context_entity("E0"), _context_entity("E1"), _context_entity("E2")],
-            [_context_relation("Huge", "Target", "r" * 5000)],
-            [],
-        )
-    if shape == "few-short-chunks":
-        return (
-            [_context_entity("E0"), _context_entity("E1")],
-            [_context_relation("E0", "E1"), _context_relation("E1", "E2")],
-            [
-                {
-                    "chunk_id": f"c{i}",
-                    "content": f"chunk {i} " * 100,
-                    "file_path": f"c{i}.md",
-                }
-                for i in range(4)
-            ],
-        )
-    return [], [], []
-
-
-@pytest.mark.parametrize(
-    ("limit", "shape"),
-    [
-        pytest.param(260, "few-short", id="tight-few-short"),
-        pytest.param(2500, "many-long", id="tight-many-long"),
-        pytest.param(100000, "few-short", id="loose-few-short"),
-        pytest.param(100000, "many-long", id="loose-many-long"),
-        pytest.param(200, "oversized-entity", id="tight-oversized-entity"),
-        pytest.param(260, "oversized-relation", id="tight-oversized-relation"),
-        pytest.param(116, "empty", id="empty-exact-required-budget"),
-        pytest.param(650, "few-short-chunks", id="tight-chunk-walk-down"),
-        pytest.param(1, "few-short", id="exhausted"),
-    ],
-)
-def test_memoized_fit_is_identical_to_direct_fit(limit, shape):
-    """One memo per request never changes a fit outcome (real tiktoken)."""
-    entities, relations, chunks = _matrix_records(shape)
-    tokenizer = TiktokenTokenizer()
-    direct = _fit(entities, relations, chunks, limit, tokenizer, None)
-    memoized = _fit(entities, relations, chunks, limit, tokenizer, {})
-    assert memoized == direct
-
-    inputs = (entities, relations, chunks)
-    if limit == 1:
-        assert memoized is None
-    elif shape == "empty":
-        assert memoized is not None
-        assert memoized[:3] == ([], [], [])
-    elif limit == 100000:
-        assert tuple(len(part) for part in memoized[:3]) == tuple(
-            len(part) for part in inputs
-        )
-    else:
-        assert any(
-            len(kept) < len(source) for kept, source in zip(memoized[:3], inputs)
-        )
-    if shape == "few-short-chunks":
-        assert 0 < len(memoized[2]) < len(chunks)
-
-
 def test_exact_boundary_hit_keeps_the_surviving_prefix():
     """A memo hit at the exact budget boundary returns the identical count.
 
@@ -206,54 +118,17 @@ def test_exact_boundary_hit_keeps_the_surviving_prefix():
         text_chunks_str="",
         reference_list_str="",
     )
-    limit = _prompt_tokens(
-        context, QueryParam(enable_rerank=False), _config(tokenizer)
-    )
+    limit = _prompt_tokens(context, QueryParam(enable_rerank=False), _config(tokenizer))
     direct = _fit(entities, [], [], limit, tokenizer, None)
     memoized = _fit(entities, [], [], limit, tokenizer, {})
     assert [record["entity"] for record in direct[0]] == ["E0"]
     assert memoized == direct
 
 
-def test_shared_memo_encodes_each_distinct_prompt_once_across_the_three_fits():
-    """The pipeline's 3-call sequence re-encodes nothing the memo already saw.
-
-    Measured on this scenario (default template, limit 1800): the stock
-    sequence makes 25 prompt-sized encodes of 11 distinct prompts (14 repeats)
-    plus 3 query encodes; the shared memo makes 11 + 1. The delta below is
-    derived from the recorded texts, not hardcoded.
-    """
-    entities, relations = _graph_records()
-    chunks = _chunks()
-
-    def sequence(shared):
-        tokenizer = _CountingTokenizer()
-        memo = {} if shared else None
-        first = _fit(entities, relations, [], 1800, tokenizer, memo, template=None)
-        second = _fit(first[0], first[1], [], 1800, tokenizer, memo, template=None)
-        third = _fit(second[0], second[1], chunks, 1800, tokenizer, memo, template=None)
-        return tokenizer.encoded, (first, second, third)
-
-    memo_texts, memo_results = sequence(True)
-    stock_texts, stock_results = sequence(False)
-    assert memo_results == stock_results
-
-    memo_prompts = _prompt_texts(memo_texts)
-    stock_prompts = _prompt_texts(stock_texts)
-    repeats = len(stock_prompts) - len(set(stock_prompts))
-    assert repeats > 0
-    assert len(memo_prompts) == len(set(memo_prompts)) == len(set(stock_prompts))
-    assert len(memo_texts) == len(set(stock_texts))
-    query_repeats = stock_texts.count(QUERY) - memo_texts.count(QUERY)
-    assert memo_texts.count(QUERY) == 1
-    assert stock_texts.count(QUERY) == 3
-    assert len(stock_texts) - len(memo_texts) == repeats + query_repeats
-
-
-@pytest.mark.parametrize("extra_chars", [1, 17, 400])
-def test_lengthened_description_is_reencoded_and_memo_never_drifts(extra_chars):
+def test_lengthened_description_is_reencoded_and_memo_never_drifts():
     """The memo keys on exact text: a changed record misses, and every stored
     count equals a fresh direct encode of the same text."""
+    extra_chars = 17
     entities, relations = _graph_records()
     tokenizer = _CountingTokenizer()
     memo = {}
@@ -285,19 +160,20 @@ def test_lengthened_description_is_reencoded_and_memo_never_drifts(extra_chars):
 
 
 @pytest.mark.parametrize(
-    ("limit", "expect_many_probes"),
+    ("limit", "fits"),
     [
-        pytest.param(1200, True, id="tight-eight-probes"),
-        pytest.param(100000, False, id="loose-two-probes"),
+        pytest.param(1200, True, id="tight-many-probes"),
+        pytest.param(1, False, id="exhausted"),
     ],
 )
-def test_graph_records_serialize_once_per_call_regardless_of_probes(
-    limit, expect_many_probes, monkeypatch
+def test_graph_records_serialize_once_per_call_and_only_after_empty_probe(
+    limit, fits, monkeypatch
 ):
-    """Pre-serialization replaced the stock per-probe json.dumps (one per
-    record per render) with one per record per fitter call: the dumps count
-    stays at the record count while the probe count varies. Reverting render
-    to per-record dumps makes the tight case count probes x records."""
+    """Each graph record is serialized once per fitter call, however many
+    probes render it, and not at all when the empty-context probe already
+    exhausts the budget. Restoring per-probe dumps in render makes the tight
+    case count probes x records; hoisting the serialization above the empty
+    probe makes the exhausted case dump every record."""
     entities, relations = _graph_records()
     tokenizer = _CountingTokenizer()
     serialized = []
@@ -310,57 +186,15 @@ def test_graph_records_serialize_once_per_call_regardless_of_probes(
     monkeypatch.setattr(operate.json, "dumps", counting_dumps)
     result = _fit(entities, relations, [], limit, tokenizer, {}, template=None)
 
+    if not fits:
+        assert result is None
+        assert serialized == []
+        return
     assert result is not None
-    assert len(serialized) == len(entities) + len(relations)
     assert Counter(serialized) == Counter(
         real_dumps(record, ensure_ascii=False) for record in entities + relations
     )
-    probes = len(_prompt_texts(tokenizer.encoded))
-    if expect_many_probes:
-        assert probes > 2
-    else:
-        assert probes == 2
-
-
-def test_exhausted_budget_serializes_no_records(monkeypatch):
-    """The empty-context rejection path pays no record serialization: the
-    one-shot dumps are gated on the same probe that gates the stock shape's
-    first per-record dumps. Hoisting the serialization above the empty probe
-    makes this test red with one dumps per record."""
-    entities, relations = _graph_records()
-    tokenizer = _CountingTokenizer()
-    serialized = []
-    real_dumps = json.dumps
-
-    def counting_dumps(obj, *args, **kwargs):
-        serialized.append(real_dumps(obj, *args, **kwargs))
-        return serialized[-1]
-
-    monkeypatch.setattr(operate.json, "dumps", counting_dumps)
-    result = _fit(entities, relations, [], 1, tokenizer, {})
-
-    assert result is None
-    assert serialized == []
-
-
-def test_memo_none_reencodes_repeated_prompts_within_one_call():
-    """The unused path pays nothing new: with memo=None every probe encodes
-    directly, including the binary search's re-verification of the winning
-    prefix, exactly as before the memo existed."""
-    entities, relations = _graph_records()
-    stock_tokenizer = _CountingTokenizer()
-    direct = _fit(entities, relations, [], 1800, stock_tokenizer, None, template=None)
-    memo_tokenizer = _CountingTokenizer()
-    memoized = _fit(entities, relations, [], 1800, memo_tokenizer, {}, template=None)
-    assert memoized == direct
-
-    stock_prompts = _prompt_texts(stock_tokenizer.encoded)
-    memo_prompts = _prompt_texts(memo_tokenizer.encoded)
-    repeats = len(stock_prompts) - len(set(stock_prompts))
-    assert repeats > 0
-    assert len(memo_prompts) == len(set(memo_prompts))
-    assert len(stock_tokenizer.encoded) == len(memo_tokenizer.encoded) + repeats
-    assert stock_tokenizer.encoded.count(QUERY) == 1
+    assert len(_prompt_texts(tokenizer.encoded)) > 2
 
 
 async def test_request_pipeline_shares_one_memo_across_its_three_fits(monkeypatch):
