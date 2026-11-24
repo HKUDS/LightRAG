@@ -96,6 +96,19 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "[external_parser] %s=%r is not a number; using %s", name, raw, default
+        )
+        return default
+
+
 def env_json(name: str, default: Any) -> Any:
     """Parse a JSON env var; on parse error log a warning and return default."""
     raw = os.getenv(name, "").strip()

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -767,6 +768,60 @@ def test_client_mode_specific_endpoint_validation(
     monkeypatch.setenv("MINERU_API_MODE", "custom")
     with pytest.raises(ValueError, match="MINERU_API_MODE"):
         MinerURawClient()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("env_name", "raw_value", "attribute", "expected", "expected_warned_names"),
+    [
+        ("MINERU_MAX_POLLS", "", "max_polls", 600, set()),
+        ("MINERU_MAX_POLLS", "abc", "max_polls", 600, {"MINERU_MAX_POLLS"}),
+        ("MINERU_MAX_POLLS", "0", "max_polls", 600, set()),
+        ("MINERU_MAX_POLLS", "-3", "max_polls", 600, set()),
+        (
+            "MINERU_POLL_INTERVAL_SECONDS",
+            "",
+            "poll_interval",
+            2.0,
+            set(),
+        ),
+        (
+            "MINERU_POLL_INTERVAL_SECONDS",
+            "x",
+            "poll_interval",
+            2.0,
+            {"MINERU_POLL_INTERVAL_SECONDS"},
+        ),
+        ("MINERU_POLL_INTERVAL_SECONDS", "0", "poll_interval", 0.0, set()),
+    ],
+)
+def test_client_poll_settings_fall_back_without_clamping_valid_interval(
+    monkeypatch: pytest.MonkeyPatch,
+    lightrag_log_records: list[logging.LogRecord],
+    env_name: str,
+    raw_value: str,
+    attribute: str,
+    expected: int | float,
+    expected_warned_names: set[str],
+) -> None:
+    poll_env_names = {"MINERU_MAX_POLLS", "MINERU_POLL_INTERVAL_SECONDS"}
+    monkeypatch.setenv("MINERU_API_MODE", "local")
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+    for name in poll_env_names:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, raw_value)
+
+    client = MinerURawClient()
+
+    assert getattr(client, attribute) == expected
+    warned_names = {
+        name
+        for record in lightrag_log_records
+        if record.levelno == logging.WARNING
+        for name in poll_env_names
+        if name in record.getMessage()
+    }
+    assert warned_names == expected_warned_names
 
 
 # ---------------------------------------------------------------------------
