@@ -15,7 +15,7 @@ from tenacity import (
 )
 
 import logging
-from ..utils import logger, validate_workspace
+from ..utils import logger, parse_bool_setting, validate_workspace
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
@@ -253,10 +253,15 @@ class Neo4JStorage(BaseGraphStorage):
                     config.get("neo4j", "liveness_check_timeout", fallback=30.0),
                 ),
             )
-            KEEP_ALIVE = os.environ.get(
+            KEEP_ALIVE = parse_bool_setting(
                 "NEO4J_KEEP_ALIVE",
-                config.get("neo4j", "keep_alive", fallback="true"),
-            ).lower() in ("true", "1", "yes", "on")
+                os.environ.get(
+                    "NEO4J_KEEP_ALIVE",
+                    config.get("neo4j", "keep_alive", fallback="true"),
+                ),
+                True,
+                source="Neo4j setting",
+            )
             DATABASE = os.environ.get(
                 "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
             )
