@@ -18,7 +18,7 @@ from lightrag.base import QueryParam
 from lightrag.prompt import PROMPTS
 from lightrag.utils import TiktokenTokenizer
 
-from tests.llm.test_kg_total_token_budget import (
+from tests.operate.test_kg_total_token_budget import (
     QUERY,
     TEMPLATE,
     _config,
