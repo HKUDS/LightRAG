@@ -34,6 +34,7 @@ from tenacity import (
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     embedding_timeout,
+    get_env_value,
     provider_timeout,
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
@@ -190,11 +191,7 @@ _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 # Whether to request base64-encoded embeddings from the API.
 # Base64 is more efficient over the wire; set EMBEDDING_USE_BASE64=false for
 # providers that don't support it (e.g. Yandex Cloud).
-EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() in (
-    "true",
-    "1",
-    "yes",
-)
+EMBEDDING_USE_BASE64: bool = get_env_value("EMBEDDING_USE_BASE64", True, bool)
 
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:

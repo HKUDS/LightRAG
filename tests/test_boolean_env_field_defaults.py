@@ -9,6 +9,7 @@ import pytest
 
 import lightrag.base  # noqa: F401  (loaded so _fresh_copy can find its file)
 import lightrag.lightrag  # noqa: F401
+import lightrag.llm.openai  # noqa: F401
 import lightrag.utils  # noqa: F401
 
 pytestmark = pytest.mark.offline
@@ -34,6 +35,7 @@ def _fresh_copy(name: str) -> ModuleType:
     # or two flags reading the same variable fails one case. The renamed
     # LIGHTRAG_DOC_QUERY_TIMING_LOGS is set where timing must stay off, so a
     # restored fallback to it fails too.
+    # EMBEDDING_USE_BASE64 takes an alias in one case and a typo in the other.
     [
         pytest.param(
             {
@@ -42,12 +44,14 @@ def _fresh_copy(name: str) -> ModuleType:
                 "VERBOSE": "1",
                 "LIGHTRAG_PERFORMANCE_TIMING_LOGS": "ture",
                 "LIGHTRAG_DOC_QUERY_TIMING_LOGS": "true",
+                "EMBEDDING_USE_BASE64": " ON ",
             },
             {
                 "rerank": True,
                 "json_extraction": False,
                 "verbose": True,
                 "timing": False,
+                "embedding_base64": True,
             },
             {"ENTITY_EXTRACTION_USE_JSON", "LIGHTRAG_PERFORMANCE_TIMING_LOGS"},
             id="rerank-verbose-alias-json-timing-typo",
@@ -58,9 +62,16 @@ def _fresh_copy(name: str) -> ModuleType:
                 "ENTITY_EXTRACTION_USE_JSON": "yes",
                 "VERBOSE": "ture",
                 "LIGHTRAG_PERFORMANCE_TIMING_LOGS": " ON ",
+                "EMBEDDING_USE_BASE64": "ture",
             },
-            {"rerank": True, "json_extraction": True, "verbose": False, "timing": True},
-            {"RERANK_BY_DEFAULT", "VERBOSE"},
+            {
+                "rerank": True,
+                "json_extraction": True,
+                "verbose": False,
+                "timing": True,
+                "embedding_base64": True,
+            },
+            {"RERANK_BY_DEFAULT", "VERBOSE", "EMBEDDING_USE_BASE64"},
             id="json-timing-alias-rerank-verbose-typo",
         ),
     ],
@@ -81,6 +92,7 @@ def test_boolean_env_field_defaults(
         utils = _fresh_copy("lightrag.utils")
         base = _fresh_copy("lightrag.base")
         core = _fresh_copy("lightrag.lightrag")
+        openai = _fresh_copy("lightrag.llm.openai")
     finally:
         # The utils copy re-runs the shared logger's module-level setup.
         logger.setLevel(level)
@@ -92,6 +104,7 @@ def test_boolean_env_field_defaults(
         ].default,
         "verbose": utils.VERBOSE_DEBUG,
         "timing": utils.PERFORMANCE_TIMING_LOGS,
+        "embedding_base64": openai.EMBEDDING_USE_BASE64,
     } == expected
     warned = {
         record.args[0]
