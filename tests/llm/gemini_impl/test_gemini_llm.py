@@ -439,6 +439,39 @@ async def test_gemini_returns_text_with_partial_token_counts(
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+async def test_gemini_counts_thinking_tokens_as_completion_tokens(monkeypatch, request):
+    """Gemini bills thinking as output but reports it outside
+    ``candidates_token_count``; ``total_token_count`` is documented as
+    prompt + candidates + tool-use prompt + thoughts."""
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    response = _make_fake_gemini_response(
+        regular_text="answer", thought_text="reasoning", finish_reason="STOP"
+    )
+    response.usage_metadata = SimpleNamespace(
+        prompt_token_count=11,
+        candidates_token_count=7,
+        thoughts_token_count=300,
+        total_token_count=318,
+    )
+    fake_client = _make_nonstreaming_client(response)
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+    recorded: list[dict] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
+
+    await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Question",
+        api_key="test-key",
+        token_tracker=tracker,
+    )
+
+    assert recorded == [
+        {"prompt_tokens": 11, "completion_tokens": 307, "total_tokens": 318}
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 async def test_gemini_max_tokens_finish_reason_marks_result_truncated(
     monkeypatch, request
 ):
