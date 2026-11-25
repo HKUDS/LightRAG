@@ -2421,6 +2421,9 @@ default_embedding_model_for_binding() {
     gemini)
       printf 'gemini-embedding-001'
       ;;
+    voyageai)
+      printf 'voyage-3'
+      ;;
     bedrock)
       printf 'amazon.titan-embed-text-v2:0'
       ;;
@@ -2440,7 +2443,7 @@ default_embedding_dim_for_binding() {
     openai|azure_openai)
       printf '3072'
       ;;
-    ollama|bedrock|lollms)
+    ollama|bedrock|lollms|voyageai)
       printf '1024'
       ;;
     jina)
@@ -2524,7 +2527,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock" "voyageai")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -2580,6 +2583,12 @@ collect_embedding_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://api.jina.ai/v1/embeddings}")"
       host="$(prompt_with_default "Jina endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key jina)"
+      ;;
+    voyageai)
+      # The voyageai binding always calls VoyageAI's official endpoint and
+      # ignores EMBEDDING_BINDING_HOST, so do not prompt for one.
+      host=""
+      api_key="$(prompt_secret_until_valid_with_default "VoyageAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key voyageai)"
       ;;
     *)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://api.openai.com/v1}")"
