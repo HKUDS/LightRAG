@@ -402,6 +402,11 @@ def _parse_mm_display_name(content: str, fallback: str) -> str:
     return fallback
 
 
+def _summary_description_line(description: str) -> str:
+    """Render one description as a line of the summary prompt's JSONL list."""
+    return json.dumps({"Description": description}, ensure_ascii=False)
+
+
 async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,
@@ -458,18 +463,24 @@ async def _handle_entity_relation_summary(
         total_tokens = 0
         # Tokenize each description once; the chunk-building pass below
         # reuses these counts instead of re-encoding the same strings.
+        # Count a description as _summarize_descriptions renders it (a JSON
+        # line plus its newline), because that rendering is what it trims to
+        # summary_context_size. Counting the bare text undercounts every group,
+        # and the trim then silently drops the descriptions at its tail.
         desc_token_counts = []
         for i, desc in enumerate(current_list, start=1):
-            tokens = len(tokenizer.encode(desc))
+            tokens = len(tokenizer.encode(_summary_description_line(desc) + "\n"))
             desc_token_counts.append(tokens)
             total_tokens += tokens
             await _cooperative_yield(i, every=32)
 
         # If total length is within limits, perform final summarization
         if total_tokens <= summary_context_size or len(current_list) <= 2:
-            if (
-                len(current_list) < force_llm_summary_on_merge
-                and total_tokens < summary_max_tokens
+            # The joined description stores the bare texts, so measure those
+            # against summary_max_tokens (a short list: below the merge count).
+            if len(current_list) < force_llm_summary_on_merge and (
+                sum(len(tokenizer.encode(desc)) for desc in current_list)
+                < summary_max_tokens
             ):
                 # no LLM needed, just join the descriptions
                 # Sanitize for the same reason as the single-description
@@ -615,13 +626,10 @@ async def _summarize_descriptions(
     tokenizer = global_config["tokenizer"]
     summary_context_size = global_config["summary_context_size"]
 
-    # Create list of JSON objects with "Description" field
-    json_descriptions = [{"Description": desc} for desc in description_list]
-
     # Use truncate_list_by_token_size for length truncation
-    truncated_json_descriptions = await atruncate_list_by_token_size(
-        json_descriptions,
-        key=lambda x: json.dumps(x, ensure_ascii=False),
+    truncated_descriptions = await atruncate_list_by_token_size(
+        description_list,
+        key=_summary_description_line,
         separator="\n",
         max_token_size=summary_context_size,
         tokenizer=tokenizer,
@@ -629,7 +637,7 @@ async def _summarize_descriptions(
 
     # Convert to JSONL format (one JSON object per line)
     joined_descriptions = "\n".join(
-        json.dumps(desc, ensure_ascii=False) for desc in truncated_json_descriptions
+        _summary_description_line(desc) for desc in truncated_descriptions
     )
 
     # Prepare context for the prompt

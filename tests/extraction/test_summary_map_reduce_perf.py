@@ -15,6 +15,7 @@ These tests guard:
   (the perf property the fix introduced).
 """
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -107,9 +108,48 @@ async def test_map_phase_encodes_each_description_once():
     )
 
     # In the first (chunking) iteration each input description must be encoded
-    # exactly once by the map phase. Pre-fix this was 2 per description.
+    # exactly once by the map phase. Pre-fix this was 2 per description. The
+    # map phase measures the prompt line, not the bare text.
     for desc in inputs:
-        assert counter.encoded.count(desc) == 1, (
-            f"description {desc!r} was encoded {counter.encoded.count(desc)} "
+        line = json.dumps({"Description": desc}, ensure_ascii=False) + "\n"
+        assert counter.encoded.count(line) == 1, (
+            f"description {desc!r} was encoded {counter.encoded.count(line)} "
             f"time(s) by the map phase; expected exactly 1 (memoized counts)"
         )
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_every_description_reaches_the_summary_prompt():
+    """The groups must fit summary_context_size as the prompt renders them.
+
+    Four 20-token descriptions are 80 bare tokens, inside the 100-token
+    window, but each prompt line (``{"Description": "..."}``) is 38 tokens.
+    Counting the bare text sent all four to one summary call, whose trim to
+    the window kept the first two and silently dropped the rest.
+    """
+    from lightrag.operate import _handle_entity_relation_summary
+
+    descriptions = [f"description number {i}" for i in range(1, 5)]
+    assert {len(desc) for desc in descriptions} == {20}
+    mock_extract = AsyncMock(side_effect=["SUM_ONE", "SUM_TWO", "SUM_THREE"])
+    global_config, _ = _make_chunking_config(mock_extract)
+    global_config["summary_context_size"] = 100
+    global_config["force_llm_summary_on_merge"] = 3
+
+    description, llm_was_used = await _handle_entity_relation_summary(
+        "Entity",
+        "TEST_ENTITY",
+        descriptions,
+        "<SEP>",
+        global_config,
+        llm_response_cache=None,
+    )
+
+    prompts = [call.args[0] for call in mock_extract.await_args_list]
+    missing = [
+        desc for desc in descriptions if not any(desc in prompt for prompt in prompts)
+    ]
+    assert missing == []
+    assert llm_was_used is True
+    assert description == "SUM_ONE<SEP>SUM_TWO"
