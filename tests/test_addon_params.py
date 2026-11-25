@@ -174,3 +174,21 @@ def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
     assert (first.chunk_token_size, second.chunk_token_size) == (500, 2000)
     first._addon_params["chunker"]["fixed_token"]["split_by_character"] = "#"
     assert second._addon_params["chunker"]["fixed_token"]["split_by_character"] == "|"
+
+
+def test_empty_update_and_ior_do_not_invalidate_cache() -> None:
+    owner = _addon_params_change_observer()
+
+    owner._addon_params.update({})
+    owner._addon_params.update([])
+    owner._addon_params |= {}
+    owner._addon_params |= []
+
+    assert owner._addon_params_dirty is False
+
+    with pytest.raises(ValueError):
+        owner._addon_params |= [("bad_pair",)]
+    assert owner._addon_params_dirty is False
+
+    owner._addon_params.update({"language": "French"})
+    assert owner._addon_params_dirty is True

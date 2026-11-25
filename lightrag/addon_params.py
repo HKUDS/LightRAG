@@ -164,6 +164,8 @@ class ObservableAddonParams(dict[str, Any]):
         # entries before a later malformed entry raises. Live configuration and
         # its derived cache must change together or not at all.
         pending = dict(*args, **kwargs)
+        if not pending:
+            return
         super().update(pending)
         self._changed()
 
@@ -173,6 +175,8 @@ class ObservableAddonParams(dict[str, Any]):
         # same partial-application hazard as ``update``. Materialize first for
         # the same reason.
         pending = dict(other)
+        if not pending:
+            return self
         super().__ior__(pending)
         self._changed()
         return self
