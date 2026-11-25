@@ -3129,8 +3129,9 @@ async def _merge_entities_impl(
     # get_node_edges does not say which endpoint comes first: some backends
     # list the queried node first, others (MongoDB, Memgraph, OpenSearch) keep
     # the stored direction. Relations are undirected, so take every incident
-    # edge whichever side the entity is on, and each edge once even when both
-    # endpoints are collected.
+    # edge whichever side the entity is on. An edge between two collected
+    # entities is listed by both; it always becomes a self-loop and is skipped
+    # below, so seen_edges only saves its second get_edge read.
     seen_edges: set[tuple[str, str]] = set()
     for entity_name in entities_to_collect:
         # Get all relationships of the entities

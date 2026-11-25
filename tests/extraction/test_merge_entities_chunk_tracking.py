@@ -28,6 +28,11 @@ Pinned defects, all in ``_merge_entities_impl`` (``lightrag/utils_graph.py``):
    no key. A relation key can be both old and new (relations already attached
    to an existing target keep their key), so only keys outside the new key
    set may be deleted.
+
+5. **Every incident relation is redirected**, whichever endpoint
+   ``get_node_edges`` lists first. MongoDB, Memgraph and OpenSearch return
+   each edge in its stored direction, so a relation stored *towards* a source
+   entity must still move to the target, with its tracking row migrated.
 """
 
 import pytest
@@ -282,3 +287,36 @@ async def test_merge_upserts_relation_rows_before_deleting_only_stale_keys():
     )
     assert upsert_idx < delete_idx
     assert all(shared_key not in keys for op, keys in rcs.ops if op == "delete")
+
+
+async def test_merge_redirects_relations_stored_towards_the_source():
+    """Defect 5: the stub lists edges in stored direction, like MongoDB,
+    Memgraph and OpenSearch. C is the TARGET of both (A,C) and (B,C); a merge
+    that kept only tuples whose first element is the source dropped both
+    relations together with C and left their tracking rows behind."""
+    graph = _MergeGraphStorage()
+    rcs = _RecordingKV(
+        {
+            make_relation_chunk_key("A", "C"): {"chunk_ids": ["c-ac"], "count": 1},
+            make_relation_chunk_key("B", "C"): {"chunk_ids": ["c-bc"], "count": 1},
+        }
+    )
+
+    await utils_graph._merge_entities_impl(
+        chunk_entity_relation_graph=graph,
+        entities_vdb=_DummyVectorStorage(),
+        relationships_vdb=_DummyVectorStorage(),
+        source_entities=["C"],
+        target_entity="D",
+        entity_chunks_storage=_RecordingKV(),
+        relation_chunks_storage=rcs,
+    )
+
+    assert {pair: data["description"] for pair, data in graph.edges.items()} == {
+        ("A", "D"): "A relates to C",
+        ("B", "D"): "B relates to C",
+    }
+    assert rcs.data == {
+        make_relation_chunk_key("A", "D"): {"chunk_ids": ["c-ac"], "count": 1},
+        make_relation_chunk_key("B", "D"): {"chunk_ids": ["c-bc"], "count": 1},
+    }
