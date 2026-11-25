@@ -194,11 +194,9 @@ test = [
 
 evaluation = [
     "lightrag-hku[api]",
-    "ragas>=0.3.7",
-    # ragas (<=0.4.3) imports langchain_community.chat_models.vertexai at
-    # import time; langchain-community 0.4.2 deleted that module, which
-    # makes `import ragas` fail. Lift this cap once ragas stops importing it.
-    "langchain-community<0.4.2",
+    # ragas <=0.4.3 imports langchain_community.chat_models.vertexai at import
+    # time, a module langchain-community 0.4.2 deleted; 0.4.4 made it optional.
+    "ragas>=0.4.4",
     "datasets>=4.3.0",
 ]
 
