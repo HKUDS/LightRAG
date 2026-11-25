@@ -9625,6 +9625,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 allow_merge,
                 self.entity_chunks,
                 self.relation_chunks,
+                text_chunks_storage=self.text_chunks,
+                full_entities_storage=self.full_entities,
+                full_relations_storage=self.full_relations,
             )
 
     def edit_entity(
@@ -9817,6 +9820,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 target_entity_data,
                 self.entity_chunks,
                 self.relation_chunks,
+                text_chunks_storage=self.text_chunks,
+                full_entities_storage=self.full_entities,
+                full_relations_storage=self.full_relations,
             )
 
     def merge_entities(

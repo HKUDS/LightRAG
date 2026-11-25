@@ -472,6 +472,137 @@ async def _require_tracking_drained(tracking_storages, context: str) -> None:
     )
 
 
+async def _extend_recovery_anchors(
+    chunk_entity_relation_graph,
+    renamed: dict[str, str],
+    *,
+    entity_chunks_storage=None,
+    relation_chunks_storage=None,
+    text_chunks_storage=None,
+    full_entities_storage=None,
+    full_relations_storage=None,
+) -> None:
+    """Name a rename's or merge's new objects in the documents' recovery anchors.
+
+    ``renamed`` maps each entity that is about to disappear to the name that
+    takes over its facts. Every document whose chunks support one of those
+    entities, or one of their relations, gets the new entity name and the
+    redirected relation pairs added to its ``full_entities`` /
+    ``full_relations`` rows, which are then flushed. Without this, deleting
+    such a document never visits the renamed or merged objects, and they keep
+    its facts and its deleted chunk ids.
+
+    Rules:
+
+    * Call it before the first graph mutation, like ``merge_nodes_and_edges``
+      Phase 0: a failure here aborts the operation before the graph changes,
+      leaving at most a superset of candidates, which a purge verifies.
+    * Only extend rows that exist. Creating one would hand a document the
+      ``anchors`` deletion proof it never had.
+    * Never remove a name. Until the graph commit lands, the old objects are
+      what is on disk, and a purge must still reach them.
+
+    See *Merge and rename failure model* in
+    ``docs/design/PurgeRecoveryContract.md``.
+    """
+    if (
+        not renamed
+        or text_chunks_storage is None
+        or full_entities_storage is None
+        or full_relations_storage is None
+    ):
+        return
+
+    chunk_ids: set[str] = set()
+    new_pairs: set[tuple[str, str]] = set()
+
+    def _add_source_ids(source_id: Any) -> None:
+        if isinstance(source_id, str):
+            chunk_ids.update(c for c in source_id.split(GRAPH_FIELD_SEP) if c)
+
+    async def _add_tracked(storage, key: str) -> None:
+        if storage is None:
+            return
+        row = await storage.get_by_id(key)
+        if isinstance(row, dict) and isinstance(row.get("chunk_ids"), list):
+            chunk_ids.update(c for c in row["chunk_ids"] if isinstance(c, str) and c)
+
+    from .utils import make_relation_chunk_key
+
+    for old_name in renamed:
+        node = await chunk_entity_relation_graph.get_node(old_name)
+        if node:
+            _add_source_ids(node.get("source_id"))
+        await _add_tracked(entity_chunks_storage, old_name)
+
+        for src, tgt in (
+            await chunk_entity_relation_graph.get_node_edges(old_name) or []
+        ):
+            edge = await chunk_entity_relation_graph.get_edge(src, tgt)
+            if edge:
+                _add_source_ids(edge.get("source_id"))
+            await _add_tracked(
+                relation_chunks_storage, make_relation_chunk_key(src, tgt)
+            )
+            new_src, new_tgt = renamed.get(src, src), renamed.get(tgt, tgt)
+            # A merge drops a relation that collapses onto the target; a
+            # rename keeps a real self-loop.
+            if new_src == new_tgt and src != tgt:
+                continue
+            new_pairs.add(tuple(sorted((new_src, new_tgt))))
+
+    chunk_ids -= set(RELATION_NO_EVIDENCE_SOURCE_IDS)
+    if not chunk_ids:
+        return
+    chunk_rows = await text_chunks_storage.get_by_ids(sorted(chunk_ids))
+    doc_ids = sorted(
+        {
+            row["full_doc_id"]
+            for row in chunk_rows
+            if isinstance(row, dict) and isinstance(row.get("full_doc_id"), str)
+        }
+    )
+    new_names = set(renamed.values())
+
+    changed = False
+    for doc_id in doc_ids:
+        entity_row = await full_entities_storage.get_by_id(doc_id)
+        if isinstance(entity_row, dict):
+            names = set(entity_row.get("entity_names") or [])
+            if not new_names <= names:
+                names |= new_names
+                await full_entities_storage.upsert(
+                    {doc_id: {"entity_names": sorted(names), "count": len(names)}}
+                )
+                changed = True
+
+        relation_row = await full_relations_storage.get_by_id(doc_id)
+        if isinstance(relation_row, dict):
+            pairs = {tuple(pair) for pair in (relation_row.get("relation_pairs") or [])}
+            if not new_pairs <= pairs:
+                pairs |= new_pairs
+                await full_relations_storage.upsert(
+                    {
+                        doc_id: {
+                            "relation_pairs": [list(pair) for pair in sorted(pairs)],
+                            "count": len(pairs),
+                        }
+                    }
+                )
+                changed = True
+
+    # Flush even when nothing changed here: an earlier attempt that failed
+    # after its upsert may have left the same rows buffered, not durable.
+    for storage in (full_entities_storage, full_relations_storage):
+        await storage.index_done_callback()
+    if changed:
+        logger.info(
+            "Recovery anchors: named %s in %d document(s)",
+            sorted(new_names),
+            len(doc_ids),
+        )
+
+
 async def _persist_graph_updates(
     entities_vdb=None,
     relationships_vdb=None,
@@ -1237,6 +1368,9 @@ async def _edit_entity_impl(
     *,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    text_chunks_storage=None,
+    full_entities_storage=None,
+    full_relations_storage=None,
 ) -> dict[str, Any]:
     """Internal helper that edits an entity without acquiring storage locks.
 
@@ -1251,6 +1385,9 @@ async def _edit_entity_impl(
         updated_data: Dictionary containing updated attributes (including optional entity_name for renaming)
         entity_chunks_storage: Optional KV storage for tracking chunks
         relation_chunks_storage: Optional KV storage for tracking relation chunks
+        text_chunks_storage, full_entities_storage, full_relations_storage:
+            Optional; when all three are given, a rename names the new entity
+            in the recovery anchors first (``_extend_recovery_anchors``)
 
     Returns:
         Dictionary containing updated entity information
@@ -1291,6 +1428,16 @@ async def _edit_entity_impl(
 
     if is_renaming:
         logger.info(f"Entity Edit: renaming `{entity_name}` to `{new_entity_name}`")
+
+        await _extend_recovery_anchors(
+            chunk_entity_relation_graph,
+            {entity_name: new_entity_name},
+            entity_chunks_storage=entity_chunks_storage,
+            relation_chunks_storage=relation_chunks_storage,
+            text_chunks_storage=text_chunks_storage,
+            full_entities_storage=full_entities_storage,
+            full_relations_storage=full_relations_storage,
+        )
 
         await chunk_entity_relation_graph.upsert_node(new_entity_name, new_node_data)
 
@@ -1818,6 +1965,9 @@ async def aedit_entity(
     allow_merge: bool = False,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    text_chunks_storage=None,
+    full_entities_storage=None,
+    full_relations_storage=None,
 ) -> dict[str, Any]:
     """Asynchronously edit entity information.
 
@@ -1844,6 +1994,11 @@ async def aedit_entity(
         allow_merge: Whether to merge into an existing entity when renaming to an existing name, defaults to False
         entity_chunks_storage: Optional KV storage for tracking chunks that reference this entity
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
+        text_chunks_storage, full_entities_storage, full_relations_storage:
+            Optional; when all three are given, the rename or merge names the new entity in the
+            recovery anchors of the documents it carries
+            (``_extend_recovery_anchors``), so deleting those documents still
+            reaches it
 
     Returns:
         Dictionary containing updated entity information and operation summary with the following structure:
@@ -2036,6 +2191,9 @@ async def aedit_entity(
                             target_entity_data=None,
                             entity_chunks_storage=entity_chunks_storage,
                             relation_chunks_storage=relation_chunks_storage,
+                            text_chunks_storage=text_chunks_storage,
+                            full_entities_storage=full_entities_storage,
+                            full_relations_storage=full_relations_storage,
                         )
 
                         # Merge succeeded
@@ -2102,6 +2260,9 @@ async def aedit_entity(
                 updated_data,
                 entity_chunks_storage=entity_chunks_storage,
                 relation_chunks_storage=relation_chunks_storage,
+                text_chunks_storage=text_chunks_storage,
+                full_entities_storage=full_entities_storage,
+                full_relations_storage=full_relations_storage,
             )
             operation_summary["operation_status"] = "success"
             return {**edit_result, "operation_summary": operation_summary}
@@ -3036,6 +3197,9 @@ async def _merge_entities_impl(
     target_entity_data: dict[str, Any] = None,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    text_chunks_storage=None,
+    full_entities_storage=None,
+    full_relations_storage=None,
 ) -> dict[str, Any]:
     """Internal helper that merges entities without acquiring storage locks.
 
@@ -3052,6 +3216,11 @@ async def _merge_entities_impl(
         target_entity_data: Dictionary of specific values to set for target entity (optional)
         entity_chunks_storage: Optional KV storage for tracking chunks
         relation_chunks_storage: Optional KV storage for tracking relation chunks
+        text_chunks_storage, full_entities_storage, full_relations_storage:
+            Optional; when all three are given, the merge names the target in the
+            recovery anchors of the documents it carries
+            (``_extend_recovery_anchors``), so deleting those documents still
+            reaches it
 
     Returns:
         Dictionary containing the merged entity information
@@ -3135,6 +3304,18 @@ async def _merge_entities_impl(
                 if src == entity_name:
                     edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
                     all_relations.append((src, tgt, edge_data))
+
+    # Name the target and the redirected relations in the anchors of every
+    # document the sources carry, before the first graph mutation below.
+    await _extend_recovery_anchors(
+        chunk_entity_relation_graph,
+        {name: target_entity for name in source_entities if name != target_entity},
+        entity_chunks_storage=entity_chunks_storage,
+        relation_chunks_storage=relation_chunks_storage,
+        text_chunks_storage=text_chunks_storage,
+        full_entities_storage=full_entities_storage,
+        full_relations_storage=full_relations_storage,
+    )
 
     # 5. Create or update the target entity. A missing target is intentional:
     # spelling-repair merges may consolidate sources into a new canonical name.
@@ -3772,6 +3953,9 @@ async def amerge_entities(
     target_entity_data: dict[str, Any] = None,
     entity_chunks_storage=None,
     relation_chunks_storage=None,
+    text_chunks_storage=None,
+    full_entities_storage=None,
+    full_relations_storage=None,
 ) -> dict[str, Any]:
     """Asynchronously merge multiple entities into one entity.
 
@@ -3798,6 +3982,11 @@ async def amerge_entities(
             overriding any merged values, e.g. {"description": "custom description", "entity_type": "PERSON"}
         entity_chunks_storage: Optional KV storage for tracking chunks that reference entities
         relation_chunks_storage: Optional KV storage for tracking chunks that reference relations
+        text_chunks_storage, full_entities_storage, full_relations_storage:
+            Optional; when all three are given, the merge names the target in the
+            recovery anchors of the documents it carries
+            (``_extend_recovery_anchors``), so deleting those documents still
+            reaches it
 
     Returns:
         Dictionary containing the merged entity information
@@ -3892,6 +4081,9 @@ async def amerge_entities(
                 target_entity_data=target_entity_data,
                 entity_chunks_storage=entity_chunks_storage,
                 relation_chunks_storage=relation_chunks_storage,
+                text_chunks_storage=text_chunks_storage,
+                full_entities_storage=full_entities_storage,
+                full_relations_storage=full_relations_storage,
             )
         except Exception as e:
             logger.error(f"Error merging entities: {e}")

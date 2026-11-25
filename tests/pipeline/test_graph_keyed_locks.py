@@ -494,6 +494,8 @@ def _make_gated_rag(workspace: str = "ws1", *, graph=None):
     rag.text_chunks = _make_vdb_mock(workspace=workspace)
     rag.entity_chunks = None
     rag.relation_chunks = None
+    rag.full_entities = None
+    rag.full_relations = None
     rag._insert_done = AsyncMock(return_value=None)
     rag._migrate_chunk_tracking_before_creation = AsyncMock(return_value=None)
     return rag
