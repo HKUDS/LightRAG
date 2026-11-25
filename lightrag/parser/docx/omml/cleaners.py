@@ -21,9 +21,9 @@ clean_exps = {
     r"\\bigwedge([a-zA-Z0-9]+)": r"\\bigwedge{\1}",
     r"\\lfloor([a-zA-Z0-9]+)": r"\\lfloor{\1}",
     r"\\lceil([a-zA-Z0-9]+)": r"\\lceil{\1}",
-    r"\\lim\\below\{(.+)\}\{(.+)\}": r"\\lim_{\1}{\2}",
-    r"\\min\\below\{(.+)\}\{(.+)\}": r"\\min_{\1}{\2}",
-    r"\\max\\below\{(.+)\}\{(.+)\}": r"\\max_{\1}{\2}",
+    r"\\lim\\below\{(.+?)\}\{(.+?)\}": r"\\lim_{\1}{\2}",
+    r"\\min\\below\{(.+?)\}\{(.+?)\}": r"\\min_{\1}{\2}",
+    r"\\max\\below\{(.+?)\}\{(.+?)\}": r"\\max_{\1}{\2}",
 }
 
 
