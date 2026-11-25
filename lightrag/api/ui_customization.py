@@ -129,12 +129,19 @@ def normalize_locale(value: str) -> str:
         raise ValueError(f"locale {value!r} is too long")
     subtags = value.split("-")
     normalized: list[str] = []
+    in_extension = False
     for index, subtag in enumerate(subtags):
         if not _LOCALE_SUBTAG_RE.match(subtag):
             raise ValueError(f"locale {value!r} has an invalid subtag {subtag!r}")
+        # BCP 47: a single-character subtag is a singleton introducing an
+        # extension or private-use sequence; everything after it stays lowercase.
+        if len(subtag) == 1:
+            in_extension = True
         if index == 0:
             if not subtag.isalpha() or len(subtag) < 2:
                 raise ValueError(f"locale {value!r} has an invalid language subtag")
+            normalized.append(subtag.lower())
+        elif in_extension:
             normalized.append(subtag.lower())
         elif len(subtag) == 4 and subtag.isalpha():
             normalized.append(subtag.title())
