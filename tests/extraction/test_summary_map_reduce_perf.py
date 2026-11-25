@@ -39,7 +39,9 @@ class _CountingTokenizer(TokenizerInterface):
 
 def _make_chunking_config(mock_extract) -> tuple[dict, _CountingTokenizer]:
     """``global_config`` whose ``summary_context_size`` forces the map-reduce
-    chunking path (4 five-token descriptions vs. a 10-token window)."""
+    chunking path: the map phase counts each description as its prompt line
+    (``{"Description": "alpha"}`` plus a newline, 24-25 tokens), so two lines
+    fit the 50-token window and four do not."""
     counter = _CountingTokenizer()
     tokenizer = Tokenizer("dummy", counter)
     global_config = {
@@ -47,8 +49,8 @@ def _make_chunking_config(mock_extract) -> tuple[dict, _CountingTokenizer]:
         "addon_params": {},
         "_resolved_summary_language": "English",
         "summary_length_recommended": 100,
-        # 4 descriptions x 5 tokens = 20 tokens > 10-token window → chunking
-        "summary_context_size": 10,
+        # alpha/beta/gamma/delta lines: 25 + 24 + 25 + 25 = 99 > 50 → chunking
+        "summary_context_size": 50,
         "summary_max_tokens": 100_000,
         "force_llm_summary_on_merge": 10,
         "tokenizer": tokenizer,
@@ -80,8 +82,14 @@ async def test_map_reduce_chunking_is_preserved():
 
     # Reduce phase ran (the LLM was used to summarize at least one chunk).
     assert llm_was_used is True
-    # 4 five-token descriptions under a 10-token window → 2 chunks → 2 summaries
-    # joined in the next iteration (len == 2 takes the no-LLM join exit).
+    # Lines of 25 + 24 | 25 + 25 tokens under a 50-token window → 2 chunks,
+    # each prompt carrying both of its descriptions → 2 summaries joined in the
+    # next iteration (len == 2 takes the no-LLM join exit).
+    prompts = [call.args[0] for call in mock_extract.await_args_list]
+    assert [
+        [desc for desc in ("alpha", "beta", "gamma", "delta") if desc in prompt]
+        for prompt in prompts
+    ] == [["alpha", "beta"], ["gamma", "delta"]]
     assert description == "SUM_ONE<SEP>SUM_TWO"
 
 
@@ -153,3 +161,42 @@ async def test_every_description_reaches_the_summary_prompt():
     assert missing == []
     assert llm_was_used is True
     assert description == "SUM_ONE<SEP>SUM_TWO"
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_oversize_descriptions_left_out_of_the_prompt_are_logged(
+    lightrag_log_records,
+):
+    """Two descriptions whose lines (25 + 24 tokens) overflow a 30-token window
+    reach the final call together (a merge count of 2 rules out the plain
+    join); its trim keeps only the first, and the loss must be logged rather
+    than silent."""
+    from lightrag.operate import _handle_entity_relation_summary
+
+    mock_extract = AsyncMock(side_effect=["SUM_ONE"])
+    global_config, _ = _make_chunking_config(mock_extract)
+    global_config["summary_context_size"] = 30
+    global_config["force_llm_summary_on_merge"] = 2
+
+    description, llm_was_used = await _handle_entity_relation_summary(
+        "Entity",
+        "TEST_ENTITY",
+        ["alpha", "beta"],
+        "<SEP>",
+        global_config,
+        llm_response_cache=None,
+    )
+
+    (prompt,) = [call.args[0] for call in mock_extract.await_args_list]
+    assert ("alpha" in prompt, "beta" in prompt) == (True, False)
+    assert (description, llm_was_used) == ("SUM_ONE", True)
+    warnings = [
+        record.getMessage()
+        for record in lightrag_log_records
+        if "left out of the summary" in record.getMessage()
+    ]
+    assert warnings == [
+        "Summarizing Entity:TEST_ENTITY: 1 of 2 descriptions exceed "
+        "summary_context_size (30 tokens) and are left out of the summary"
+    ]

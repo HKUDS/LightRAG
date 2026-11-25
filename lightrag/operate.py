@@ -634,6 +634,15 @@ async def _summarize_descriptions(
         max_token_size=summary_context_size,
         tokenizer=tokenizer,
     )
+    # The map phase sizes groups to fit, so a trim here means an oversize
+    # description (a forced pair, or a final list of two): say what is lost.
+    dropped = len(description_list) - len(truncated_descriptions)
+    if dropped:
+        logger.warning(
+            f"Summarizing {description_type}:{description_name}: {dropped} of "
+            f"{len(description_list)} descriptions exceed summary_context_size "
+            f"({summary_context_size} tokens) and are left out of the summary"
+        )
 
     # Convert to JSONL format (one JSON object per line)
     joined_descriptions = "\n".join(
