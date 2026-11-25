@@ -30,9 +30,10 @@ def bearer_token(scope: dict[str, Any]) -> Optional[str]:
     if not authorization:
         return None
     scheme, _, param = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not param:
+    token = param.strip()
+    if scheme.lower() != "bearer" or not token:
         return None
-    return param
+    return token
 
 
 async def send_json(
