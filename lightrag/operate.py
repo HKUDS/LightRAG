@@ -458,6 +458,22 @@ async def _handle_entity_relation_summary(
 
     # Iterative map-reduce process
     while True:
+        # A short list whose bare texts fit is stored as their join, with no
+        # LLM call and no prompt, so the prompt's JSON overhead must not decide
+        # this exit: it is measured on the bare texts, exactly as it is stored.
+        if len(current_list) < force_llm_summary_on_merge:
+            bare_tokens = sum(len(tokenizer.encode(desc)) for desc in current_list)
+            if bare_tokens < summary_max_tokens and (
+                bare_tokens <= summary_context_size or len(current_list) <= 2
+            ):
+                # Sanitize for the same reason as the single-description
+                # early return above: inputs merged from pre-existing graph
+                # data are not guaranteed XML-safe.
+                final_description = sanitize_text_for_encoding(
+                    separator.join(current_list)
+                )
+                return final_description if final_description else "", llm_was_used
+
         # Calculate total tokens in current list while periodically yielding so
         # a large merge does not monopolize the event loop in single-worker mode.
         total_tokens = 0
@@ -476,36 +492,21 @@ async def _handle_entity_relation_summary(
 
         # If total length is within limits, perform final summarization
         if total_tokens <= summary_context_size or len(current_list) <= 2:
-            # The joined description stores the bare texts, so measure those
-            # against summary_max_tokens (a short list: below the merge count).
-            if len(current_list) < force_llm_summary_on_merge and (
-                sum(len(tokenizer.encode(desc)) for desc in current_list)
-                < summary_max_tokens
-            ):
-                # no LLM needed, just join the descriptions
-                # Sanitize for the same reason as the single-description
-                # early return above: inputs merged from pre-existing graph
-                # data are not guaranteed XML-safe.
-                final_description = sanitize_text_for_encoding(
-                    separator.join(current_list)
+            if total_tokens > summary_context_size and len(current_list) <= 2:
+                logger.warning(
+                    f"Summarizing {entity_or_relation_name}: Oversize description found"
                 )
-                return final_description if final_description else "", llm_was_used
-            else:
-                if total_tokens > summary_context_size and len(current_list) <= 2:
-                    logger.warning(
-                        f"Summarizing {entity_or_relation_name}: Oversize description found"
-                    )
-                # Final summarization of remaining descriptions - LLM will be used
-                final_summary = await _summarize_descriptions(
-                    description_type,
-                    entity_or_relation_name,
-                    current_list,
-                    global_config,
-                    llm_response_cache,
-                    truncation_tally=truncation_tally,
-                    truncation_write_ahead=truncation_write_ahead,
-                )
-                return final_summary, True  # LLM was used for final summarization
+            # Final summarization of remaining descriptions - LLM will be used
+            final_summary = await _summarize_descriptions(
+                description_type,
+                entity_or_relation_name,
+                current_list,
+                global_config,
+                llm_response_cache,
+                truncation_tally=truncation_tally,
+                truncation_write_ahead=truncation_write_ahead,
+            )
+            return final_summary, True  # LLM was used for final summarization
 
         # Need to split into chunks - Map phase
         # Ensure each chunk has minimum 2 descriptions to guarantee progress
