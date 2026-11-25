@@ -167,10 +167,15 @@ def test_detect_table_format_explicit_attr() -> None:
 
 
 def test_detect_table_format_ignores_prefixed_lookalikes() -> None:
-    assert detect_table_format('data-format="json" id="tb-1"', "<tr><td>x</td></tr>") == "html"
+    assert (
+        detect_table_format('data-format="json" id="tb-1"', "<tr><td>x</td></tr>")
+        == "html"
+    )
     assert detect_table_format('data-format="html"', '[{"a": 1}]') == "json"
     assert detect_table_format('gridformat="json"', "<tr>x</tr>") == "html"
-    assert detect_table_format('data-format="html" format="json"', "<tr>x</tr>") == "json"
+    assert (
+        detect_table_format('data-format="html" format="json"', "<tr>x</tr>") == "json"
+    )
 
 
 def test_detect_table_format_sniff_when_attrs_silent() -> None:
