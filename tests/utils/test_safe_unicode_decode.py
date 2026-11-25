@@ -16,6 +16,10 @@ pytestmark = pytest.mark.offline
         ("Already decoded: 😀".encode("utf-8"), "Already decoded: 😀"),
         (rb"Keep \utils, \n and \uZZZZ", r"Keep \utils, \n and \uZZZZ"),
         (b"", ""),
+        (rb"\ud83d", "?"),
+        (rb"prefix \udc00 suffix", "prefix ? suffix"),
+        (rb"\ud83d\ud83d\ude00", "?😀"),
+        (b"hi \xff there", "hi \ufffd there"),
     ],
 )
 def test_safe_unicode_decode_keeps_utf8_text(content: bytes, expected: str):

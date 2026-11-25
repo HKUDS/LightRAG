@@ -4861,11 +4861,15 @@ def safe_unicode_decode(content: bytes) -> str:
     unicode_escape_pattern = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
 
     def replace_unicode_escape(match: re.Match[str]) -> str:
-        return json.loads(f'"{match.group(0)}"')
+        # json.loads leaves unpaired UTF-16 surrogates when a \uXXXX run is
+        # truncated (a real VLM/LLM streaming artifact). Sanitize lone surrogates
+        # and malformed raw UTF-8 bytes rather than returning unencodable text.
+        decoded = json.loads(f'"{match.group(0)}"')
+        return decoded.encode("utf-8", "replace").decode("utf-8")
 
     # Perform the substitution
     decoded_content = unicode_escape_pattern.sub(
-        replace_unicode_escape, content.decode("utf-8")
+        replace_unicode_escape, content.decode("utf-8", errors="replace")
     )
 
     return decoded_content
