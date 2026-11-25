@@ -314,3 +314,86 @@ def test_oversized_chunk_is_encoded_only_once_for_the_full_content():
     # Exactly one call encoded the entire original content -- the single
     # fast-path check inside split_by_token_limit, not a separate pre-check.
     assert underlying.full_content_encode_calls == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Edge U+FFFD outside the span: not stripped to make the parent fit.
+        "\ufffdhello world this is a boundary chunk",
+        "\ufffdhello \ufffd world this is a boundary chunk\ufffd",
+    ],
+    ids=["edge", "edge-and-literal-interior"],
+)
+def test_replacement_parent_that_does_not_fit_its_span_raises(content: str):
+    """A parent whose content is its span text plus edge U+FFFD is a real
+    divergence like any other, not an artifact to degrade."""
+    source = content.strip("\ufffd")
+    chunking_result = [
+        {
+            "content": content,
+            "tokens": len(content),
+            "chunk_order_index": 0,
+            "chunk_id": "c0",
+            "_source_span": {"start": 0, "end": len(source)},
+        }
+    ]
+
+    with pytest.raises(ChunkBlockMatchError):
+        enforce_chunk_token_limit_before_embedding(
+            chunking_result,
+            _tok(),
+            max_tokens=5,
+            overlap_tokens=0,
+            source_content=source,
+        )
+
+
+def test_literal_replacement_divergence_still_raises():
+    """A literal U+FFFD that does not reconcile with the source slice is a
+    real divergence. Do not treat the character as a decode-artifact marker."""
+    content = "\ufffdabcd"
+    chunking_result = [
+        {
+            "content": content,
+            "tokens": len(content),
+            "chunk_order_index": 0,
+            "chunk_id": "c0",
+            "_source_span": {"start": 0, "end": 4},
+        }
+    ]
+
+    with pytest.raises(ChunkBlockMatchError):
+        enforce_chunk_token_limit_before_embedding(
+            chunking_result,
+            _tok(),
+            max_tokens=1,
+            overlap_tokens=0,
+            source_content="WXYZ",
+        )
+
+
+@pytest.mark.parametrize(
+    "content", ["abcdefghij", "abcdefghij\ufffdklmnopqrst"], ids=["plain", "fffd"]
+)
+def test_spanless_parent_children_carry_no_span_and_no_marker(content: str):
+    """A parent without a span gives its children none, and nothing else,
+    whatever its content holds: backfill then fails them loudly."""
+    chunking_result = [
+        {
+            "content": content,
+            "tokens": len(content),
+            "chunk_order_index": 0,
+            "chunk_id": "c0",
+        }
+    ]
+
+    out = enforce_chunk_token_limit_before_embedding(
+        chunking_result, _tok(), max_tokens=3, overlap_tokens=0, source_content=content
+    )
+
+    assert len(out) > 1
+    assert {key for dp in out for key in dp} == {
+        "content", "tokens", "chunk_order_index", "chunk_id",
+        "split_type", "split_part", "split_total",
+    }  # fmt: skip

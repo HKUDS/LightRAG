@@ -13,6 +13,7 @@ from lightrag.rerank import (
     cohere_rerank,
     generic_rerank_api,
 )
+from lightrag.utils import TiktokenTokenizer, TokenBudgetError
 
 
 pytestmark = pytest.mark.offline
@@ -141,20 +142,29 @@ class TestChunkDocumentsForRerank:
         assert chunked_docs == []
         assert doc_indices == []
 
-    def test_single_document_chunking(self):
-        """Test chunking of a single long document"""
-        # Create document with ~100 tokens
-        long_doc = " ".join([f"token{i}" for i in range(100)])
-        documents = [long_doc]
-
-        chunked_docs, doc_indices = chunk_documents_for_rerank(
-            documents, max_tokens=30, overlap_tokens=5
+    @pytest.mark.parametrize("text", ["你好🙂世界" * 8, "🧑🏽‍💻" * 8])
+    @pytest.mark.parametrize("overlap", [0, 2])
+    def test_chunks_preserve_unicode_and_token_budget(self, text, overlap):
+        """Token windows that cut a multi-byte code point must not emit U+FFFD:
+        every chunk is a verbatim substring that fits after re-encoding."""
+        chunks, indices = chunk_documents_for_rerank(
+            [text, "", "short"], max_tokens=4, overlap_tokens=overlap
         )
+        tokenizer = TiktokenTokenizer()
+        document_chunks = [chunk for chunk, index in zip(chunks, indices) if index == 0]
+        assert all(chunk in text for chunk in document_chunks)
+        assert all(len(tokenizer.encode(chunk)) <= 4 for chunk in document_chunks)
+        assert chunks[-2:] == ["", "short"]
+        assert indices[-2:] == [1, 2]
+        if overlap == 0:
+            assert "".join(document_chunks) == text
 
-        # Should create multiple chunks
-        assert len(chunked_docs) > 1
-        # All chunks should map to document 0
-        assert all(idx == 0 for idx in doc_indices)
+    def test_rejects_budget_smaller_than_one_codepoint(self):
+        """A budget below one complete code point raises instead of emitting
+        lossy text."""
+        assert len(TiktokenTokenizer().encode("🧑")) > 1
+        with pytest.raises(TokenBudgetError):
+            chunk_documents_for_rerank(["🧑" * 3], max_tokens=1, overlap_tokens=0)
 
 
 class TestAggregateChunkScores:

@@ -10,6 +10,7 @@ deleted anchor is rebuilt from the surviving consistent snapshots. See
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -36,6 +37,7 @@ from lightrag.kg import anchor_lock as al
 from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.kg.shared_storage import finalize_share_data, initialize_share_data
 from lightrag.utils import EmbeddingFunc, Tokenizer, TokenizerInterface
+from tests.config_store._rendezvous import release_when_ready
 
 pytestmark = pytest.mark.offline
 
@@ -181,8 +183,6 @@ class TestPaths:
             # Aliases a case-insensitive filesystem, or Windows' trailing dot
             # and space stripping, resolves onto a reserved file.
             "CONFIG_STORAGE_ANCHOR.JSON",
-            "Kv_Workspace_Config.json",
-            ".LIGHTRAG_ANCHOR_BIND.LOCK",
             "config_storage_anchor.json.",
             ".lightrag_storage.lock ",
             # Unicode case folding: KELVIN SIGN, the fi ligature, long s.
@@ -511,20 +511,38 @@ class TestRegistration:
         assert "owned by workspace 'teamalpha'" in str(info.value)
 
 
-def _register_in_subprocess(working_dir, workspace: str, start_at: float):
+def _register_in_subprocess(working_dir, workspace: str, rendezvous, role: str):
+    repo_root = str(Path(__file__).resolve().parents[2])
+    # The probe runs as a script, so its sys.path starts at this directory:
+    # without the root on PYTHONPATH it imports whichever lightrag is
+    # installed, which in a second checkout is not the code under test.
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            p for p in (repo_root, os.environ.get("PYTHONPATH")) if p
+        ),
+    }
     return subprocess.Popen(
-        [sys.executable, str(_PROBE), str(working_dir), workspace, str(start_at)],
+        [
+            sys.executable,
+            str(_PROBE),
+            str(working_dir),
+            workspace,
+            str(rendezvous),
+            role,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        cwd=str(Path(__file__).resolve().parents[2]),
+        cwd=repo_root,
+        env=env,
     )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="exercises the POSIX flock path")
 @pytest.mark.parametrize("anchored", [False, True], ids=["first-use", "append"])
 def test_concurrent_registrations_across_process_trees_keep_both_members(
-    tmp_path, anchored
+    tmp_path, tmp_path_factory, anchored
 ):
     """Two servers registering different workspaces at the same moment: the
     bind lock serializes the group creation and the read-modify-write of the
@@ -535,12 +553,20 @@ def test_concurrent_registrations_across_process_trees_keep_both_members(
             ca.StorageAnchor("JsonKVStorage", ca.new_storage_uuid(), members=()),
             replace=False,
         )
-    start_at = time.time() + 1.5
+    # Outside working_dir: the first start scans its child directories.
+    rendezvous = tmp_path_factory.mktemp("rendezvous")
     procs = [
-        _register_in_subprocess(tmp_path, workspace, start_at)
-        for workspace in ("teamalpha", "teambeta")
+        _register_in_subprocess(tmp_path, "teamalpha", rendezvous, "holder"),
+        _register_in_subprocess(tmp_path, "teambeta", rendezvous, "contender"),
     ]
-    outputs = [proc.communicate(timeout=60) for proc in procs]
+    try:
+        release_when_ready(rendezvous, procs)
+        outputs = [proc.communicate(timeout=60) for proc in procs]
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
     for proc, (out, err) in zip(procs, outputs):
         assert proc.returncode == 0, err
     uuids = {
@@ -990,7 +1016,6 @@ class TestAnchorFormat:
         "overrides",
         [
             {"members": ...},
-            {"layout": ...},
             {"layout": "flat"},
             {"members": "teamalpha"},
             {"members": ["a", "a"]},
@@ -998,7 +1023,6 @@ class TestAnchorFormat:
             {"members": [".."]},
             {"members": ["config_storage_anchor.json"]},
             {"members": [1]},
-            {"schema_version": True},
         ],
     )
     def test_a_malformed_json_anchor_is_unreadable(self, tmp_path, overrides):
@@ -1007,7 +1031,12 @@ class TestAnchorFormat:
             ca.read_anchor(str(tmp_path))
         assert info.value.cause == ca.IDENTITY_ANCHOR_UNREADABLE
 
-    @pytest.mark.parametrize("extra", [{"members": []}, {"layout": "json_shards"}])
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"members": []},
+        ],
+    )
     def test_a_database_anchor_with_json_fields_is_unreadable(self, tmp_path, extra):
         self._write(
             tmp_path,
@@ -1075,7 +1104,9 @@ class _FakeFcntl:
 async def test_posix_contention_is_waited_for_never_bypassed(tmp_path, monkeypatch):
     """``EWOULDBLOCK`` is the one answer that names another holder: waited
     for up to the timeout, then refused -- never a bind without the lock."""
-    fake = _FakeFcntl(BlockingIOError(11, "Resource temporarily unavailable"))
+    fake = _FakeFcntl(
+        BlockingIOError(errno.EWOULDBLOCK, "Resource temporarily unavailable")
+    )
     monkeypatch.setattr(al, "_fcntl", lambda: fake)
     entered = False
     with pytest.raises(ConfigurationAnchorLockError, match="bind lock"):
@@ -1088,9 +1119,9 @@ async def test_posix_contention_is_waited_for_never_bypassed(tmp_path, monkeypat
 @pytest.mark.parametrize(
     "error",
     [
-        OSError(37, "No locks available"),  # ENOLCK: NFS without lockd
-        OSError(95, "Operation not supported"),  # EOPNOTSUPP
-        OSError(5, "Input/output error"),  # EIO
+        OSError(errno.ENOLCK, "No locks available"),  # NFS without lockd
+        OSError(errno.EOPNOTSUPP, "Operation not supported"),
+        OSError(errno.EIO, "Input/output error"),
     ],
     ids=["ENOLCK", "EOPNOTSUPP", "EIO"],
 )

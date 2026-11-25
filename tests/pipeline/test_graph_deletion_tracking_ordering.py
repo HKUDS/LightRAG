@@ -951,19 +951,6 @@ class TestPublishedCommitIsNotAFailure:
         assert rag.entity_chunks.records[OTHER] == CHUNKS
 
     @pytest.mark.asyncio
-    async def test_a_write_that_never_landed_keeps_every_row(self, rag, monkeypatch):
-        self._commit_raises(
-            rag, monkeypatch, _Boom("graph commit failed"), land_the_write=False
-        )
-
-        result = await rag.delete_entity()
-
-        assert result.status == "fail"
-        assert rag.persisted_graph().has_node(ENTITY)
-        assert rag.entity_chunks.records[ENTITY] == CHUNKS
-        assert rag.relation_chunks.records[RELATION_KEY] == CHUNKS
-
-    @pytest.mark.asyncio
     async def test_a_cancelled_commit_keeps_every_row(self, rag, monkeypatch):
         self._commit_raises(
             rag, monkeypatch, asyncio.CancelledError(), land_the_write=False

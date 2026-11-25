@@ -15,13 +15,15 @@ Four roles are currently supported:
 
 If a role has no dedicated configuration, LightRAG uses the base `LLM_*` configuration.
 
+For direct OpenAI API configurations, update any GPT-5, GPT-5 mini, or GPT-5 nano model pins before their [December 11, 2026 shutdown](https://developers.openai.com/api/docs/deprecations). The replacements do not accept `minimal`; use `none` only for models that support it, such as GPT-6.1 Terra or GPT-6 Luna.
+
 ## Base LLM Configuration
 
 The base configuration defines the default LLM provider, model, service endpoint, authentication information, and concurrency control:
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -40,7 +42,7 @@ Common fields:
 | `LLM_MODEL` | Base model name. For Azure OpenAI, this is usually the deployment name. |
 | `LLM_BINDING_HOST` | Base provider endpoint. For SDK default endpoints, use the corresponding sentinel, such as `DEFAULT_GEMINI_ENDPOINT` or `DEFAULT_BEDROCK_ENDPOINT`. |
 | `LLM_BINDING_API_KEY` | Base API key. Bedrock does not use this field. |
-| `LLM_TIMEOUT` | Base LLM timeout. A role inherits it when no role timeout is set. |
+| `LLM_TIMEOUT` | Base LLM timeout. A role inherits it when no role timeout is set. `0` leaves the provider SDK's default timeout in place. |
 | `MAX_ASYNC_LLM` | Base maximum LLM concurrency. A role inherits it when `{ROLE}_MAX_ASYNC_LLM` is not set. `MAX_ASYNC` is still accepted as a deprecated alias. |
 
 ### File-processing interaction
@@ -55,7 +57,7 @@ Each role can override the binding, model, endpoint, API key, concurrency, and t
 
 ```env
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
 QUERY_MAX_ASYNC_LLM=2
@@ -71,7 +73,7 @@ Variable format:
 | `{ROLE}_LLM_BINDING_HOST` | Overrides the role endpoint. |
 | `{ROLE}_LLM_BINDING_API_KEY` | Overrides the role API key. Bedrock does not support it. |
 | `{ROLE}_MAX_ASYNC_LLM` | Overrides the role maximum concurrency. Inherits `MAX_ASYNC_LLM` when unset. |
-| `{ROLE}_LLM_TIMEOUT` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset. |
+| `{ROLE}_LLM_TIMEOUT` | Overrides the role timeout. Inherits `LLM_TIMEOUT` when unset; `0` gives the role the provider SDK's default timeout. |
 
 ## Provider Option Overrides
 
@@ -128,13 +130,14 @@ Therefore, when you only want to change the model within the same provider, you 
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-# QUERY inherits host, API key, timeout, concurrency, and OPENAI_LLM_REASONING_EFFORT
-QUERY_LLM_MODEL=gpt-5
+# QUERY inherits host, API key, timeout, and concurrency
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 ```
 
 ### Cross-Provider Overrides
@@ -143,7 +146,7 @@ If a role's `{ROLE}_LLM_BINDING` differs from the base `LLM_BINDING`, it is a cr
 
 - `{ROLE}_LLM_MODEL` must be set.
 - Non-Bedrock providers must set `{ROLE}_LLM_BINDING_API_KEY`.
-- If `{ROLE}_LLM_BINDING_HOST` is not set, LightRAG tries to use that provider's default host.
+- If `{ROLE}_LLM_BINDING_HOST` is not set, LightRAG uses that provider's default host and never inherits `LLM_BINDING_HOST`, even between `openai` and `openai_responses` on the same gateway; startup logs a warning whenever it falls back to that default.
 - Provider options do not inherit base provider options. They start empty and only apply role-specific provider options.
 
 Example: use Ollama as the base for local extraction, then use OpenAI for final answers:
@@ -155,10 +158,10 @@ LLM_BINDING_HOST=http://localhost:11434
 OLLAMA_LLM_NUM_CTX=32768
 
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5-mini
+QUERY_LLM_MODEL=gpt-6.1-terra
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_openai_api_key
-QUERY_OPENAI_LLM_REASONING_EFFORT=minimal
+QUERY_OPENAI_LLM_REASONING_EFFORT=none
 ```
 
 For cross-provider configurations, explicitly setting `{ROLE}_LLM_BINDING_HOST` is recommended to avoid confusion between the default host and the base provider endpoint.
@@ -175,7 +178,7 @@ Role-level Bedrock example:
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 
@@ -210,16 +213,17 @@ Suitable when using the same OpenAI key and endpoint, but using a stronger model
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 QUERY_MAX_ASYNC_LLM=2
 ```
 
-`QUERY` inherits the base host, API key, and `OPENAI_LLM_REASONING_EFFORT`.
+`QUERY` inherits the base host and API key, but overrides reasoning effort to `low` because GPT-6.1 Sol does not accept `none`.
 
 ### 2. Same Provider, Change the Model and Tune Options
 
@@ -227,13 +231,13 @@ Suitable when the base model is used for extraction and final answers use a high
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 QUERY_LLM_TIMEOUT=240
@@ -243,7 +247,7 @@ QUERY_LLM_TIMEOUT=240
 
 Suitable when all roles use the `openai` binding, but some roles access the official OpenAI API while others access a local vLLM, SGLang, OpenRouter, or another OpenAI-compatible endpoint. In the example below:
 
-- `EXTRACT` uses the official OpenAI `gpt-5-mini`.
+- `EXTRACT` uses the official OpenAI `gpt-6.1-terra`.
 - `QUERY` uses the official OpenAI `gpt-5.4` with a separate OpenAI key.
 - `KEYWORD` uses `Qwen3.5-35B-A3B` deployed by local vLLM.
 
@@ -253,7 +257,7 @@ Suitable when all roles use the `openai` binding, but some roles access the offi
 # have a valid OpenAI configuration.
 ###########################################################################
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
 LLM_TIMEOUT=240
@@ -268,10 +272,10 @@ MAX_ASYNC_LLM=4
 # OPENAI_LLM_REASONING_EFFORT=none
 
 ###########################################################################
-# EXTRACT: OpenAI official API, gpt-5-mini
+# EXTRACT: OpenAI official API, gpt-6.1-terra
 ###########################################################################
 EXTRACT_LLM_BINDING=openai
-EXTRACT_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
 EXTRACT_LLM_BINDING_HOST=https://api.openai.com/v1
 EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
@@ -318,7 +322,7 @@ Suitable when the base uses an official OpenAI model and only keyword extraction
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 OPENAI_LLM_REASONING_EFFORT=medium
@@ -340,7 +344,7 @@ Suitable when text tasks use a cheaper model and multimodal analysis uses a visi
 VLM_PROCESS_ENABLE=true
 
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -353,7 +357,7 @@ VLM_LLM_TIMEOUT=240
 
 If VLM uses the same provider and key, `VLM_LLM_BINDING_HOST` and `VLM_LLM_BINDING_API_KEY` can be omitted.
 
-`VLM_PROCESS_ENABLE` is the master switch for multimodal analysis. When `false`, the pipeline emits a warning and skips every multimodal item without invoking the VLM. When `true`, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. The following providers are vision-capable: `openai`, `openai_responses`, `azure_openai`, `gemini`, `bedrock`, `ollama`, `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
+`VLM_PROCESS_ENABLE` governs image/drawing analysis only; tables and equations are analyzed by the `EXTRACT` role whatever its value. It is not a skip switch: when a document has the `i` option and contains an image that passes the pre-filters, `VLM_PROCESS_ENABLE=false` or an unavailable VLM role fails that document rather than skipping the image (see [Failure versus skip](FileProcessingPipeline.md#43-failure-versus-skip)). When `true`, the effective VLM binding (`VLM_LLM_BINDING` if set, otherwise `LLM_BINDING`) must support image inputs. The following providers are vision-capable: `openai`, `openai_responses`, `azure_openai`, `gemini`, `bedrock`, `ollama`, `anthropic`. `lollms` is rejected at startup because it cannot accept image inputs.
 
 ### 6. Bedrock Role-Level SigV4 Credentials
 
@@ -361,7 +365,7 @@ Suitable when only one role accesses Bedrock and uses independent IAM/STS creden
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 

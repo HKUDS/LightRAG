@@ -21,13 +21,12 @@ from anthropic import (
     RateLimitError,
     APITimeoutError,
 )
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
+from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    empty_length_truncated_hint,
+    format_response_diagnostics,
+    provider_timeout,
     safe_unicode_decode,
     logger,
     TruncatedResponse,
@@ -35,21 +34,39 @@ from lightrag.utils import (
 from lightrag.api import __api_version__
 
 
-# Custom exception for retry mechanism
 class InvalidResponseError(Exception):
-    """Custom exception class for triggering retry mechanism"""
+    """A non-streaming response with no text content block.
+
+    A response with no text block that hit the output or context token limit
+    raises ``EmptyTruncatedResponseError`` instead. Nothing retries this error:
+    the SDK is this binding's only retry layer and does not retry a successful
+    response.
+    """
 
     pass
 
 
-# Core Anthropic completion function with retry
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError, InvalidResponseError)
-    ),
-)
+# Retry ownership belongs to the Anthropic SDK, so there is no tenacity layer
+# here: stacking one on top of the SDK loop multiplied the attempts (3x3) and
+# overrode a server's ``x-should-retry: false``. The SDK loop obeys
+# ``x-should-retry`` and ``retry-after`` and retries connection errors,
+# timeouts, 408, 409, 429 and >= 500 (incl. 529 overloaded). Its default of
+# two retries backs off only 0.5 s + 1 s when no ``retry-after`` arrives (5xx,
+# connection errors, Anthropic-compatible endpoints), which is too short for a
+# pipeline whose failed extraction call fails the whole document. Four retries
+# back off 0.5 + 1 + 2 + 4 s, about the window the OpenAI binding's tenacity
+# loop gives (4 s + 4 s). Each attempt gets the full ``timeout``; inside
+# LightRAG's LLM worker queue the whole call is still capped at
+# ``2 * llm_timeout``, so the larger budget cannot stretch a hung call.
+#
+# The OpenAI binding resolved the same double loop the other way
+# (``max_retries=0``, tenacity owns retries) so that a predicate can fail
+# permanent spend-stop 429s fast, which the body-blind SDK loop cannot. This
+# binding has no such classification to protect, and the SDK's
+# ``x-should-retry`` / ``retry-after`` handling is worth keeping.
+_DEFAULT_MAX_RETRIES = 4
+
+
 async def anthropic_complete_if_cache(
     model: str,
     prompt: str,
@@ -63,6 +80,19 @@ async def anthropic_complete_if_cache(
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    Retries:
+    - The Anthropic SDK is the only retry layer (see the comment on
+      ``_DEFAULT_MAX_RETRIES``). Pass ``max_retries`` to override its budget
+      per call; ``0`` disables retries.
+    - When the budget is exhausted, the SDK's own exception
+      (``RateLimitError``, ``APIStatusError``, ``APIConnectionError``, ...)
+      propagates unchanged, never a ``tenacity.RetryError``.
+
+    Extended thinking:
+    - ``thinking={...}`` may be passed through ``kwargs`` and is forwarded to
+      the API, but its output is discarded: only ``text`` blocks (streaming:
+      text deltas) reach the caller. ``enable_cot`` has no effect.
 
     Structured output note:
     - This adapter does not support OpenAI-style ``response_format`` JSON mode.
@@ -106,7 +136,14 @@ async def anthropic_complete_if_cache(
             stacklevel=2,
         )
     kwargs.pop("response_format", None)
-    timeout = kwargs.pop("timeout", None)
+    # <= 0 or unset means the SDK default. The SDK reads an explicit
+    # timeout=None as "no timeout at all", so it is only passed when set.
+    timeout = provider_timeout(kwargs.pop("timeout", None))
+    client_timeout = {} if timeout is None else {"timeout": timeout}
+    # Client option, not a ``messages.create`` parameter.
+    max_retries = kwargs.pop("max_retries", None)
+    if max_retries is None:
+        max_retries = _DEFAULT_MAX_RETRIES
 
     # Require max_tokens; the Anthropic SDK errors if it's missing
     kwargs.setdefault("max_tokens", 8192)
@@ -116,14 +153,18 @@ async def anthropic_complete_if_cache(
 
     anthropic_async_client = (
         AsyncAnthropic(
-            default_headers=default_headers, api_key=api_key, timeout=timeout
+            default_headers=default_headers,
+            api_key=api_key,
+            max_retries=max_retries,
+            **client_timeout,
         )
         if base_url is None
         else AsyncAnthropic(
             base_url=base_url,
             default_headers=default_headers,
             api_key=api_key,
-            timeout=timeout,
+            max_retries=max_retries,
+            **client_timeout,
         )
     )
 
@@ -224,9 +265,8 @@ async def anthropic_complete_if_cache(
         try:
             # Record usage before extracting content text: the API call is
             # already billed and response.usage is already populated at this
-            # point, but content[0].text raises if the first content block
-            # isn't a text block (or content is empty) -- that must not cost
-            # the tracker a real, billed call.
+            # point, but extraction raises when no content block is a text
+            # block -- that must not cost the tracker a real, billed call.
             if token_tracker and getattr(response, "usage", None):
                 usage = response.usage
                 prompt_tokens = sum(
@@ -245,8 +285,63 @@ async def anthropic_complete_if_cache(
                         "total_tokens": prompt_tokens + output_tokens,
                     }
                 )
-            content = response.content[0].text
-            if getattr(response, "stop_reason", None) == "max_tokens":
+            # When extended thinking is enabled, the content list interleaves
+            # ThinkingBlock/RedactedThinkingBlock entries with the visible
+            # answer -- [thinking, text, thinking, text] is a real shape, not
+            # just [thinking, text] -- so every text block must be joined, not
+            # just the first one found. Checked by ``.type`` rather than
+            # ``hasattr(block, "text")``: a future block type could carry an
+            # unrelated ``.text`` attribute.
+            text_blocks = [
+                block.text
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+            ]
+            content = "".join(text_blocks) if text_blocks else None
+            stop_reason = getattr(response, "stop_reason", None)
+            hit_context_limit = stop_reason == "model_context_window_exceeded"
+            truncated = stop_reason == "max_tokens" or hit_context_limit
+            if content is None or (truncated and not content.strip()):
+                if truncated:
+                    # Reasoning can use the remaining budget before any visible
+                    # text is produced. Retrying the same prompt and limits
+                    # would not make more room for the answer.
+                    block_types = [
+                        getattr(block, "type", None) for block in response.content
+                    ]
+                    thinking_len = sum(
+                        len(getattr(block, "thinking", "") or "")
+                        for block in response.content
+                    )
+                    usage = getattr(response, "usage", None)
+                    diagnostics = format_response_diagnostics(
+                        stop_reason=stop_reason,
+                        output_tokens=getattr(usage, "output_tokens", None),
+                        content_block_types=block_types,
+                        thinking_len=thinking_len,
+                    )
+                    if hit_context_limit:
+                        hint = "shorten the input or use a model with a larger context window"
+                    else:
+                        # Redacted thinking spends budget despite having no
+                        # readable length.
+                        hint = empty_length_truncated_hint(
+                            "consider raising max_tokens or lowering "
+                            "thinking.budget_tokens",
+                            reasoning_consumed_budget=any(
+                                t in ("thinking", "redacted_thinking")
+                                for t in block_types
+                            ),
+                        )
+                    message = (
+                        f"Anthropic API returned no usable text ({diagnostics}): {hint}"
+                    )
+                    logger.error(message)
+                    raise EmptyTruncatedResponseError(message)
+                raise InvalidResponseError(
+                    f"Anthropic API returned no text content block (stop_reason={stop_reason})"
+                )
+            if truncated:
                 content = TruncatedResponse(content)
             return content
         finally:
@@ -336,6 +431,7 @@ async def anthropic_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
@@ -357,6 +453,7 @@ async def claude_3_opus_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     return await anthropic_complete_if_cache(
@@ -377,6 +474,7 @@ async def claude_3_sonnet_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     return await anthropic_complete_if_cache(
@@ -397,6 +495,7 @@ async def claude_3_haiku_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
     return await anthropic_complete_if_cache(

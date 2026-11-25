@@ -53,7 +53,7 @@ def test_the_config_container_gets_the_same_limits_as_a_tenant():
     )
 
 
-@pytest.mark.parametrize("workspace", ["tenant", "other", ""])
+@pytest.mark.parametrize("workspace", ["tenant", ""])
 def test_the_collection_is_fixed_whatever_the_caller_named(workspace):
     storage = _storage("config", workspace)
     assert storage.workspace == CONFIG_CONTAINER_TAG

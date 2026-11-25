@@ -49,7 +49,7 @@ def server_args(monkeypatch):
     return _parse_args
 
 
-@pytest.mark.parametrize("configured", [None, "", "   "])
+@pytest.mark.parametrize("configured", [None, "   "])
 def test_create_app_refuses_without_an_embedding_model(
     monkeypatch, server_args, configured
 ):
@@ -67,22 +67,10 @@ def test_create_app_refuses_without_an_embedding_model(
 
     message = str(excinfo.value)
     assert "EMBEDDING_MODEL" in message
-    # The message has to carry the way out, not just the refusal.
+    # The message has to carry the way out, not just the refusal, and say why a
+    # rolling change is not an option.
     assert "lightrag-rebuild-vdb" in message
-
-
-def test_the_refusal_names_why_a_rolling_change_is_not_an_option(
-    monkeypatch, server_args
-):
-    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-    args = server_args()
-
-    from lightrag.api.lightrag_server import create_app
-
-    with pytest.raises(SystemExit) as excinfo:
-        create_app(args)
-
-    assert "rolling" in str(excinfo.value)
+    assert "rolling" in message
 
 
 def test_an_args_object_without_the_field_is_refused_too():

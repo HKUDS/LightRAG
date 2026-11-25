@@ -68,9 +68,9 @@ def _write_blocks(tmp_path: Path, blocks: list[tuple[str, str]]) -> tuple[str, s
 @pytest.mark.offline
 def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
     # End-to-end reproduction of the overlap-tail ambiguity with the real chunker.
-    # Simple case: b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a", "a"]. The
-    # middle window [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the
-    # separator), so the tail chunks belong to b2 — not the earlier "a" inside b1.
+    # Simple case: b1="aa", b2="a", chunk_size=3, overlap=1 -> ["aa", "a"]. The
+    # last window [2:5] = "\n\na" strips to b2's "a" (the overlap landed on the
+    # separator), so the tail chunk belongs to b2 — not the earlier "a" inside b1.
     blocks_path, merged = _write_blocks(tmp_path, [("b1", "aa"), ("b2", "a")])
     tok = _tokenizer()
 
@@ -81,13 +81,12 @@ def test_real_overlap_tail_chunk_maps_to_next_block(tmp_path: Path) -> None:
         chunk_overlap_token_size=1,
         _emit_source_span=True,
     )
-    assert [c["content"] for c in chunks] == ["aa", "a", "a"]
+    assert [c["content"] for c in chunks] == ["aa", "a"]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
     assert [r["id"] for r in chunks[0]["sidecar"]["refs"]] == ["b1"]
     assert [r["id"] for r in chunks[1]["sidecar"]["refs"]] == ["b2"]
-    assert [r["id"] for r in chunks[2]["sidecar"]["refs"]] == ["b2"]
 
 
 @pytest.mark.offline
@@ -95,7 +94,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
     tmp_path: Path,
 ) -> None:
     # Harder end-to-end case: b1="a", b2="abab", chunk_size=2, overlap=1 ->
-    # ["a", "", "a", "ab", "ba", "ab", "b"]. The token overlap repeatedly lands on the
+    # ["a", "", "a", "ab", "ba", "ab"]. The token overlap repeatedly lands on the
     # stripped separator, so consecutive non-empty chunks can share a normalized start
     # and only the end advances. The empty chunk is skipped; every other tail chunk
     # must resolve into b2 without raising ChunkBlockMatchError.
@@ -109,7 +108,7 @@ def test_real_overlap_on_stripped_separator_does_not_strand_chunks(
         chunk_overlap_token_size=1,
         _emit_source_span=True,
     )
-    assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab", "b"]
+    assert [c["content"] for c in chunks] == ["a", "", "a", "ab", "ba", "ab"]
 
     backfill_chunk_sidecars(chunks, blocks_path)
 
@@ -285,21 +284,36 @@ def test_real_tiktoken_token_windows_match_verbatim(tmp_path: Path) -> None:
     assert seen == {b for b, _ in blocks}
 
 
-@pytest.mark.offline
-def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> None:
-    # Regression: tiktoken is byte-level, so a 4-byte UTF-8 char (emoji / rare CJK
-    # extension) can have its bytes split across a token-window boundary. Decoding the
-    # partial window yields U+FFFD in BOTH the chunk content and its span probe, so the
-    # chunk is unlocatable by span or by text. Span-first backfill must skip provenance
-    # for the corrupt chunks while still attributing the clean ones, not FAIL the whole
-    # document.
-    pytest.importorskip("tiktoken")
-    from lightrag.utils import TiktokenTokenizer
+class _ByteTokenizerImpl:
+    """One token per UTF-8 byte, so every multi-byte character spans tokens."""
 
-    tok = TiktokenTokenizer()
-    # Emoji are supplementary-plane (4-byte) chars that force byte-fallback tokens.
-    block = "Status update 🎉🚀 progress 😀😁😂 and more text 🔥💡✅ keep going. " * 20
-    blocks_path, merged = _write_blocks(tmp_path, [("b1", block)])
+    def encode(self, content: str) -> list[int]:
+        return list(content.encode("utf-8"))
+
+    def decode(self, tokens: list[int]) -> str:
+        return bytes(tokens).decode("utf-8", errors="replace")
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("kind", ["bytes", "tiktoken"])
+def test_multibyte_boundaries_keep_provenance_through_hard_split(
+    kind: str, tmp_path: Path
+) -> None:
+    # F windows end at character boundaries, so a window whose token budget
+    # runs out inside an emoji or flag still has a span that resolves to its
+    # content: every chunk and every hard-split child is attributed, none is
+    # left without provenance, including one holding the source's own U+FFFD.
+    if kind == "tiktoken":
+        from lightrag.utils import TiktokenTokenizer
+
+        tok = TiktokenTokenizer()
+    else:
+        tok = Tokenizer("bytes", _ByteTokenizerImpl())
+    blocks = [
+        ("b1", "Status 🎉🚀 progress 😀😁😂 flags 🇨🇳🇯🇵 " * 6),
+        ("b2", "literal \ufffd kept 中文段落 → done " * 6),
+    ]
+    blocks_path, merged = _write_blocks(tmp_path, blocks)
 
     chunks = chunking_by_fixed_token(
         tok,
@@ -308,20 +322,34 @@ def test_real_tiktoken_multibyte_boundary_degrades_not_fails(tmp_path: Path) -> 
         chunk_overlap_token_size=4,
         _emit_source_span=True,
     )
-    # The window splits at least one emoji -> some chunks carry U+FFFD and lack a span.
-    assert any("�" in c["content"] for c in chunks)
-    assert any("_source_span" not in c for c in chunks)
-
-    # Must NOT raise: corrupt chunks are skipped, the rest are attributed.
+    raw_chunks = [dict(c) for c in chunks]
     backfill_chunk_sidecars(chunks, blocks_path)
+    assert all(c.get("sidecar") for c in chunks if c["content"])
 
-    for ch in chunks:
-        if "�" in ch["content"]:
-            assert "sidecar" not in ch  # provenance degraded, document not failed
-        elif ch["content"].strip():  # empty tail chunks are skipped entirely
-            assert ch["sidecar"]["refs"] == [{"type": "block", "id": "b1"}]
-    # At least the clean chunks resolved into the single source block.
-    assert any("sidecar" in ch for ch in chunks)
+    split = enforce_chunk_token_limit_before_embedding(
+        raw_chunks, tok, max_tokens=8, overlap_tokens=0, source_content=merged
+    )
+    assert len(split) > len(raw_chunks)
+    backfill_chunk_sidecars(split, blocks_path)
+    b2_start = merged.index(blocks[1][1])
+    for ch in split:
+        span = ch["_source_span"]
+        expected = [
+            blockid
+            for blockid, start, end in (
+                ("b1", 0, len(blocks[0][1])),
+                ("b2", b2_start, len(merged)),
+            )
+            if span["start"] < end and start < span["end"]
+        ]
+        assert [r["id"] for r in ch["sidecar"]["refs"]] == expected
+    assert any("\ufffd" in ch["content"] for ch in split)
+    stored = build_chunks_dict_from_chunking_result(
+        split, doc_id="doc-emoji", file_path="doc.txt"
+    )
+    for record in stored.values():
+        assert "_source_span" not in record
+        assert record.get("sidecar")
 
 
 @pytest.mark.offline

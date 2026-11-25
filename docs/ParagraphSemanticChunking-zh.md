@@ -114,6 +114,19 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 
 切片前预扣 `<table {attrs}></table>` 外壳 token 开销，使重新包裹后的切片尽量不超过 `table_max`。每个切片重新包裹为合法的 `<table>` 标签，便于下游解析。
 
+跨越切片边界的 body 单元格 `rowspan` 会在每个切片内局部化：前一切片中该单元格的 `rowspan` 截断为本切片实际包含的行数，并在下一切片首行的同一列重复该单元格（`rowspan` 为剩余行数）。否则边界之后的行在该列没有单元格，其数值会在表头下整体左移一列。`<thead>` 行保持原样。
+
+该修复（`lightrag/chunker/_html_rowspan.py`）以整张表为单位，要么全做要么不做。只有整个表体符合一套封闭语法时才执行；其他表格一律按原样切片，并打一条 `logger.warning` 注明表格和原因，因为对只读懂一部分的表格做布局，可能把单元格放到错误的列：
+
+- 表体是一个可选的 `<thead>` 块，后接 body 行，body 行要么裸露，要么位于唯一的 `<tbody>` 内；行与行之间没有其他内容（没有注释、`<caption>`、`<colgroup>`、`<tfoot>` 或第二个 `<tbody>`）；
+- 每个 body 行都由完整的 `<td>`/`<th>` 单元格组成，单元格内容中不含表格标记（没有嵌套表格，没有省略的结束标签），且其中的标签都完整，因此单元格不会在其内部元素的带引号属性值中结束；单元格内没有声明，也没有内容不按标记解析或会改变后续解析方式的元素（`<script>`、`<style>`、`<textarea>`、`<title>`、`<xmp>`、`<iframe>`、`<noembed>`、`<noframes>`、`<noscript>`、`<plaintext>`、`<svg>`、`<math>`、`<template>`、`<select>`）；
+- 空白仅指 HTML 的 ASCII 空白，因此 U+00A0 这类字符按 HTML 的读法属于属性名或文本的一部分；
+- `rowspan`/`colspan` 在每个单元格中至多出现一次，且为 HTML 允许范围内的整数（`rowspan` 1 至 65534，`colspan` 1 至 1000）；不支持 `rowspan="0"`；
+- 任何一行都不会在上方行跨入的单元格左侧留出空列，也没有单元格的 `colspan` 伸入这样的跨行单元格：否则在该行重复的单元格会落到错误的列；
+- 布局工作量（带入每一行的 span 数加上它们覆盖的列数，对所有行求和）不超过固定预算，恶意表格无法使其退化为平方级。
+
+重复的单元格会占用行切分时未计入的 token：因此超限的切片按常规继续细分，行切分无法再细分时对半切开，若单行仍放不下，则按 §3.2.2 整表降级。body 中没有 `rowspan` 的表格切分结果与此前完全一致。
+
 #### 3.2.2 行级递归二次切片
 
 若某个行子集重新包裹后仍超过 `table_max`，则在该行子集内继续细分。**当切片收敛到单行、且该单行无法在 `target_max` 内与表头并存（单行内容本身超上限，或没超但加上表头后超上限）时，整张表退化为对原始 `<table>` 文本（其 body 天然含表头）的 R 递归字符切分，并打一条 `logger.warning` 警告**——表头内容随原表文本以纯文本形式保留，绝不被静默丢弃，也不产生「部分 `<table>` 切片 + 部分孤立字符片段」的混合输出。不需要注入表头、且单行本身装得进 `target_max` 的切片仍原样保留为合法 `<table>` 标记。该机制使可被行边界表达的表格内容尽量保留合法表格结构。
@@ -322,7 +335,7 @@ P chunker 直接读取 `.blocks.jsonl`，每个 content 行作为后续 TableRow
 
 P 策略**不接收** `split_by_character` / `split_by_character_only`，因为正常路径由标题和段落结构驱动。
 
-**丢弃参考文献（`drop_references`）**：开启后，在 HeadingBlocks 之后、TableRowSplit/AnchorSplit/LevelMerge 之前，对从 `blocks.jsonl` 读出的有序内容块做过滤——`references_tail_n=0` 时扫描全部内容块，正数时只扫描文末最后 N 个内容块；扫描范围内 `heading` 命中参考文献前缀的块会被丢弃。只有开关 `drop_references` 可经 per-file hint 设定并冻结进快照/metadata；`references_tail_n` / `references_headings` 是纯 env 调参，由 chunker 每次运行时实时读取当前环境变量——改 env 即可即时影响已入队文档的重跑。若丢弃后没有任何含内容的块剩余，则放弃丢弃并告警，避免产出空文档。
+**丢弃参考文献（`drop_references`）**：开启后，在 HeadingBlocks 之后、TableRowSplit/AnchorSplit/LevelMerge 之前，对从 `blocks.jsonl` 读出的有序内容块做过滤——`references_tail_n=0` 时扫描全部内容块，正数时只扫描文末最后 N 个内容块；扫描范围内 `heading` 命中参考文献前缀的块会被丢弃。此外，解析器标记为 `session_type="references"` 的块（目前是 native DOCX 引擎识别出的 Word 参考文献控件，即“引用”选项卡插入的书目）无论标题是什么、位于文中何处都会被丢弃。只有开关 `drop_references` 可经 per-file hint 设定并冻结进快照/metadata；`references_tail_n` / `references_headings` 是纯 env 调参，由 chunker 每次运行时实时读取当前环境变量——改 env 即可即时影响已入队文档的重跑。若丢弃后没有任何含内容的块剩余，则放弃丢弃并告警，避免产出空文档。
 
 ### 4.2 `.blocks.jsonl` 约定
 
@@ -427,7 +440,7 @@ ls -l INPUT/__parsed__/<doc>.<ext>.parsed/<doc>.blocks.jsonl
 
 - 未给该格式配置能产出 sidecar 的引擎（如 `LIGHTRAG_PARSER=docx:native-...` / `pdf:mineru-...` / `*:docling-...`），实际走了 `legacy` 路径。
 - 解析失败（看 `pipeline_status` 错误条目）。
-- 该格式不被所选引擎支持（如 native 仅支持 docx；换用 mineru / docling 覆盖更多格式）。
+- 所选引擎不支持该格式（如 native 支持 `.docx`、`.md` 和 `.textpack`；其他支持的格式可换用 MinerU 或 Docling）。
 
 ### 7.2 检查 blocks.jsonl 内容
 
@@ -445,7 +458,7 @@ jq -c 'select(.type=="content") | {level, heading, parent_headings}' \
 查看 `text_chunks` 存储中的 chunk 元数据：
 
 ```bash
-jq '.[] | {heading, level, tokens, parent_headings}' \
+jq '.[] | {heading: .heading.heading, level: .heading.level, tokens, parent_headings: .heading.parent_headings}' \
    rag_storage/kv_store_text_chunks.json | head -30
 ```
 

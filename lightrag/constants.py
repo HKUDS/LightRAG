@@ -151,6 +151,16 @@ DEFAULT_SENTENCE_SPLIT_REGEX = r"(?<=[.?!])\s+|(?<=[。？！])"
 # the strategy's purpose.
 DEFAULT_CHUNK_P_SIZE = 2000
 
+# MIN_CHUNK_TOKEN_SIZE: smallest chunk_token_size any configuration ingress
+# accepts, for every strategy (top level and F/R/V/P sub-dicts): env
+# (CHUNK_SIZE, CHUNK_{F,R,V,P}_SIZE), the LightRAG constructor,
+# addon_params['chunker'], REST chunking params and filename/rule hints.
+# A chunk this small carries no retrievable context and multiplies the
+# extraction LLM calls, so a smaller value is treated as a misconfiguration
+# and rejected rather than run. Chunker functions called directly only
+# reject values below 1, so tests and SDK callers can still use tiny sizes.
+MIN_CHUNK_TOKEN_SIZE = 64
+
 # Paragraph-semantic "drop references" detection defaults (the chunking="P"
 # drop_references option).  DEFAULT_P_REFERENCES_TAIL_N: 0 scans all content
 # blocks for reference headings; a positive value restricts detection to the
@@ -670,6 +680,11 @@ STORAGE_IO_SUBMIT_LIMIT = 8
 # submission ceiling, so a submission over the limit waits on the semaphore
 # instead of growing the executor's unbounded wait queue.
 MILVUS_SUBMIT_LIMIT = 8
+
+# Same shape for the Qdrant pool (blocking HTTP rather than gRPC). It caps the
+# concurrent Qdrant round trips per process, and with them the HTTP
+# connections in use, however many queries the caller issues at once.
+QDRANT_SUBMIT_LIMIT = 8
 
 # Per-workspace ceiling on manual retry requests that have been published but
 # not yet ACKed (LR2 §10.1). The channel is sticky — a request survives until an

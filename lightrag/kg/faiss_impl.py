@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from lightrag.exceptions import (
     CommitBookkeepingError,
     CorruptStorageSnapshotError,
+    StorageCapabilityError,
     VectorSpaceMismatchError,
 )
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
@@ -1973,6 +1974,54 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     result_map[str(cid)] = self._format_record(metadata)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Same as ``get_by_ids``: the data is in this process, so no read can
+        fail into a miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self.get_by_ids(ids)
+
+    async def get_exact_count(self) -> int:
+        """Count the persisted, addressable rows of this namespace.
+
+        Raises :class:`~lightrag.exceptions.StorageCapabilityError` instead of
+        answering while this process holds writes not yet on disk, or when the
+        index and its metadata disagree (slot count, positions, missing or
+        duplicate ids). It counts the snapshot as loaded: a metadata row past
+        the end of the index is dropped at load, holds no vector and is
+        unreadable by every read, so it is not an addressable record.
+        Read-only: nothing is repaired. See *Maintenance
+        consistency capabilities* in ``docs/design/FileBackedSnapshotContract.md``.
+        """
+        async with self._storage_lock:
+            self._reload_index_from_disk_locked()
+            if (
+                self._pending_upserts
+                or self._pending_deletes
+                or self._unsaved_upserts
+                or self._unsaved_deletes
+                or self._index_dirty
+            ):
+                raise StorageCapabilityError("unflushed_writes")
+            index_total = int(self._index.ntotal)
+            metadata_total = len(self._id_to_meta)
+            valid_positions = all(
+                isinstance(fid, int) and 0 <= fid < index_total
+                for fid in self._id_to_meta
+            )
+            record_ids = [meta.get("__id__") for meta in self._id_to_meta.values()]
+            valid_ids = (
+                all(
+                    record_id is not None and str(record_id).strip()
+                    for record_id in record_ids
+                )
+                and len({str(record_id) for record_id in record_ids}) == metadata_total
+            )
+            if index_total != metadata_total or not valid_positions or not valid_ids:
+                raise StorageCapabilityError(
+                    "index_meta_skew: "
+                    f"index_total={index_total}, metadata_total={metadata_total}"
+                )
+            return metadata_total
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs (read-your-writes), returning only ID and vector.

@@ -15,10 +15,12 @@ What it does, in order:
 1. shows what is about to be deleted: document counts per status, the ten
    most recently updated documents, whether the text chunk store, the
    knowledge graph and each vector index hold anything (all through reads
-   that fail loudly), the recorded embedding baselines and the input files.
+   that fail loudly), any container of another embedding model whose owner
+   is not recorded, the recorded embedding baselines and the input files.
    A value that cannot be read is shown as UNREADABLE, never as zero;
 2. asks the operator to type ``Delete All``;
-3. drops the eleven data storages, then the workspace's configuration
+3. drops the eleven data storages -- for a vector storage, every embedding
+   model's container of this workspace -- then the workspace's configuration
    records (only when EVERY drop succeeded), then the top-level input files.
 
 Two kinds of failure are told apart, and the rule is the backend's KIND:
@@ -284,6 +286,9 @@ class ClearTool:
         # storage that could not even be constructed is ``None`` in
         # ``self.storages`` and is reported as a failed drop.
         self.unavailable: Dict[str, str] = {}
+        # Sibling model containers the operator confirmed, vector label ->
+        # container names. Handed to ``drop_all_models`` as ``vouched``.
+        self.vouched_siblings: Dict[str, List[str]] = {}
 
     # ------------------------------------------------------------------
     # Configuration / setup
@@ -885,6 +890,21 @@ class ClearTool:
                 f"the configuration storage could not be read: {e}"
             ) from e
 
+        # Other embedding models' containers that match this workspace's
+        # naming but carry no evidence of who owns them. The drop leaves them
+        # in place and fails unless the operator vouches for them below.
+        # A storage that did not open is not asked: only a file-backed one
+        # ends up there, and those have one container and no siblings, so
+        # "could not be read" would be a line about nothing.
+        unvouched: Dict[str, Any] = {}
+        for label in VECTOR_LABELS:
+            vdb = self.storages[label]
+            if vdb is None or label in self.refused_vdbs or label in self.unavailable:
+                continue
+            listed = await self._read(label, vdb.unvouched_sibling_containers)
+            if listed:
+                unvouched[label] = listed
+
         return {
             "counts": counts,
             "total_docs": total,
@@ -898,6 +918,7 @@ class ClearTool:
             },
             "graph": await self._read("chunk_entity_relation_graph", graph_state),
             "vectors": vectors,
+            "unvouched_siblings": unvouched,
             "baselines": baselines,
             "input_files": self.input_files(),
             # A backend-specific ``*_WORKSPACE`` variable outranks WORKSPACE
@@ -957,6 +978,9 @@ class ClearTool:
         for label, state in summary["vectors"].items():
             if isinstance(state, Unreadable):
                 name(label, f"{label} state")
+        for label, listed in summary["unvouched_siblings"].items():
+            if isinstance(listed, Unreadable):
+                name(label, f"{label} containers of other embedding models")
         for target, baseline in summary["baselines"].items():
             if isinstance(baseline, Unreadable):
                 items.append(f"{target} embedding baseline")
@@ -1045,6 +1069,17 @@ class ClearTool:
         for label, state in summary["vectors"].items():
             print(f"    {label:18s} {show(state)}")
 
+        for label, listed in summary["unvouched_siblings"].items():
+            if isinstance(listed, Unreadable):
+                print(f"    {label:18s} other models' containers: {show(listed)}")
+                continue
+            print(
+                f"    {label:18s} {BOLD_RED}{len(listed)} container(s) of another "
+                f"embedding model, owner not recorded:{RESET}"
+            )
+            for name in listed:
+                print(f"        {name}")
+
         print("\nRecorded embedding baselines:")
         for target in EMBEDDING_TARGETS:
             baseline = summary["baselines"].get(target)
@@ -1110,12 +1145,52 @@ class ClearTool:
             return False
         return True
 
+    def confirm_unvouched_siblings(self, summary: Dict[str, Any]) -> None:
+        """Ask whether the unowned sibling containers listed above go too.
+
+        They match this workspace's naming for another embedding model but
+        record no owner, so the drop will not touch them on its own: a name
+        match could be another workspace's data. ``yes`` vouches for every one
+        of them; anything else leaves them in place, and the clear then ends
+        with errors and keeps the configuration records, because vectors that
+        may be this workspace's are still there.
+        """
+        listed = {
+            label: names
+            for label, names in summary["unvouched_siblings"].items()
+            if not isinstance(names, Unreadable)
+        }
+        if not listed:
+            return
+        total = sum(len(names) for names in listed.values())
+        print(
+            f"\n{BOLD_RED}{total} container(s) listed above belong to another "
+            f"embedding model and record no owner.{RESET}\n  If they are this "
+            f"workspace's, leaving them lets a later start adopt their vectors. "
+            f"If another workspace's name merely starts the same way, they are "
+            f"its data."
+        )
+        answer = input("Delete them as well? (yes/no): ").strip().lower()
+        if answer == "yes":
+            self.vouched_siblings = {
+                label: list(names) for label, names in listed.items()
+            }
+        else:
+            print(
+                "  Left in place: the clear will report them and keep the "
+                "workspace configuration records."
+            )
+
     # ------------------------------------------------------------------
     # The clear
     # ------------------------------------------------------------------
 
     async def drop_all(self) -> DropOutcome:
         """Drop the eleven data storages, exactly as ``/documents/clear`` does.
+
+        A vector storage is cleared through ``drop_all_models``: every
+        embedding model's container for this workspace, not only the one the
+        current configuration names.
 
         Concurrent, ``return_exceptions=True``, classified by
         :func:`classify_drop_result`. Every storage is attempted even when an
@@ -1145,7 +1220,7 @@ class ClearTool:
                 logger.error(f"Cannot drop {label}: {reason}")
                 print(f"  ✗ {label}: {reason}")
         results = await asyncio.gather(
-            *(self.storages[label].drop() for label in droppable),
+            *(self._drop(label) for label in droppable),
             return_exceptions=True,
         )
         for label, result in zip(droppable, results):
@@ -1160,6 +1235,12 @@ class ClearTool:
                 logger.error(f"Error dropping {label} ({storage_name}): {failure}")
                 print(f"  ✗ {label}: {failure}")
         return outcome
+
+    def _drop(self, label: str) -> Awaitable[Any]:
+        storage = self.storages[label]
+        if label in VECTOR_LABELS:
+            return storage.drop_all_models(vouched=self.vouched_siblings.get(label, ()))
+        return storage.drop()
 
     async def delete_configuration(self, outcome: DropOutcome) -> bool:
         """Delete the workspace's configuration records, data first.
@@ -1282,6 +1363,7 @@ class ClearTool:
 
             if not self.confirm_delete_all():
                 return True
+            self.confirm_unvouched_siblings(summary)
 
             return await self.clear()
         except KeyboardInterrupt:

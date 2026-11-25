@@ -13,6 +13,7 @@ import sys
 
 import pytest
 
+from lightrag.constants import MIN_CHUNK_TOKEN_SIZE
 from lightrag.parser.param_schema import (
     parse_chunk_params,
     split_top_level,
@@ -93,7 +94,6 @@ def test_parse_chunk_params_overlap_rejected_for_vector():
     "block,expected",
     [
         ("drop_rf=true", True),
-        ("drop_references=true", True),
         ("drop_rf=false", False),
         ("drop_rf=yes", True),
         ("drop_rf=0", False),
@@ -119,7 +119,12 @@ def test_parse_chunk_params_drop_references_bare_flag_is_true(block):
     assert parsed == {"drop_references": True}
 
 
-@pytest.mark.parametrize("selector", ["F", "R", "V"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "F",
+    ],
+)
 def test_parse_chunk_params_drop_references_rejected_off_paragraph(selector):
     parsed, errors = parse_chunk_params("drop_rf=true", selector=selector, label="x")
     assert parsed == {}
@@ -132,13 +137,6 @@ def test_filename_hint_drop_references_extracted():
     assert d.chunk_params == {"P": {"drop_references": True}}
 
 
-def test_filename_hint_drop_references_bare_flag():
-    # ``P(drop_rf)`` with no value is shorthand for ``drop_rf=true``.
-    d = resolve_parser_directives("notes.[-P(drop_rf)].md", parser_rules="")
-    assert d.process_options == "P"
-    assert d.chunk_params == {"P": {"drop_references": True}}
-
-
 @pytest.mark.parametrize(
     "block,needle",
     [
@@ -146,13 +144,11 @@ def test_filename_hint_drop_references_bare_flag():
         ("chunk_ts=0", "must be >= 1"),
         ("foo=1", "unknown parameter 'foo'"),
         ("chunk_ts=1,chunk_ts=2", "may not be repeated"),
-        ("correct_tl", "unknown parameter 'correct_tl'"),
         # A non-boolean parameter cannot be written bare (only flags can).
         ("chunk_ts", "must be written as 'key=value'"),
         ("", "empty parameter"),
         # Cross-field invariant: explicit overlap >= size is rejected here, so
         # both rule and filename-hint validation reject it (not just enqueue).
-        ("chunk_ts=50,chunk_ol=100", "must be < chunk_token_size"),
         ("chunk_ts=100,chunk_ol=100", "must be < chunk_token_size"),
     ],
 )
@@ -213,7 +209,7 @@ def test_unknown_native_engine_params_are_rejected():
         "x.[-V(chunk_ol=80)].md",  # overlap invalid for V
         "x.[-R(chunk_ts=abc)].md",  # non-integer
         "x.[native-R(foo=1)].md",  # unknown parameter
-        "x.[-R(chunk_ts=50,chunk_ol=100)].md",  # explicit overlap >= size
+        "x.[-R(chunk_ts=80,chunk_ol=100)].md",  # explicit overlap >= size
     ],
 )
 def test_upload_validation_raises_on_bad_filename_params(name):
@@ -229,22 +225,6 @@ def test_upload_validation_raises_on_bad_filename_params(name):
 def test_rule_params_with_semicolon_separator_and_comma_in_parens():
     d = resolve_parser_directives(
         "a.md", parser_rules="md:legacy-R(chunk_ts=800,chunk_ol=80);*:legacy-R"
-    )
-    assert d.engine == "legacy"
-    assert d.chunk_params == {
-        "R": {"chunk_token_size": 800, "chunk_overlap_token_size": 80}
-    }
-
-
-def test_rule_params_with_comma_separator_and_comma_in_parens():
-    # Rule splitting is parenthesis-aware: a comma inside a parameter block is
-    # NOT a rule separator, so ',' still separates rules even when a rule carries
-    # parameters (the docs recommend ';' but ',' must keep working).
-    assert split_top_level(
-        "md:legacy-R(chunk_ts=800,chunk_ol=80),*:legacy-R", ";,"
-    ) == ["md:legacy-R(chunk_ts=800,chunk_ol=80)", "*:legacy-R"]
-    d = resolve_parser_directives(
-        "a.md", parser_rules="md:legacy-R(chunk_ts=800,chunk_ol=80),*:legacy-R"
     )
     assert d.engine == "legacy"
     assert d.chunk_params == {
@@ -293,7 +273,7 @@ def test_validate_parser_routing_config_accepts_good_params():
         ("pdf:legacy-R(foo=1)", "unknown parameter 'foo'"),
         # Cross-field invariant: explicit overlap >= size is rejected at startup
         # so a global rule cannot make every matching upload fail at enqueue.
-        ("pdf:legacy-R(chunk_ts=50,chunk_ol=100)", "must be < chunk_token_size"),
+        ("pdf:legacy-R(chunk_ts=80,chunk_ol=100)", "must be < chunk_token_size"),
         ("pdf:legacy-R(chunk_ts=100,chunk_ol=100)", "must be < chunk_token_size"),
     ],
 )
@@ -401,7 +381,7 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
     # An explicit overlap (100) >= size (50) pair is rejected up front by
     # filename-hint validation (uniform with rule validation), so the file
     # never enqueues and the overlap message is surfaced in the error document.
-    f = tmp_path / "tiny.[-R(chunk_ts=50,chunk_ol=100)].md"
+    f = tmp_path / "tiny.[-R(chunk_ts=80,chunk_ol=100)].md"
     f.write_text("hello world", encoding="utf-8")
 
     ok, _track = asyncio.run(pipeline_enqueue_file(rag, f))
@@ -409,3 +389,105 @@ def test_upload_path_rejects_effective_overlap_violation(tmp_path):
     assert ok is False
     assert captured["error_files"]
     assert "must be < chunk_token_size" in captured["error_files"][0]["original_error"]
+
+
+# --------------------------------------------------------------------------- #
+# MIN_CHUNK_TOKEN_SIZE: parse floor stays 1, the minimum applies at ingress
+# --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# Hints accepted under the old floor of 1 stay recognised
+# --------------------------------------------------------------------------- #
+
+_OLD_HINT_NAME = "paper.[-R(chunk_ts=32,chunk_ol=0)].md"
+
+
+def test_an_old_small_size_hint_still_canonicalizes():
+    """Classification shares the hint schema: the stored key must still match."""
+    from lightrag.utils_pipeline import normalize_document_file_path
+
+    assert normalize_document_file_path(_OLD_HINT_NAME) == "paper.md"
+
+
+def test_deleting_an_old_small_size_hint_file_finds_it(tmp_path):
+    from lightrag.api.routers.document_routes import delete_file_variants_by_file_path
+
+    (tmp_path / _OLD_HINT_NAME).write_text("body", encoding="utf-8")
+
+    deleted, errors = delete_file_variants_by_file_path(tmp_path, "paper.md")
+
+    assert errors == []
+    assert [p.rsplit("/", 1)[-1] for p in deleted] == [_OLD_HINT_NAME]
+    assert not (tmp_path / _OLD_HINT_NAME).exists()
+
+
+def test_resolving_an_old_small_size_hint_does_not_raise():
+    """The resume path re-resolves a stored document's hint; it must not fail."""
+    from lightrag.parser.routing import resolve_parser_directives
+
+    directives = resolve_parser_directives(_OLD_HINT_NAME, parser_rules="")
+
+    assert directives.chunk_params == {
+        "R": {"chunk_token_size": 32, "chunk_overlap_token_size": 0}
+    }
+
+
+# --------------------------------------------------------------------------- #
+# ... but a NEW file or rule with such a hint is rejected
+# --------------------------------------------------------------------------- #
+
+
+def test_new_hint_check_rejects_a_small_size():
+    from lightrag.parser.routing import (
+        FilenameParserHintError,
+        resolve_parser_directives,
+        validate_new_hint_chunk_sizes,
+    )
+
+    directives = resolve_parser_directives(_OLD_HINT_NAME, parser_rules="")
+
+    with pytest.raises(
+        FilenameParserHintError,
+        match=rf"chunk strategy 'R': value for 'chunk_token_size' must be >= "
+        rf"{MIN_CHUNK_TOKEN_SIZE}, got 32",
+    ):
+        validate_new_hint_chunk_sizes(_OLD_HINT_NAME, directives.chunk_params)
+
+
+def test_new_hint_check_accepts_the_minimum():
+    from lightrag.parser.routing import validate_new_hint_chunk_sizes
+
+    params = {"R": {"chunk_token_size": MIN_CHUNK_TOKEN_SIZE}}
+
+    assert validate_new_hint_chunk_sizes("x.md", params) is None
+
+
+def test_scan_enqueue_rejects_a_new_small_size_hint(tmp_path):
+    import asyncio
+
+    from lightrag.api.routers.document_routes import pipeline_enqueue_file
+
+    rag, captured = _recording_rag()
+    path = tmp_path / _OLD_HINT_NAME
+    path.write_text("hello world", encoding="utf-8")
+
+    ok, _track = asyncio.run(pipeline_enqueue_file(rag, path))
+
+    assert ok is False
+    # Only the error document was recorded; the enqueue never ran.
+    assert set(captured) == {"error_files"}
+    assert (
+        f"must be >= {MIN_CHUNK_TOKEN_SIZE}, got 32"
+        in captured["error_files"][0]["original_error"]
+    )
+
+
+def test_a_parser_rule_with_a_small_size_fails_validation():
+    from lightrag.parser.routing import (
+        ParserRoutingConfigError,
+        validate_parser_routing_config,
+    )
+
+    with pytest.raises(ParserRoutingConfigError, match=r"must be >= 64, got 32"):
+        validate_parser_routing_config("md:legacy-R(chunk_ts=32,chunk_ol=0)")

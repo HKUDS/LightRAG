@@ -20,10 +20,10 @@ LIGHTRAG_PARSER=*:legacy-F
 
 - `ENTITY_TYPES` 已不再支持。请改用 `ENTITY_TYPE_PROMPT_FILE`，并把 YAML profile 放在 `PROMPT_DIR/entity_type` 下（`PROMPT_DIR` 默认是 `./prompts`）。参考模板位于 `prompts/samples/entity_type_prompt.sample.yml`。
 - 如果使用 OpenSearch 存储且集群版本低于 OpenSearch 3.3.0，请先升级 OpenSearch，再启用 v1.5 存储路径并校验已有索引。新部署建议使用 OpenSearch 3.3.0 或更高版本。
-- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请清空受影响的 LightRAG workspace/向量数据并重新索引源文件。
+- 更换 embedding 模型、向量维度、非对称 embedding 行为或 query/document 前缀会改变向量语义。请停止服务器，并使用新的 embedding 配置运行 `lightrag-rebuild-vdb`，从知识图谱和文本块重建向量，详见[切换 Embedding 模型](ProgramingWithCore.md#switching-embedding-models)。不要清空 workspace 或数据目录：那会删除重建所依赖的图谱和文本块。
 - 修改解析器路由（`LIGHTRAG_PARSER`）或文件名 hint 只影响新上传文件。若要把已有文档切换到另一个解析引擎，请先删除该文档再重新上传。
 - 修改 chunker 配置（`CHUNK_*`）会影响服务器重启后入队的文档。若希望旧文档的 `chunk_options` 快照也采用新配置，请重新处理这些文档。
-- 启用多模态选项（`i/t/e`）需要已有解析 sidecar，并设置 `VLM_PROCESS_ENABLE=true`。已有文档可通过重新处理在可用 sidecar 上补跑 VLM 分析；但切换解析引擎仍需要删除并重新上传。
+- 启用多模态选项（`i/t/e`）需要已有解析 sidecar；`VLM_PROCESS_ENABLE=true` 仅控制图片分析，表格和公式使用 `EXTRACT` role。已有文档可通过重新处理分析可用 sidecar；切换解析引擎仍需要删除并重新上传。
 
 ## 升级到有界请求体
 
@@ -222,7 +222,7 @@ lightrag-gunicorn --workers 4
 
 - `--host`：服务器监听地址（默认：0.0.0.0）
 - `--port`：服务器监听端口（默认：9621）
-- `--timeout`：LLM 请求超时时间（默认：150 秒）
+- `--timeout`：Gunicorn worker 超时的基准秒数，实际 worker 超时为该值 + 30（默认：150）。`lightrag-server` 不使用；LLM 请求超时由 `LLM_TIMEOUT` 控制
 - `--log-level`：日志级别（默认：INFO）
 - `--working-dir`：数据库持久化目录（默认：./rag_storage）
 - `--input-dir`：上传文件存放目录（默认：./inputs）
@@ -262,7 +262,7 @@ lightrag-server --port 9621
 
 - 创建一个项目目录。
 - 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
-- 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
+- 准备 `.env` 文件：复制示例文件 [`env.example`](../env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
 - 通过以下命令启动 LightRAG 服务器：
 
 ```shell
@@ -310,10 +310,10 @@ VLM_PROCESS_ENABLE=false
 LLM_BINDING=openai
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
 
 #######################################################################################
 ### Embedding Configuration (do not change after the first file is processed)
@@ -381,7 +381,7 @@ RERANK_BINDING_API_KEY=your_rerank_api_key_here
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 
 VLM_PROCESS_ENABLE=true
-VLM_LLM_MODEL=gpt-5-mini
+VLM_LLM_MODEL=gpt-6.1-terra
 
 MINERU_API_MODE=official
 MINERU_API_TOKEN=your_mineru_api_token
@@ -390,7 +390,7 @@ MINERU_MODEL_VERSION=vlm
 MINERU_IS_OCR=false
 ```
 
-该路由会优先对支持的 DOCX 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。`i`、`t`、`e` 选项会在解析器产出对应 sidecar 时，对图片、表格和公式运行 VLM 分析。
+该路由会对支持的 DOCX、Markdown 和 textpack 文件使用内置 `native` 解析器，对 PDF、图片等其他 MinerU 支持的文件使用 MinerU，最后回退到 `legacy`。解析器产出对应 sidecar 时，`i`、`t`、`e` 分别启用图片、表格和公式分析；图片分析使用 VLM，表格和公式使用 `EXTRACT` role。
 
 使用 official 模式时，Docker 不需要访问宿主机上的 MinerU 回环地址；容器只需要能够访问 `MINERU_OFFICIAL_ENDPOINT`。
 
@@ -697,13 +697,29 @@ TOKEN_EXPIRE_HOURS=4
 lightrag-hash-password --username admin
 ```
 
-该命令会安全提示输入密码，并输出可直接粘贴到 `.env` 的 `admin:{bcrypt}...` 条目。
+该命令会安全提示输入密码，并输出可直接粘贴到 `.env` 的 `admin:{bcrypt}...` 条目。bcrypt 只使用密码的前 72 个字节，因此该命令会拒绝更长的密码（按 UTF-8 字节计算，而非字符数）；请改用更短的密码。
 
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
 
-如果未配置账户凭证，Web 界面将以访客身份访问系统。因此，即使仅配置了 API 密钥，所有 API 仍然可以通过访客账户访问，这仍然不安全。因此，要保护 API，需要同时配置这两种认证方法。
+### WebUI 兼容性变更：受保护访问仅使用账户登录
 
-> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。
+`/webui` 和 `/workspace` 均不再提示输入、保存或发送 API Key。API Key 继续用于程序化 API 访问；本次迁移不改变后端凭据接受规则、双凭据失败行为或 token 续期规则。
+
+| 账户（`AUTH_ACCOUNTS`） | 有效 API Key（`LIGHTRAG_API_KEY` 或 `--key`） | WebUI |
+| --- | --- | --- |
+| 未配置 | 未配置 | 保留 guest token 的获取、发送、刷新与续期 |
+| 已配置 | 未配置 | 账户登录，仅发送用户 token |
+| 已配置 | 已配置 | 账户登录，仅发送用户 token |
+| 未配置 | 已配置 | 显示配置提示，不进入 guest 业务界面、不弹出密钥输入框 |
+
+**原 API-key-only WebUI 用户的迁移步骤：** 保留 API Key，配置 `AUTH_ACCOUNTS` 和高强度、非默认的 `TOKEN_SECRET`，重启服务器，刷新所有 WebUI 标签页后登录。不要通过移除 API Key 保护恢复 WebUI 访问。
+请配套部署前后端版本。旧后端缺少模式发现字段时，新 WebUI 无法安全区分完全开放与 API-key-only，因此显示提示而不会猜测为访客模式。已知旧版浏览器设置仅清理 `apiKey`，保留其他设置；未知未来版本的存储保持不变，也不会被用于发送凭据。
+
+完全开放的 WebUI 仍使用 guest token；guest 并非已认证的用户账户。完全开放模式下的程序化请求仍可不携带 token。仅凭 guest token **不能**绕过受保护路由的 API Key 检查。API-key-only 服务器仍可正常启动并服务程序化客户端。
+
+`GET /auth-status` 仅新增非敏感布尔字段 `api_key_configured`，依据服务器实际生效的密钥计算。包括 `auth_configured`（仅表示账户配置）在内的原字段含义不变，`/login` 行为不变。前端据此选择支持的流程，不引入新的后端授权策略；本次迁移也不改变 `WHITELIST_PATHS` 的处理。
+
+> 尽管服务器可**同时**配置 API 密钥与账户凭证，但单个程序化请求应**只发送** `X-API-Key` **或** `Authorization: Bearer <token>` 之一，不要同时发送。当两个请求头同时存在时，服务端会优先校验 `Authorization` token；若该 token 无效或过期，即使同时附带了有效的 `X-API-Key`，请求也会以 `401 Invalid token` 被拒绝。本次 WebUI 迁移不改变这一行为。
 
 ## Azure OpenAI 后端配置
 
@@ -804,13 +820,13 @@ lightrag-server --embedding-binding gemini --help
 设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：`LLM_TIMEOUT * llm_output_tokens/second`（例如 `240s * 50 tokens/s = 12000`，此时 max_tokens 应小于 12000）。
 
 ```
-# For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
+# For vLLM/SGLang deployed models, or most of OpenAI compatible API provider
 OPENAI_LLM_MAX_TOKENS=9000
 
-# For Ollama Deployed Modeles
+# For Ollama Deployed Models
 OLLAMA_LLM_NUM_PREDICT=9000
 
-# For OpenAI o1-mini or newer modles
+# For OpenAI o1-mini or newer models
 OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 ```
 
@@ -823,20 +839,20 @@ OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 | `EXTRACT` | 实体/关系抽取以及实体/关系描述合并摘要 |
 | `KEYWORD` | 查询检索前的关键词生成 |
 | `QUERY` | 最终回答、bypass 查询以及 Ollama 兼容聊天响应 |
-| `VLM` | 图片、表格、公式等 sidecar 项目的多模态分析 |
+| `VLM` | 对符合条件的 sidecar 图片/绘图进行分析 |
 
 如果某个角色未单独配置，会继承基础 `LLM_*` 设置。同 provider 的最小示例：
 
 ```bash
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
-EXTRACT_LLM_MODEL=gpt-5-mini
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
-VLM_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
+VLM_LLM_MODEL=gpt-6.1-terra
 ```
 
 **按角色的模型推荐：**
@@ -894,6 +910,18 @@ MAX_EXTRACTION_ENTITIES=40
 ```
 
 如果旧 `.env` 中仍包含 `ENTITY_TYPES`，请在启动前移除。该变量已被 prompt profile 替代，服务器会对此进行快速失败校验。
+
+### 关键词抽取配置
+
+关键词抽取在查询链路运行（`KEYWORD` 角色的 LLM），用于 `hybrid` / `local` / `global` 模式，其结构化输出策略独立于 `ENTITY_EXTRACTION_USE_JSON`：
+
+- `KEYWORD_EXTRACTION_JSON_MODE`：关键词抽取的 `response_format` 策略。`auto`（默认）先请求 `response_format={"type": "json_object"}`，仅当 provider 拒绝该字段本身时才去掉它重试一次；`json_object` 始终发送；`none` 从不发送。仅当你明确知道 provider 的取向时才设为 `json_object` 或 `none`：LM Studio 这类服务只接受 `json_schema`/`text` 并返回 HTTP 400，查询链路会表现为"未检索到相关上下文"。
+
+示例：
+
+```bash
+KEYWORD_EXTRACTION_JSON_MODE=auto
+```
 
 ### 支持的存储类型
 
@@ -978,6 +1006,8 @@ python -m lightrag.tools.migrate_graph_storage --apply
 
 只有图数据被迁移；向量与 KV 数据不受影响且继续有效，因为迁移后的图保持相同的实体与关系标识。该工具要求目标图分片为空，并且在写入任何数据之前，会拒绝所有它能观察到、且无法完整迁移的结构——缺少可用标识的节点、重复的节点 ID、互为反向的边对，以及 PostgreSQL `jsonb` 无法存储的取值。若写入过程中失败，它只移除本次运行实际写入的内容。有一点限制需要知悉：Apache AGE 使用 `SELECT DISTINCT` 枚举边，因此同一对节点之间两条完全相同的关系只会返回一行，工具无法察觉图的度数将会改变。更换存储后端的通用建议仍然是重新索引 —— 本工具是针对这一特定组合的进阶路径。前置条件、报告格式与失败处理请参考 [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
+使用 Docker Compose 部署时，请在 `lightrag` 服务的一次性容器中运行该工具，并按照 [Migrate from PGGraphStorage to PGTableGraphStorage](DockerDeployment.md#migrate-from-pggraphstorage-to-pgtablegraphstorage) 的步骤操作；这些步骤也包括在切换 PostgreSQL 镜像之前删除 AGE 图。
+
 ### LightRAG API 服务器命令行选项
 
 | 参数 | 默认值 | 描述 |
@@ -986,7 +1016,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--port` | `9621` | 服务器端口 |
 | `--working-dir` | `./rag_storage` | RAG 存储工作目录 |
 | `--input-dir` | `./inputs` | 上传/输入文档目录 |
-| `--timeout` | `150` | Gunicorn worker timeout 以及 fallback 请求超时 |
+| `--timeout` | `150` | Gunicorn worker 超时的基准秒数（worker 超时 = 该值 + 30）；不是 LLM 请求超时 |
 | `--max-async` | `4` | 基础 LLM 最大并发；也是单文档 chunk 抽取的 task 上限（每个实体/关系合并阶段使用其两倍的 task 上限） |
 | `--log-level` | `INFO` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`） |
 | `--verbose` | `False` | 详细调试输出，配合 debug 日志生效 |
@@ -1224,7 +1254,7 @@ LIGHTRAG_PARSER=pdf:mineru-R,docx:native-ietP,*:legacy-R
 | 引擎 | 用途 |
 | --- | --- |
 | `legacy` | 原有抽取行为，适合兼容旧部署和简单文本类文件。 |
-| `native` | 内置结构化解析器，目前重点支持 `.docx` 和 LightRAG Document sidecar。 |
+| `native` | 内置结构化解析器，支持 `.docx`、`.md` 和 `.textpack`，并产出 LightRAG Document sidecar。 |
 | `mineru` | 外部 MinerU 解析器，适用于 PDF、Office 文件和图片。需要配置 `MINERU_API_MODE` 以及 `MINERU_LOCAL_ENDPOINT` 或 `MINERU_API_TOKEN`。 |
 | `docling` | 外部 docling-serve 解析器，适用于 PDF、Office 文件、Markdown/HTML 和图片。需要配置 `DOCLING_ENDPOINT`。 |
 
@@ -1248,15 +1278,16 @@ notes.[-R].md
 | 选项 | 含义 |
 | --- | --- |
 | `i` | 对存在的图片/绘图 sidecar 运行 VLM 分析 |
-| `t` | 对存在的表格 sidecar 运行 VLM 分析 |
-| `e` | 对存在的公式 sidecar 运行 VLM 分析 |
+| `t` | 对存在的表格 sidecar 使用 `EXTRACT` role 分析 |
+| `e` | 对存在的公式 sidecar 使用 `EXTRACT` role 分析 |
 | `!` | 跳过实体/关系抽取和图写入；仍会保存 chunk 向量 |
 | `F` | 固定 token 分块，即 legacy 分块方式 |
 | `R` | 递归字符分块，支持可配置分隔符级联 |
 | `V` | 语义向量分块；超长 chunk 会再用 `R` 切分 |
 | `P` | 面向结构化 LightRAG Document 内容的段落语义分块；缺少结构化内容时自动回退到 `R` |
+| `C` | 自定义 chunker 回调；未配置回调时使用 fixed-token fallback |
 
-每个文件最多选择 `F`、`R`、`V`、`P` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
+每个文件最多选择 `F`、`R`、`V`、`P`、`C` 中的一种。分块参数通过 `CHUNK_SIZE`、`CHUNK_OVERLAP_SIZE` 以及策略专属变量配置，例如 `CHUNK_R_SEPARATORS`、`CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`、`CHUNK_P_SIZE`、`CHUNK_P_OVERLAP_SIZE`。这些值在服务器启动时读取，并在文档入队时作为该文档的 `chunk_options` 快照保存。
 
 `V` 策略的句子切分正则是唯一不能按请求设置的 chunker 参数：只能通过 `CHUNK_V_SENTENCE_SPLIT_REGEX`（或 SDK 的 `addon_params`）修改。`/documents/text` 和 `/documents/texts` 会拒绝 `chunking.params` 中的 `sentence_split_regex` 键并返回 HTTP 422。调用方提供的正则会应用于同一请求的文本，而 CPython 正则引擎在回溯时会持有 GIL，因此 `(a+)+$` 之类的模式可能冻结整个 worker 进程——参见 [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84)。文档 `chunk_options` 快照中已经保存的该值也会在处理时被丢弃（并以 `WARNING` 级别记录日志），因此旧版本持久化的模式不会在升级后冻结 worker。
 

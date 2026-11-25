@@ -7,7 +7,6 @@ FastAPI's root_path parameter, which controls the servers URL in the
 OpenAPI spec for correct reverse proxy operation.
 """
 
-import os
 import sys
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -275,21 +274,6 @@ class TestWebUIPrefixIntegration:
             assert response.status_code in [200, 307]
 
 
-class TestEnvironmentVariables:
-    """Test that environment variables are read correctly."""
-
-    def test_env_api_prefix(self):
-        """Test LIGHTRAG_API_PREFIX environment variable."""
-        from lightrag.api.config import get_env_value
-
-        os.environ["LIGHTRAG_API_PREFIX"] = "unit-test-back/api"
-        try:
-            value = get_env_value("LIGHTRAG_API_PREFIX", "")
-            assert value == "unit-test-back/api"
-        finally:
-            del os.environ["LIGHTRAG_API_PREFIX"]
-
-
 class TestPathNormalization:
     """User input for `--api-prefix` may contain trailing slashes, a missing
     leading slash, or be just '/'. create_app must canonicalize these before
@@ -523,8 +507,14 @@ class TestUvicornRootPathSemantics:
         }
         status = {"code": None}
 
+        request_received = False
+
         async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
+            nonlocal request_received
+            if not request_received:
+                request_received = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.disconnect"}
 
         async def send(message):
             if message["type"] == "http.response.start":

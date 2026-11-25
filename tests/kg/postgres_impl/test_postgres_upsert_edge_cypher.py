@@ -90,37 +90,31 @@ async def _capture_upsert_edge(storage: PGGraphStorage, src: str, tgt: str, edge
 
 
 @pytest.mark.asyncio
-async def test_upsert_edge_uses_delete_create_not_set():
-    """Cypher must use OPTIONAL MATCH + DELETE + CREATE — not SET-based update.
+async def test_upsert_edge_contains_optional_match_delete_create():
+    """The Cypher query must use OPTIONAL MATCH + DELETE + CREATE with inline props.
 
     Apache AGE silently drops edge properties written via SET r += {...},
     SET r.key = value, and ON CREATE/ON MATCH SET. The only reliable pattern
     is to delete any existing edge and CREATE a new one with inline props.
     """
     storage = make_graph_storage()
-    calls = await _capture_upsert_edge(
-        storage, "NodeA", "NodeB", {"weight": "1.0", "description": "test edge"}
-    )
+    calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
 
     # The cypher statement is the third one (after the per-edge + shared locks).
-    cypher_sql = calls[2]["sql"]
-
-    # The new query must not contain any SET-based edge update — those silently
-    # fail against AGE. All edge props live inline in the CREATE clause.
+    cypher_call = calls[2]
+    cypher_sql = cypher_call["sql"]
     assert "SET r" not in cypher_sql, (
         f"Edge SET clauses are silently dropped by AGE: {cypher_sql}"
     )
     assert "ON CREATE SET" not in cypher_sql
     assert "ON MATCH SET" not in cypher_sql
-
-
-@pytest.mark.asyncio
-async def test_upsert_edge_contains_optional_match_delete_create():
-    """The Cypher query must use OPTIONAL MATCH + DELETE + CREATE with inline props."""
-    storage = make_graph_storage()
-    calls = await _capture_upsert_edge(storage, "Alice", "Bob", {"weight": "0.5"})
-
-    cypher_sql = calls[2]["sql"]
+    # Source and target IDs flow through Cypher parameters, one positional
+    # agtype JSON arg.
+    assert "entity_id: $src_id" in cypher_sql
+    assert "entity_id: $tgt_id" in cypher_sql
+    params = json.loads(cypher_call["args"][0])
+    assert params["src_id"] == "Alice"
+    assert params["tgt_id"] == "Bob"
     assert "OPTIONAL MATCH (source)-[old:DIRECTED]-(target)" in cypher_sql
     assert "DELETE old" in cypher_sql
     assert "CREATE (source)-[r:DIRECTED" in cypher_sql
@@ -138,23 +132,6 @@ async def test_upsert_edge_handles_empty_props():
 
     cypher_sql = calls[2]["sql"]
     assert "CREATE (source)-[r:DIRECTED {}]->(target)" in cypher_sql
-
-
-@pytest.mark.asyncio
-async def test_upsert_edge_uses_parameterized_match_ids():
-    """Source and target IDs must flow through Cypher parameters as agtype JSON."""
-    storage = make_graph_storage()
-    calls = await _capture_upsert_edge(storage, "Node A", "Node B", {"weight": "1.0"})
-
-    cypher_call = calls[2]
-    cypher_sql = cypher_call["sql"]
-    assert "entity_id: $src_id" in cypher_sql
-    assert "entity_id: $tgt_id" in cypher_sql
-    # Cypher params arrive as a single positional agtype JSON arg.
-    params_json = cypher_call["args"][0]
-    params = json.loads(params_json)
-    assert params["src_id"] == "Node A"
-    assert params["tgt_id"] == "Node B"
 
 
 @pytest.mark.asyncio
@@ -235,34 +212,6 @@ async def test_upsert_edge_lock_key_includes_graph_name():
     assert "$1::text" in lock_sql
     assert "LEAST($2::text, $3::text)" in lock_sql
     assert "GREATEST($2::text, $3::text)" in lock_sql
-
-
-@pytest.mark.asyncio
-async def test_upsert_edge_lock_key_is_endpoint_order_independent():
-    """{A, B} and {B, A} must produce the same advisory lock key.
-
-    The lock SQL itself is identical across both call directions; only the
-    positional args differ. LEAST/GREATEST inside the template then normalises
-    them to the same hash input, so concurrent {A,B} and {B,A} writes collide
-    on a single lock (matching the undirected OPTIONAL MATCH).
-    """
-    storage = make_graph_storage()
-    forward = await _capture_upsert_edge(storage, "Alice", "Bob", {})
-    reverse = await _capture_upsert_edge(storage, "Bob", "Alice", {})
-
-    # Same lock SQL template for both directions.
-    assert forward[0]["sql"] == reverse[0]["sql"]
-    # graph_name first, then the endpoint pair in whatever order the caller
-    # passed — LEAST/GREATEST canonicalises inside the SQL.
-    assert forward[0]["args"][0] == reverse[0]["args"][0] == "test_graph"
-    assert (
-        set(forward[0]["args"][1:])
-        == set(reverse[0]["args"][1:])
-        == {
-            "Alice",
-            "Bob",
-        }
-    )
 
 
 @pytest.mark.asyncio

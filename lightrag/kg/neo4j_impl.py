@@ -15,7 +15,7 @@ from tenacity import (
 )
 
 import logging
-from ..utils import logger, validate_workspace
+from ..utils import logger, parse_bool_setting, validate_workspace
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
@@ -61,6 +61,19 @@ READ_RETRY = retry(
     retry=retry_if_exception_type(READ_RETRY_EXCEPTIONS),
     reraise=True,
 )
+
+
+class WorkspaceIndexCollisionError(ValueError):
+    """A full-text index name is already claimed by a different workspace.
+
+    ``_get_fulltext_index_name`` is lossy, so distinct workspace labels (e.g.
+    ``foo-bar`` and ``foo_bar``) can resolve to one index name. Raised from
+    index initialization so the instance refuses to start instead of reusing,
+    or dropping and recreating, the other workspace's index. Never catch it to
+    continue; rename one workspace instead. The colliding names and the
+    accepted first-start race are listed in
+    docs/design/ServerInstanceContract.md.
+    """
 
 
 # Deliberately NOT ``@final``, unlike every other storage class in this package:
@@ -153,19 +166,34 @@ class Neo4JStorage(BaseGraphStorage):
         suffix = self._normalize_index_suffix(workspace_label)
         return f"entity_id_fulltext_idx_{suffix}"
 
-    def _is_chinese_text(self, text: str) -> bool:
-        """Check if text contains Chinese/CJK characters.
+    # Scripts the Lucene `cjk` analyzer indexes as overlapping bigrams. A query
+    # in these scripts cannot rely on a bare trailing `*`: a wildcard term is
+    # normalized but not split into bigrams, so `삼성전자*` is compared against
+    # 2-character terms and silently matches nothing once the query is longer
+    # than one bigram. `search_labels` therefore sends `<query> <query>*`: the
+    # analyzed part matches multi-character queries, the prefix part a single
+    # character (`서*` matches the bigram `서울`).
+    _CJK_BIGRAM_PATTERN = re.compile(
+        r"[\u1100-\u11ff"  # Hangul Jamo
+        r"\u3040-\u30ff"  # Hiragana, Katakana
+        r"\u3130-\u318f"  # Hangul Compatibility Jamo
+        r"\u31f0-\u31ff"  # Katakana Phonetic Extensions
+        r"\u3400-\u4dbf"  # CJK Unified Ideographs Extension A
+        r"\u4e00-\u9fff"  # CJK Unified Ideographs
+        r"\ua960-\ua97f"  # Hangul Jamo Extended-A
+        r"\uac00-\ud7ff"  # Hangul Syllables, Hangul Jamo Extended-B
+        r"\uf900-\ufaff"  # CJK Compatibility Ideographs
+        r"\uff66-\uffdc]"  # Halfwidth Katakana and Hangul
+        r"|[\U00020000-\U0002fa1f]"  # CJK Extension B-F, Compatibility Supplement
+    )
 
-        Covers:
-        - CJK Unified Ideographs (U+4E00-U+9FFF)
-        - CJK Extension A (U+3400-U+4DBF)
-        - CJK Compatibility Ideographs (U+F900-U+FAFF)
-        - CJK Extension B-F (U+20000-U+2FA1F) - supplementary planes
+    def _is_cjk_text(self, text: str) -> bool:
+        """Check if text contains Chinese, Japanese or Korean characters.
+
+        True routes ``search_labels`` to the CJK query path; see
+        ``_CJK_BIGRAM_PATTERN`` for why Korean and kana must take it too.
         """
-        cjk_pattern = re.compile(
-            r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[\U00020000-\U0002fa1f]"
-        )
-        return bool(cjk_pattern.search(text))
+        return bool(self._CJK_BIGRAM_PATTERN.search(text))
 
     @classmethod
     def _sanitize_fulltext_query(cls, text: str) -> str:
@@ -225,10 +253,15 @@ class Neo4JStorage(BaseGraphStorage):
                     config.get("neo4j", "liveness_check_timeout", fallback=30.0),
                 ),
             )
-            KEEP_ALIVE = os.environ.get(
+            KEEP_ALIVE = parse_bool_setting(
                 "NEO4J_KEEP_ALIVE",
-                config.get("neo4j", "keep_alive", fallback="true"),
-            ).lower() in ("true", "1", "yes", "on")
+                os.environ.get(
+                    "NEO4J_KEEP_ALIVE",
+                    config.get("neo4j", "keep_alive", fallback="true"),
+                ),
+                True,
+                source="Neo4j setting",
+            )
             DATABASE = os.environ.get(
                 "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
             )
@@ -333,7 +366,13 @@ class Neo4JStorage(BaseGraphStorage):
     async def _create_fulltext_index(
         self, driver: AsyncDriver, database: str, workspace_label: str
     ):
-        """Create a full-text index on the entity_id property with Chinese tokenizer support."""
+        """Create a full-text index on the entity_id property with the CJK analyzer.
+
+        Raises:
+            WorkspaceIndexCollisionError: an index of this name already exists
+                and is scoped to a different workspace's label. See the
+                Neo4JStorage row in docs/design/ServerInstanceContract.md.
+        """
         index_name = self._get_fulltext_index_name(workspace_label)
         legacy_index_name = "entity_id_fulltext_idx"
         try:
@@ -371,6 +410,29 @@ class Neo4JStorage(BaseGraphStorage):
                     except Exception as drop_error:
                         logger.warning(
                             f"[{self.workspace}] Failed to drop legacy index: {str(drop_error)}"
+                        )
+
+                # An index of this name may belong to a different workspace:
+                # _get_fulltext_index_name's normalization is lossy, so two
+                # distinct workspace labels can resolve to the same index
+                # name. Compare the index's actual labels against this
+                # workspace's BEFORE deciding to skip (ONLINE) or recreate
+                # (not ONLINE) it below -- either path would otherwise reuse
+                # or drop an index that holds another workspace's data.
+                if existing_index is not None:
+                    raw_label = self._get_raw_workspace_label()
+                    stored_labels = existing_index.get("labelsOrTypes") or []
+                    if list(stored_labels) != [raw_label]:
+                        raise WorkspaceIndexCollisionError(
+                            f"Full-text index '{index_name}' is scoped to label(s) "
+                            f"{list(stored_labels)!r}, but this instance's workspace "
+                            f"resolves to label {raw_label!r}. Both labels normalize to "
+                            f"the same index name, so this instance would reuse -- or, "
+                            f"if the index is not ONLINE, drop and recreate -- an index "
+                            f"that holds a different workspace's data. Rename one of the "
+                            f"workspaces so they no longer normalize to the same index "
+                            f"name, or point this instance at a different Neo4j database. "
+                            f"Do NOT drop the index -- it holds the other workspace's data."
                         )
 
                 # Check if index exists and is online
@@ -418,7 +480,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                     # Create new index with CJK analyzer
                     logger.info(
-                        f"[{self.workspace}] Creating full-text index '{index_name}' with Chinese tokenizer support."
+                        f"[{self.workspace}] Creating full-text index '{index_name}' with CJK analyzer support."
                     )
 
                     try:
@@ -453,6 +515,10 @@ class Neo4JStorage(BaseGraphStorage):
                             f"[{self.workspace}] Successfully created full-text index '{index_name}' with standard analyzer."
                         )
 
+        except WorkspaceIndexCollisionError:
+            # Must propagate: this is a refusal to start, not a verification
+            # failure the caller can fall back from.
+            raise
         except Exception as e:
             # Handle cases where the command might not be supported
             if "Unknown command" in str(e) or "invalid syntax" in str(e).lower():
@@ -1069,6 +1135,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
@@ -1115,6 +1182,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes using a single UNWIND Cypher query.
@@ -1199,6 +1267,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -1249,6 +1318,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -1433,43 +1503,29 @@ class Neo4JStorage(BaseGraphStorage):
                             )
                             record = full_record
                         else:
-                            # If node count exceeds limit, set truncated flag and run limited query
+                            # If node count exceeds limit, set truncated flag and
+                            # keep the first max_nodes nodes of the walk in hand.
+                            # subgraphAll lists nodes in traversal order, the same
+                            # nodes its `limit` key keeps, so walking again with
+                            # `limit` would return this. Do not reintroduce that
+                            # second walk: Neo4j Aura (5.27-aura) fails it with
+                            # Neo.DatabaseError.Database.Unknown, which the
+                            # ClientError fallback below does not catch.
                             result.is_truncated = True
                             logger.info(
                                 f"[{self.workspace}] Graph truncated: {total_nodes} nodes found, breadth-first search limited to {max_nodes}"
                             )
-
-                            # Run limited query
-                            limited_query = f"""
-                            MATCH (start:`{workspace_label}`)
-                            WHERE start.entity_id = $entity_id
-                            WITH start
-                            CALL apoc.path.subgraphAll(start, {{
-                                relationshipFilter: '',
-                                minLevel: 0,
-                                maxLevel: $max_depth,
-                                limit: $max_nodes,
-                                bfs: true
-                            }})
-                            YIELD nodes, relationships
-                            UNWIND nodes AS node
-                            WITH collect({{node: node}}) AS node_info, relationships
-                            RETURN node_info, relationships
-                            """
-                            result_set = None
-                            try:
-                                result_set = await session.run(
-                                    limited_query,
-                                    {
-                                        "entity_id": node_label,
-                                        "max_depth": max_depth,
-                                        "max_nodes": max_nodes,
-                                    },
-                                )
-                                record = await result_set.single()
-                            finally:
-                                if result_set:
-                                    await result_set.consume()
+                            node_info = full_record["node_info"][:max_nodes]
+                            kept_ids = {info["node"].id for info in node_info}
+                            record = {
+                                "node_info": node_info,
+                                "relationships": [
+                                    rel
+                                    for rel in full_record["relationships"]
+                                    if rel.start_node.id in kept_ids
+                                    and rel.end_node.id in kept_ids
+                                ],
+                            }
                     finally:
                         if full_result:
                             await full_result.consume()
@@ -1760,6 +1816,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def delete_node(self, node_id: str) -> None:
         """Delete a node with the specified label
@@ -1785,21 +1842,6 @@ class Neo4JStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during node deletion: {str(e)}")
             raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-                neo4jExceptions.ClientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-            )
-        ),
-    )
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
 
@@ -1823,6 +1865,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges
@@ -1989,7 +2032,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def search_labels(self, query: str, limit: int = 50) -> list[str]:
         """
         Search labels(entity names) with fuzzy matching, using a full-text index for performance if available.
-        Enhanced with Chinese text support using CJK analyzer.
+        Enhanced with Chinese, Japanese and Korean support using the CJK analyzer.
         Falls back to a slower CONTAINS search if the index is not available or fails.
         """
         workspace_label = self._get_workspace_label()
@@ -1998,12 +2041,12 @@ class Neo4JStorage(BaseGraphStorage):
             return []
 
         query_lower = query_strip.lower()
-        is_chinese = self._is_chinese_text(query_strip)
+        is_cjk = self._is_cjk_text(query_strip)
         index_name = self._get_fulltext_index_name(workspace_label)
 
         # Strip Lucene reserved characters before handing the text to the
         # full-text query parser (see _sanitize_fulltext_query). The CASE-based
-        # scoring below still uses the raw query_strip / query_lower.
+        # scoring below uses the unsanitized query_lower.
         sanitized_query = self._sanitize_fulltext_query(query_strip)
         if not sanitized_query:
             # Query was composed entirely of reserved characters (e.g. "---").
@@ -2015,27 +2058,28 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                if is_chinese:
-                    # For Chinese text, use different search strategies
+                if is_cjk:
+                    # For CJK text, boost any containing label, not just a
+                    # prefix; compare lowercased for mixed queries (`lg전자`)
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
                     WHERE node:`{workspace_label}`
-                    WITH node.entity_id AS label, score
+                    WITH node.entity_id AS label, toLower(node.entity_id) AS label_lower, score
                     WITH label, score,
                          CASE
-                             WHEN label = $query_strip THEN score + 1000
-                             WHEN label CONTAINS $query_strip THEN score + 500
+                             WHEN label_lower = $query_lower THEN score + 1000
+                             WHEN label_lower CONTAINS $query_lower THEN score + 500
                              ELSE score
                          END AS final_score
                     RETURN label
                     ORDER BY final_score DESC, label ASC
                     LIMIT $limit
                     """
-                    # For Chinese, don't add wildcard as it may not work properly with CJK analyzer
-                    search_query = sanitized_query
+                    # Analyzed terms plus a prefix wildcard (see _CJK_BIGRAM_PATTERN)
+                    search_query = f"{sanitized_query} {sanitized_query}*"
                 else:
-                    # For non-Chinese text, use the original logic with wildcard
+                    # For non-CJK text, use the original logic with wildcard
                     cypher_query = f"""
                     CALL db.index.fulltext.queryNodes($index_name, $search_query) YIELD node, score
                     WITH node, score
@@ -2059,14 +2103,13 @@ class Neo4JStorage(BaseGraphStorage):
                     index_name=index_name,
                     search_query=search_query,
                     query_lower=query_lower,
-                    query_strip=query_strip,
                     limit=limit,
                 )
                 labels = [record["label"] async for record in result]
                 await result.consume()
 
                 logger.debug(
-                    f"[{self.workspace}] Full-text search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Full-text search ({'CJK' if is_cjk else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
                 )
                 return labels
 
@@ -2081,51 +2124,32 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(
                 database=self._DATABASE, default_access_mode="READ"
             ) as session:
-                if is_chinese:
-                    # For Chinese text, use direct CONTAINS without case conversion
-                    cypher_query = f"""
-                    MATCH (n:`{workspace_label}`)
-                    WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label
-                    WHERE label CONTAINS $query_strip
-                    WITH label,
-                         CASE
-                             WHEN label = $query_strip THEN 1000
-                             WHEN label STARTS WITH $query_strip THEN 500
-                             ELSE 100 - size(label)
-                         END AS score
-                    ORDER BY score DESC, label ASC
-                    LIMIT $limit
-                    RETURN label
-                    """
-                    result = await session.run(
-                        cypher_query, query_strip=query_strip, limit=limit
-                    )
-                else:
-                    # For non-Chinese text, use the original fallback logic
-                    cypher_query = f"""
-                    MATCH (n:`{workspace_label}`)
-                    WHERE n.entity_id IS NOT NULL
-                    WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
-                    WHERE label_lower CONTAINS $query_lower
-                    WITH label, label_lower,
-                         CASE
-                             WHEN label_lower = $query_lower THEN 1000
-                             WHEN label_lower STARTS WITH $query_lower THEN 500
-                             ELSE 100 - size(label)
-                         END AS score
-                    ORDER BY score DESC, label ASC
-                    LIMIT $limit
-                    RETURN label
-                    """
-                    result = await session.run(
-                        cypher_query, query_lower=query_lower, limit=limit
-                    )
+                # One case-insensitive query for every script: toLower leaves
+                # CJK characters unchanged, and a mixed query such as
+                # `lg전자` must still match a stored `LG전자`.
+                cypher_query = f"""
+                MATCH (n:`{workspace_label}`)
+                WHERE n.entity_id IS NOT NULL
+                WITH n.entity_id AS label, toLower(n.entity_id) AS label_lower
+                WHERE label_lower CONTAINS $query_lower
+                WITH label, label_lower,
+                     CASE
+                         WHEN label_lower = $query_lower THEN 1000
+                         WHEN label_lower STARTS WITH $query_lower THEN 500
+                         ELSE 100 - size(label)
+                     END AS score
+                ORDER BY score DESC, label ASC
+                LIMIT $limit
+                RETURN label
+                """
+                result = await session.run(
+                    cypher_query, query_lower=query_lower, limit=limit
+                )
 
                 labels = [record["label"] async for record in result]
                 await result.consume()
                 logger.debug(
-                    f"[{self.workspace}] Fallback search ({'Chinese' if is_chinese else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
+                    f"[{self.workspace}] Fallback search ({'CJK' if is_cjk else 'Latin'}) for '{query}' returned {len(labels)} results (limit: {limit})"
                 )
                 return labels
 

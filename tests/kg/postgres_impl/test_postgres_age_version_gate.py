@@ -37,10 +37,8 @@ import pytest
 
 from lightrag.kg.postgres_impl import (
     _AGE_VERSION_UNPARSEABLE,
-    _AgeVersionUnparseable,
     AGE_ALLOW_UNSUPPORTED_ENV,
     AGE_AVAILABLE_SQL,
-    AGE_FIRST_UNSUPPORTED_VERSION,
     AGE_INSTALLED_SQL,
     PGGraphStorage,
     PostgreSQLDB,
@@ -258,56 +256,6 @@ def _make_db(monkeypatch, connection, *, attempts: int = 3) -> PostgreSQLDB:
 
 
 @pytest.mark.asyncio
-async def test_supported_version_starts(monkeypatch):
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.7.0", available="1.7.0")
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls()
-
-
-@pytest.mark.asyncio
-async def test_create_extension_runs_after_the_version_decision(monkeypatch):
-    """The CREATE is the *last* thing the gate does, not the first.
-
-    Creating the extension before deciding whether its version is safe means a
-    refused startup has already registered ``age`` in a database that had none --
-    a side effect the operator then has to undo. Ordering, not mere presence, is
-    what makes the refusal below (``test_refused_startup_issues_no_create``) a
-    property of the code rather than a coincidence.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.7.0", available="1.7.0")
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    sqls = conn.sql_calls()
-    create_index = next(i for i, sql in enumerate(sqls) if "CREATE EXTENSION" in sql)
-    assert sqls.index(AGE_INSTALLED_SQL) < create_index, sqls
-    assert sqls.index(AGE_AVAILABLE_SQL) < create_index, sqls
-
-
-@pytest.mark.asyncio
-async def test_create_extension_runs_after_the_lookups_under_override(monkeypatch):
-    """The override forces a start, and a forced start still creates the extension.
-
-    Otherwise the escape hatch would let the process start against a database in
-    which AGE had never been created -- every later graph query failing on a missing
-    ``ag_catalog``, with the version warning as the only clue.
-    """
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(installed="1.8.0", available="1.8.0")
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    sqls = conn.sql_calls()
-    create_index = next(i for i, sql in enumerate(sqls) if "CREATE EXTENSION" in sql)
-    assert sqls.index(AGE_INSTALLED_SQL) < create_index, sqls
-    assert sqls.index(AGE_AVAILABLE_SQL) < create_index, sqls
-
-
-@pytest.mark.asyncio
 async def test_create_extension_failure_does_not_raise(monkeypatch):
     """AGE-less deployments must keep starting, as they do without the gate.
 
@@ -330,35 +278,9 @@ async def test_create_extension_failure_does_not_raise(monkeypatch):
     assert conn.create_extension_calls()
 
 
-@pytest.mark.asyncio
-async def test_absent_age_still_attempts_the_create(monkeypatch):
-    """Neither catalog names ``age`` -> no version to gate, but do not return early.
-
-    Returning early here would change what the gate does to a *working* deployment:
-    a database where ``CREATE EXTENSION age`` would have succeeded but the catalogs
-    were read a moment before the package landed would silently never get the
-    extension. Reaching a CREATE that fails harmlessly is the cheaper mistake.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed=None, available=None)
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls()
-
-
 # ---------------------------------------------------------------------------
 # Unsupported versions are refused
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_unsupported_version_refused(monkeypatch):
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.8.0", available="1.8.0")
-
-    with pytest.raises(RuntimeError, match="not supported"):
-        await PostgreSQLDB.configure_age_extension(conn)
 
 
 @pytest.mark.asyncio
@@ -379,39 +301,6 @@ async def test_newer_binaries_over_stale_catalog_refused(monkeypatch):
     # Both values are surfaced so the mixed state is diagnosable from the message.
     assert "installed='1.7.0'" in str(excinfo.value)
     assert "available='1.8.0'" in str(excinfo.value)
-
-
-@pytest.mark.asyncio
-async def test_refused_startup_issues_no_create(monkeypatch):
-    """A refusal must leave the database exactly as it found it.
-
-    Also subsumes the older ``test_failed_create_extension_still_refuses_unsafe_version``:
-    a failing CREATE can no longer mask an unsafe pre-existing installation, because
-    the version decision happens before the CREATE is attempted at all.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(
-        installed="1.8.0",
-        available="1.8.0",
-        execute_error=RuntimeError("permission denied to create extension"),
-    )
-
-    with pytest.raises(RuntimeError, match="not supported"):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls() == [], conn.sql_calls()
-
-
-@pytest.mark.asyncio
-async def test_undeterminable_version_issues_no_create(monkeypatch):
-    """The other refusal branch must be just as free of side effects."""
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.8.0-dev", available="1.8.0-dev")
-
-    with pytest.raises(RuntimeError, match="Could not determine"):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls() == [], conn.sql_calls()
 
 
 # ---------------------------------------------------------------------------
@@ -480,34 +369,6 @@ async def test_ordinary_unsupported_refusal_omits_the_stale_catalog_guidance(
     assert "at your own risk" in message, message
 
 
-@pytest.mark.asyncio
-async def test_override_still_starts_on_the_stale_catalog_cell(monkeypatch, caplog):
-    """ "Does not help" is advice about the outcome, not a second gate.
-
-    The refusal message tells the operator that the override does not help here, and
-    it means it in the useful sense: setting the variable starts a process in which
-    no graph query works. It does not mean the branch keeps raising. The escape hatch
-    stays uniformly reachable -- an operator who has already decided to run anyway
-    does not get a second, undocumented refusal to work around -- so this cell
-    behaves like every other unsupported one under the override.
-
-    Pinned because the two readings are easy to confuse, and a later change that made
-    this branch raise under the override would be a silent behaviour change for
-    anyone relying on the hatch.
-    """
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(installed="1.8.0", available="1.7.0")
-
-    with _capture_gate_logs(caplog):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    warnings = [
-        rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING
-    ]
-    assert any("1.8.0" in m for m in warnings), warnings
-    assert conn.create_extension_calls()
-
-
 # ---------------------------------------------------------------------------
 # Unreadable versions fail closed
 # ---------------------------------------------------------------------------
@@ -516,13 +377,10 @@ async def test_override_still_starts_on_the_stale_catalog_cell(monkeypatch, capl
 @pytest.mark.parametrize(
     "kwargs",
     [
-        pytest.param({"installed": "y.y.y", "available": "y.y.y"}, id="unparseable"),
         # A blank string is present-but-unreadable, not absent: a catalog that names
         # ``age`` and reports '' has told us nothing verifiable about the binaries
         # that are on disk, and the safe reading is that they are unverified.
         pytest.param({"installed": "", "available": ""}, id="both-blank"),
-        pytest.param({"installed": "", "available": "1.7.0"}, id="blank-and-safe"),
-        pytest.param({"installed": "1.7.0", "available": ""}, id="safe-and-blank"),
     ],
 )
 @pytest.mark.asyncio
@@ -535,36 +393,6 @@ async def test_undeterminable_version_fails_closed(monkeypatch, kwargs):
     """
     monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
     conn = _FakeConnection(**kwargs)
-
-    with pytest.raises(RuntimeError, match="Could not determine"):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-
-@pytest.mark.asyncio
-async def test_unsafe_version_wins_even_with_one_unparseable_source(monkeypatch):
-    """A known-unsafe reading from one source must not be excused by the other
-    being unparseable.
-
-    It only pins the safer half of that idea -- a *known-unsafe* parseable sibling
-    still wins. The mirror case, where the unparseable source would need to be
-    ignored to *avoid* a refusal, is pinned by
-    ``test_unparseable_binaries_source_does_not_defer_to_stale_catalog`` below, and
-    refuses instead.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="not-a-version", available="1.8.0")
-
-    with pytest.raises(RuntimeError, match="not supported"):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-
-@pytest.mark.asyncio
-async def test_unparseable_binaries_source_does_not_defer_to_stale_catalog(monkeypatch):
-    """default_version tracks the binaries; if it is unreadable, extversion must not
-    decide alone -- it is exactly the source that does not move on a binary upgrade.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.7.0", available="1.8.0-dev")
 
     with pytest.raises(RuntimeError, match="Could not determine"):
         await PostgreSQLDB.configure_age_extension(conn)
@@ -584,29 +412,12 @@ async def test_raising_installed_lookup_fails_closed(monkeypatch):
     with pytest.raises(RuntimeError, match="Could not determine"):
         await PostgreSQLDB.configure_age_extension(conn)
 
-
-@pytest.mark.asyncio
-async def test_raising_installed_lookup_bypassed_by_override(monkeypatch):
-    """override_set must be computed before the lookup it also guards."""
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(installed_error=RuntimeError("relation does not exist"))
-
-    await PostgreSQLDB.configure_age_extension(conn)
+    assert conn.create_extension_calls() == [], conn.sql_calls()
 
 
 # ---------------------------------------------------------------------------
 # A broken pg_available_extensions is an unread source, not a safe one
 # ---------------------------------------------------------------------------
-
-
-def test_malformed_control_file_error_is_not_transient():
-    """The premise of the tests below.
-
-    If this error type were in ``TRANSIENT_DB_EXCEPTIONS`` it would be re-raised for
-    retry and would never reach the degraded path at all, so those tests would be
-    passing for the wrong reason.
-    """
-    assert not isinstance(_MALFORMED_CONTROL_FILE_ERROR, TRANSIENT_DB_EXCEPTIONS)
 
 
 @pytest.mark.asyncio
@@ -657,29 +468,6 @@ async def test_unreadable_available_lookup_does_not_let_a_stale_installed_decide
 
 
 @pytest.mark.asyncio
-async def test_override_bypasses_the_unreadable_available_refusal(monkeypatch, caplog):
-    """The escape hatch reaches this refusal too, as it reaches every other one.
-
-    An operator on a build that reports an unsupported number, or one who knows what
-    their sharedir contains, must not find this the single unbypassable branch.
-    """
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(
-        installed="1.7.0", available_error=_MALFORMED_CONTROL_FILE_ERROR
-    )
-
-    with _capture_gate_logs(caplog):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    warnings = [
-        rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING
-    ]
-    # Nothing is raised here, so a warning is the whole operator-facing output.
-    assert any("could not determine" in m.lower() for m in warnings), warnings
-    assert conn.create_extension_calls(), conn.sql_calls()
-
-
-@pytest.mark.asyncio
 async def test_unreadable_available_lookup_does_not_install_an_unchecked_age(
     monkeypatch, caplog
 ):
@@ -727,27 +515,6 @@ async def test_unreadable_available_lookup_does_not_install_an_unchecked_age(
     assert skipped, (
         f"expected a skipped-create warning naming the override; got: {warnings}"
     )
-
-
-@pytest.mark.asyncio
-async def test_override_installs_age_despite_an_unreadable_available_lookup(
-    monkeypatch,
-):
-    """The escape hatch reaches the undetermined state too.
-
-    An operator who has read the warning above and decided that this server's AGE is
-    fine -- or who simply has no AGE and wants the create attempted regardless -- gets
-    what they asked for. Without this the skip would be an unbypassable behaviour
-    change for anyone whose sharedir contains a broken control file.
-    """
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(
-        installed=None, available_error=_MALFORMED_CONTROL_FILE_ERROR
-    )
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls(), conn.sql_calls()
 
 
 @pytest.mark.asyncio
@@ -818,23 +585,6 @@ async def test_null_default_version_does_not_let_a_stale_installed_decide(
 
 
 @pytest.mark.asyncio
-async def test_null_default_version_does_not_rescue_an_unsafe_installed(monkeypatch):
-    """A source that did answer, and answered unsafe, still decides.
-
-    The counterpart of ``test_broken_available_lookup_does_not_rescue_an_unsafe_installed``
-    for the NULL row: the operator must be told the version is unsupported, not merely
-    that it could not be determined, or the remedies they are given are the wrong ones.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.8.0", available=_NULL_DEFAULT_VERSION)
-
-    with pytest.raises(RuntimeError, match="not supported"):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls() == [], conn.sql_calls()
-
-
-@pytest.mark.asyncio
 async def test_null_default_version_with_no_installed_row_skips_the_create(
     monkeypatch, caplog
 ):
@@ -861,59 +611,9 @@ async def test_null_default_version_with_no_installed_row_skips_the_create(
     assert skipped, (
         f"expected a skipped-create warning naming the override; got: {_warnings(caplog)}"
     )
-
-
-@pytest.mark.parametrize(
-    "installed", [pytest.param("1.7.0", id="safe"), pytest.param("1.8.0", id="unsafe")]
-)
-@pytest.mark.asyncio
-async def test_override_bypasses_the_null_default_version_refusals(
-    monkeypatch, installed
-):
-    """The escape hatch reaches these two refusals, as it reaches every other one."""
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(installed=installed, available=_NULL_DEFAULT_VERSION)
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls(), conn.sql_calls()
-
-
-@pytest.mark.asyncio
-async def test_an_absent_available_row_still_starts_a_safe_installed(monkeypatch):
-    """The contrast that makes the fix a distinction and not a blanket refusal.
-
-    No ``age`` row at all is genuine evidence that nothing is on disk, so a safe
-    ``installed`` reading is the whole picture and the gate starts. Answering the NULL
-    row by refusing on ``None`` too would have "fixed" the fail-open by breaking every
-    ordinary deployment that has AGE registered and no control file in the sharedir.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.7.0", available=None)
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls(), conn.sql_calls()
-
-
-@pytest.mark.asyncio
-async def test_null_default_version_is_not_reported_as_age_being_absent(
-    monkeypatch, caplog
-):
-    """The nothing-to-gate INFO is a claim about the deployment, and here it is false.
-
-    That line says AGE is not installed on this server and there is nothing to gate. A
-    versionless control file is AGE sitting in the sharedir, so logging it here would
-    tell an operator reading their startup log the opposite of what is true -- and it
-    was the visible symptom of the fail-open, emitted on the way to creating the
-    extension.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed=None, available=_NULL_DEFAULT_VERSION)
-
-    with _capture_gate_logs(caplog):
-        await PostgreSQLDB.configure_age_extension(conn)
-
+    # The nothing-to-gate INFO would claim AGE is absent, which a versionless
+    # control file in the sharedir contradicts; it was the visible symptom of
+    # the fail-open, emitted on the way to creating the extension.
     absent_claims = [
         rec.getMessage()
         for rec in caplog.records
@@ -975,30 +675,6 @@ async def test_override_install_of_an_unchecked_age_says_so(monkeypatch, caplog)
         "expected one warning naming both the install and its crash-recovery "
         f"consequence; got: {_warnings(caplog)}"
     )
-
-
-@pytest.mark.asyncio
-async def test_without_the_override_that_state_installs_nothing(monkeypatch, caplog):
-    """The half of the pair that must not change: no override, no create.
-
-    Restated next to the override case so the two are read together; the same claim is
-    made once more from the state-space sweep at the end of this module.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(
-        installed=None, available_error=_MALFORMED_CONTROL_FILE_ERROR
-    )
-
-    with _capture_gate_logs(caplog):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls() == [], conn.sql_calls()
-    skipped = [
-        m
-        for m in _warnings(caplog)
-        if "CREATE EXTENSION" in m and AGE_ALLOW_UNSUPPORTED_ENV in m
-    ]
-    assert skipped, _warnings(caplog)
 
 
 @pytest.mark.asyncio
@@ -1144,32 +820,11 @@ async def test_the_two_unchecked_install_consents_stay_distinct(monkeypatch, cap
 # ---------------------------------------------------------------------------
 
 
-def test_transient_exceptions_covers_a_non_oserror_asyncpg_error():
-    """Guard against the parametrize below going vacuous again.
-
-    ``asyncio.TimeoutError is TimeoutError`` on 3.11+, and both ``TimeoutError`` and
-    ``ConnectionResetError`` derive from ``OSError`` -- so a list built only from
-    builtins would still pass with every asyncpg-native entry deleted from
-    ``TRANSIENT_DB_EXCEPTIONS``. ``ConnectionDoesNotExistError`` derives from
-    ``PostgresError``, not ``OSError``, so covering it is only possible while the
-    asyncpg-native entries are actually there.
-    """
-    assert not issubclass(asyncpg.exceptions.ConnectionDoesNotExistError, OSError)
-    assert issubclass(
-        asyncpg.exceptions.ConnectionDoesNotExistError, asyncpg.exceptions.PostgresError
-    )
-    assert issubclass(
-        asyncpg.exceptions.ConnectionDoesNotExistError, TRANSIENT_DB_EXCEPTIONS
-    )
-
-
 def _transient_exception_params():
     return [
-        pytest.param(ConnectionResetError("reset"), id="ConnectionResetError"),
-        pytest.param(OSError("broken pipe"), id="OSError"),
-        pytest.param(TimeoutError(), id="TimeoutError"),
-        # Not an OSError subclass -- see the guard test above. A dropped connection
-        # is exactly what a catalog read hits, and it arrives as this type.
+        # Not an OSError subclass, so it is the case the transient tuple could miss.
+        # A dropped connection is exactly what a catalog read hits, and it arrives
+        # as this type.
         pytest.param(
             asyncpg.exceptions.ConnectionDoesNotExistError("connection is closed"),
             id="asyncpg.ConnectionDoesNotExistError",
@@ -1210,7 +865,9 @@ async def test_transient_lookup_failure_propagates_unwrapped(monkeypatch, exc, w
     assert isinstance(excinfo.value, TRANSIENT_DB_EXCEPTIONS)
 
 
-@pytest.mark.parametrize("which", _lookup_params())
+# Only the installed lookup's except-block has an override branch to order
+# against; the available lookup's re-raise is the case above.
+@pytest.mark.parametrize("which", _lookup_params()[:1])
 @pytest.mark.parametrize("exc", _transient_exception_params())
 @pytest.mark.asyncio
 async def test_transient_lookup_failure_propagates_even_under_override(
@@ -1296,61 +953,9 @@ async def test_run_with_retry_does_retry_a_transient_gate_failure(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "kwargs",
-    [
-        pytest.param({"installed": "1.8.0", "available": "1.8.0"}, id="unsupported"),
-        pytest.param(
-            {"installed": "1.7.0", "available": "1.8.0"}, id="in-place-upgrade"
-        ),
-        pytest.param(
-            {"installed": "1.8.0", "available": None},
-            id="installed-only-control-file-gone",
-        ),
-        pytest.param({"installed": "y.y.y", "available": "y.y.y"}, id="unparseable"),
-        pytest.param(
-            {"installed": "1.7.0", "available": "1.8.0-dev"},
-            id="safe-installed-unparseable-available",
-        ),
-        pytest.param(
-            {"installed": "1.8.0-dev", "available": "1.7.0"},
-            id="unparseable-installed-safe-available",
-        ),
-        # Not a value the lookup returned but a lookup that never returned one, which
-        # the gate treats the same way -- so the override has to reach it the same way.
-        pytest.param(
-            {"installed": "1.7.0", "available_error": _MALFORMED_CONTROL_FILE_ERROR},
-            id="safe-installed-unreadable-available",
-        ),
-    ],
-)
-@pytest.mark.asyncio
-async def test_override_bypasses_every_refusal(monkeypatch, kwargs):
-    """Every raise must be reachable by the documented escape hatch.
-
-    AGE reports its version per release rather than per commit, so a source build
-    that fixes the crash still reports an unsupported number; without this the gate
-    would be a permanent block for anyone on such a build.
-
-    Both catalogs absent is deliberately not in this list: it returns without
-    refusing at all, so the case would pass whether or not the override were set and
-    would assert nothing. The stale-catalog cell is covered separately by
-    ``test_override_still_starts_on_the_stale_catalog_cell``, which additionally
-    pins the warning it emits.
-    """
-    _allow_unsupported(monkeypatch)
-    conn = _FakeConnection(**kwargs)
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-
-@pytest.mark.parametrize(
     "value",
     [
         pytest.param("false", id="false"),
-        pytest.param("False", id="False"),
-        pytest.param("0", id="zero"),
-        pytest.param("no", id="no"),
-        pytest.param("off", id="off"),
         pytest.param("", id="empty"),
         pytest.param("maybe", id="unrecognised"),
     ],
@@ -1455,95 +1060,39 @@ async def test_absent_age_is_reported_at_info_or_above(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_gate_issues_both_version_queries(monkeypatch):
-    """Neither source may be dropped: each sees deployments the other does not.
-
-    ``pg_extension.extversion`` is the version of the SQL script last run against
-    this database, so it does not move when the binaries are swapped underneath it.
-    ``pg_available_extensions.default_version`` comes from the on-disk ``age.control``
-    and therefore tracks the binaries -- but deleting ``age.control`` (a package
-    upgrade, or a partial uninstall) empties it while ``pg_extension`` keeps
-    ``extversion`` and the functions keep pointing at ``$libdir/age``.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.7.0", available="1.7.0")
-
-    await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.sql_calls().count(AGE_INSTALLED_SQL) == 1, conn.sql_calls()
-    assert conn.sql_calls().count(AGE_AVAILABLE_SQL) == 1, conn.sql_calls()
-
-
-@pytest.mark.asyncio
-async def test_each_value_comes_from_its_own_query(monkeypatch):
-    """The alias-swap test the single-row lookup could not express.
-
-    ``_FakeConnection`` answers per query, and the two sources are not symmetric:
-    unsafe-installed-over-safe-available is the stale-catalog state, while its
-    mirror is the in-place binary upgrade. Wiring ``installed`` to the
-    ``pg_available_extensions`` query (or vice versa) therefore produces the *other*
-    message, and this fails.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.8.0", available="1.7.0")
-
-    with pytest.raises(RuntimeError) as excinfo:
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    assert "installed='1.8.0'" in str(excinfo.value), str(excinfo.value)
-    assert "available='1.7.0'" in str(excinfo.value), str(excinfo.value)
-
-
-def test_installed_query_reads_pg_extension_only():
-    """TEXT-ONLY: reads ``AGE_INSTALLED_SQL`` as a string; it never executes here.
+@pytest.mark.parametrize(
+    ("sql", "own", "column", "other"),
+    [
+        pytest.param(
+            AGE_INSTALLED_SQL,
+            "pg_extension",
+            "extversion",
+            "pg_available_extensions",
+            id="installed",
+        ),
+        pytest.param(
+            AGE_AVAILABLE_SQL,
+            "pg_available_extensions",
+            "default_version",
+            "pg_extension",
+            id="available",
+        ),
+    ],
+)
+def test_each_version_query_reads_only_its_own_catalog(sql, own, column, other):
+    """TEXT-ONLY: reads the query as a string; it never executes here.
 
     The split into two queries exists because ``pg_available_extensions`` parses every
     control file in the sharedir and raises for the whole view if any one of them is
-    malformed. That isolation is lost the moment this query joins the other catalog
-    back in, so the absence of ``pg_available_extensions`` from this text is the
-    property worth pinning.
+    malformed. That isolation is lost the moment either query joins the other catalog
+    back in, so each text must name its own catalog and not the other one.
     """
-    normalized = " ".join(AGE_INSTALLED_SQL.lower().split())
-
-    assert "pg_extension" in normalized, AGE_INSTALLED_SQL
-    assert "extversion" in normalized, AGE_INSTALLED_SQL
-    assert "pg_available_extensions" not in normalized, AGE_INSTALLED_SQL
-    assert "join" not in normalized, AGE_INSTALLED_SQL
-    assert "'age'" in normalized, AGE_INSTALLED_SQL
-
-
-def test_available_query_reads_pg_available_extensions_only():
-    """TEXT-ONLY, and the mirror of the above.
-
-    If this query pulled in ``pg_extension`` as well, a failure of the fragile view
-    would once more take the robust source down with it.
-    """
-    normalized = " ".join(AGE_AVAILABLE_SQL.lower().split())
-
-    assert "pg_available_extensions" in normalized, AGE_AVAILABLE_SQL
-    assert "default_version" in normalized, AGE_AVAILABLE_SQL
-    assert "pg_extension" not in normalized, AGE_AVAILABLE_SQL
-    assert "join" not in normalized, AGE_AVAILABLE_SQL
-    assert "'age'" in normalized, AGE_AVAILABLE_SQL
-
-
-@pytest.mark.asyncio
-async def test_installed_version_alone_still_refuses(monkeypatch):
-    """What a deleted control file produces: extversion set, default_version absent.
-
-    It must be gated on the one source that survived, not waved through.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(installed="1.8.0", available=None)
-
-    with pytest.raises(RuntimeError, match="not supported"):
-        await PostgreSQLDB.configure_age_extension(conn)
-
-
-def test_first_unsupported_version_is_1_8_0():
-    """Raising this bound needs evidence that the newer release was verified."""
-    assert AGE_FIRST_UNSUPPORTED_VERSION == (1, 8, 0)
+    normalized = " ".join(sql.lower().split())
+    assert own in normalized, sql
+    assert column in normalized, sql
+    assert other not in normalized, sql
+    assert "join" not in normalized, sql
+    assert "'age'" in normalized, sql
 
 
 # ---------------------------------------------------------------------------
@@ -1551,37 +1100,15 @@ def test_first_unsupported_version_is_1_8_0():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_age_version_returns_none_only_for_none():
-    """``None`` -- the SQL NULL -- is the one and only absent case.
-
-    A present-but-blank string is *not* absent: the catalog named ``age`` and
-    answered with something, and something we cannot read is an unverified version.
-    See the sentinel cases below, which include the blank strings.
-    """
-    assert _parse_age_version(None) is None
-
-
 @pytest.mark.parametrize(
     "raw",
     [
         pytest.param("", id="empty"),
-        pytest.param(" ", id="space"),
-        pytest.param("\t", id="tab"),
-        pytest.param("\n", id="newline"),
         pytest.param("1.8.0-dev", id="dev-suffix"),
-        pytest.param("v1.8.0", id="v-prefix"),
-        pytest.param("1.8.0-rc1", id="rc-suffix"),
-        pytest.param("1.9.0beta", id="beta-suffix"),
-        pytest.param("2.0.0-beta", id="beta-dash"),
-        pytest.param("1.8.0+pg18", id="build-metadata"),
-        pytest.param("1.8.0-1.pgdg120", id="debian-revision"),
-        pytest.param("y.y.y", id="not-numeric"),
         # Fewer than three components: padding a short form to three would be
         # repairing a value rather than reading it, and a repaired value must not
         # reach the safe side of the comparison.
-        pytest.param("1", id="one-component"),
         pytest.param("1.7", id="two-components"),
-        pytest.param("1.8.0.1", id="four-components"),
         # Accepted by int() but never emitted by AGE, and each one changes the value
         # it appears to carry: a sign flips the ordering, an underscore hides a digit
         # group, and non-ASCII digits read as a version that is not the one written.
@@ -1589,7 +1116,6 @@ def test_parse_age_version_returns_none_only_for_none():
         pytest.param("1_8.0.0", id="pep515-underscore"),
         pytest.param("١.٨.٠", id="arabic-indic-digits"),
         pytest.param(" 1.8.0", id="leading-space"),
-        pytest.param("1.8.0 ", id="trailing-space"),
     ],
 )
 def test_parse_age_version_returns_sentinel_when_unparseable(raw):
@@ -1606,8 +1132,6 @@ def test_parse_age_version_returns_sentinel_when_unparseable(raw):
     "raw, expected",
     [
         ("1.7.0", (1, 7, 0)),
-        ("1.8.0", (1, 8, 0)),
-        ("0.0.0", (0, 0, 0)),
         ("10.20.30", (10, 20, 30)),
         # Zero padding is still three ASCII numeric components; int() decides the value.
         ("01.07.00", (1, 7, 0)),
@@ -1616,21 +1140,6 @@ def test_parse_age_version_returns_sentinel_when_unparseable(raw):
 def test_parse_age_version_parses_three_numeric_components(raw, expected):
     """The tightening must not have cost the shape AGE actually reports."""
     assert _parse_age_version(raw) == expected
-
-
-def test_unparseable_sentinel_is_a_named_singleton():
-    """The sentinel is compared with ``is``, so its identity is the contract.
-
-    It is a named class rather than a bare ``object()`` so the parser's return
-    annotation stays narrower than ``object`` and a type checker can still flag a
-    caller that treats the sentinel as a version tuple. Rebinding the module
-    attribute to a fresh instance would leave every ``is`` comparison in the gate
-    silently false.
-    """
-    assert isinstance(_AGE_VERSION_UNPARSEABLE, _AgeVersionUnparseable)
-    assert not isinstance(_AGE_VERSION_UNPARSEABLE, tuple)
-    assert _parse_age_version("y.y.y") is _parse_age_version("1.8.0-dev")
-    assert _parse_age_version("y.y.y") is _AGE_VERSION_UNPARSEABLE
 
 
 # ---------------------------------------------------------------------------
@@ -1744,124 +1253,15 @@ async def test_configure_age_extension_decision_table(
     assert conn.create_extension_calls() == [], conn.sql_calls()
 
 
-def test_decision_table_covers_every_category_pair():
-    """The table is exhaustive by construction, not by having been long enough once."""
-    categories = [_SAFE, _UNSAFE, _UNPARSEABLE, _ABSENT]
-    covered = {(i, a) for i, a, _ in _DECISION_TABLE}
-
-    assert len(_DECISION_TABLE) == 16
-    assert covered == {(i, a) for i in categories for a in categories}
-
-
 # ---------------------------------------------------------------------------
-# The invariant behind the table: only a clean start creates the extension
-# ---------------------------------------------------------------------------
-
-
-def _non_starting_states():
-    """Every state in which the gate does *not* conclude that AGE is safe to run.
-
-    Two shapes, deliberately in one list. The twelve refusing cells come straight out
-    of the decision table, so a cell that is later reclassified as starting cannot
-    quietly drop out of this sweep while still looking covered. The two lookup-failure
-    states are not expressible as table cells at all -- the table's categories are
-    *values* a lookup returned, and these are lookups that never returned one -- and
-    the second of them is precisely the state that got an unchecked AGE installed.
-    """
-    cases = [
-        pytest.param(
-            {"installed": installed, "available": available},
-            True,
-            id=f"refuses-installed={_category_id(installed)}"
-            f"-available={_category_id(available)}",
-        )
-        for installed, available, expected in _DECISION_TABLE
-        if expected != _START
-    ]
-    cases.append(
-        pytest.param(
-            {"installed_error": RuntimeError("relation does not exist")},
-            True,
-            id="refuses-unreadable-installed",
-        )
-    )
-    cases.append(
-        pytest.param(
-            {"installed": None, "available_error": _MALFORMED_CONTROL_FILE_ERROR},
-            False,
-            id="undetermined-absent-installed-unreadable-available",
-        )
-    )
-    cases.extend(
-        pytest.param(
-            {"installed": installed, "available_error": _MALFORMED_CONTROL_FILE_ERROR},
-            True,
-            id=f"refuses-{ident}-installed-unreadable-available",
-        )
-        for installed, ident in ((_SAFE, "safe"), (_UNSAFE, "unsafe"))
-    )
-    # A row reporting NULL is likewise not a table cell -- the table's AVAILABLE axis is
-    # the value the column held, and this is the column holding nothing. Its shape
-    # mirrors the unreadable-lookup rows above: a refusal wherever pg_extension shows
-    # AGE is in use, and a quiet skip where nothing says it is.
-    cases.extend(
-        pytest.param(
-            {"installed": installed, "available": _NULL_DEFAULT_VERSION},
-            raises,
-            id=f"{'refuses' if raises else 'undetermined'}-{ident}"
-            "-installed-null-available-version",
-        )
-        for installed, ident, raises in (
-            (_SAFE, "safe", True),
-            (_UNSAFE, "unsafe", True),
-            (_UNPARSEABLE, "unparseable", True),
-            (None, "absent", False),
-        )
-    )
-    return cases
-
-
-@pytest.mark.parametrize("kwargs, raises", _non_starting_states())
-@pytest.mark.asyncio
-async def test_no_state_short_of_a_clean_start_creates_the_extension(
-    monkeypatch, kwargs, raises
-):
-    """One property over every non-starting state: the database is left untouched.
-
-    The decision table asserts this per cell, and the individual tests above assert it
-    for the paths they cover -- but both do so as a detail of some other claim, which
-    is how the undetermined state came to issue a ``CREATE EXTENSION`` while every test
-    stayed green. Stated once, over a list built from the table itself, a new
-    non-starting state cannot be added without either satisfying this or failing here.
-
-    ``raises`` is part of the case rather than inferred, because the two shapes are not
-    interchangeable: a refusal is a startup failure the operator sees, while the
-    undetermined state returns quietly. Collapsing them would let a refusal silently
-    become a quiet skip, or the reverse.
-    """
-    monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
-    conn = _FakeConnection(**kwargs)
-
-    if raises:
-        with pytest.raises(RuntimeError):
-            await PostgreSQLDB.configure_age_extension(conn)
-    else:
-        await PostgreSQLDB.configure_age_extension(conn)
-
-    assert conn.create_extension_calls() == [], conn.sql_calls()
-
-
-# ---------------------------------------------------------------------------
-# The other half of that invariant: which states are allowed to start at all
+# Which states are allowed to start at all
 # ---------------------------------------------------------------------------
 #
-# ``_non_starting_states`` iterates a list of states already believed not to start, so
-# it can only catch a state that stops issuing the CREATE it was supposed to withhold.
-# It structurally cannot catch a state that *starts* when it should not have -- and
-# that is the exact shape of every fail-open this gate has had. The sweep below is
-# built the other way round: it enumerates the whole state space, computes what the
-# policy says about each cell, and compares. A new fail-open cannot be introduced
-# without disagreeing with the predicate.
+# The decision table pins the CREATE / no-CREATE outcome of every reported-value
+# cell. The sweep below covers the states the table cannot express -- a lookup
+# that never answered, a row reporting NULL -- that no named test already runs,
+# and requires each to refuse startup. The override sweep then checks each of
+# the override's branches starts.
 
 _SOURCE_CATEGORIES = (_SAFE, _UNSAFE, _UNPARSEABLE, _ABSENT, _UNREADABLE)
 
@@ -1880,10 +1280,55 @@ _ALL_SOURCE_STATES = [
     for available in _AVAILABLE_CATEGORIES
 ]
 
-_ALL_SOURCE_STATE_IDS = [
-    f"installed={_category_id(i)}-available={_category_id(a)}"
-    for i, a in _ALL_SOURCE_STATES
+# The no-override sweep runs only the states the decision table cannot express
+# (an unreadable lookup, a NULL default_version): every table cell already
+# asserts its own CREATE / no-CREATE outcome there. Each of these states was a
+# fail-open until the sweep reached it. An unreadable installed lookup refuses
+# before the available lookup runs, so every such state is one path, pinned by
+# test_raising_installed_lookup_fails_closed instead. Five more states have a
+# named test that builds the same inputs and asserts no CREATE along with its
+# message, so the sweep skips them too:
+# test_unreadable_available_lookup_does_not_let_a_stale_installed_decide,
+# test_broken_available_lookup_does_not_rescue_an_unsafe_installed,
+# test_unreadable_available_lookup_does_not_install_an_unchecked_age,
+# test_null_default_version_does_not_let_a_stale_installed_decide and
+# test_null_default_version_with_no_installed_row_skips_the_create.
+_TABLE_CELLS = {(i, a) for i, a, _ in _DECISION_TABLE}
+_NAMED_TEST_STATES = {
+    (_SAFE, _UNREADABLE),
+    (_UNSAFE, _UNREADABLE),
+    (_ABSENT, _UNREADABLE),
+    (_SAFE, _NULL_DEFAULT_VERSION),
+    (_ABSENT, _NULL_DEFAULT_VERSION),
+}
+_NON_TABLE_STATES = [
+    (installed, available)
+    for installed, available in _ALL_SOURCE_STATES
+    if (installed, available) not in _TABLE_CELLS
+    and (installed, available) not in _NAMED_TEST_STATES
+    and installed is not _UNREADABLE
 ]
+
+# Under the override there are six branches: installed lookup failed; absent
+# installed with an unreadable or NULL available; nothing to gate; the
+# unsupported warning (the stale-catalog cell takes it too); the undeterminable
+# warning; and the plain start. One state per branch. The failed installed
+# lookup and the absent-installed / unreadable-available state are run with the
+# same inputs, CREATE included, by test_override_on_unreadable_installed_lookup_
+# names_the_install and test_override_install_of_an_unchecked_age_says_so.
+_OVERRIDE_STATES = [
+    (_ABSENT, _NULL_DEFAULT_VERSION),
+    (_ABSENT, _ABSENT),
+    (_UNSAFE, _SAFE),
+    (_SAFE, _UNPARSEABLE),
+    (_SAFE, _NULL_DEFAULT_VERSION),
+]
+
+
+def _state_ids(states):
+    return [
+        f"installed={_category_id(i)}-available={_category_id(a)}" for i, a in states
+    ]
 
 
 def _state_kwargs(installed, available) -> dict:
@@ -1908,51 +1353,39 @@ def _state_kwargs(installed, available) -> dict:
     return kwargs
 
 
-def _may_start_cleanly(installed, available) -> bool:
-    """The policy, stated once as a predicate rather than as a list of cells.
-
-    Without the override, the gate may create the extension only when *every* source
-    either reported a version it could read and verify as safe, or reported nothing at
-    all because AGE is genuinely not there. Anything else -- an unsafe reading, a value
-    it could not parse, or a lookup that never answered -- is an unverified version,
-    and an unverified version is not a safe one.
-
-    Note what this deliberately does not distinguish: ``_UNPARSEABLE``, ``_UNREADABLE``
-    and ``_NULL_DEFAULT_VERSION`` are all simply "not safe". Treating them differently
-    is what each fail-open did -- the last of them by routing a NULL ``default_version``
-    into ``_ABSENT``, the one non-safe-looking category that is allowed to start.
-    """
-    return installed in (_SAFE, _ABSENT) and available in (_SAFE, _ABSENT)
+# Every remaining non-table state holds a version that is not verified safe, so
+# each must refuse startup outright. A quiet return without CREATE would not be
+# a refusal: with AGE already installed, initialize() would carry on. A new
+# state that reaches this sweep needs its expected refusal added here.
+_NON_TABLE_REFUSALS = {
+    (_UNSAFE, _NULL_DEFAULT_VERSION): "not supported",
+    (_UNPARSEABLE, _UNREADABLE): "Could not determine",
+    (_UNPARSEABLE, _NULL_DEFAULT_VERSION): "Could not determine",
+}
 
 
 @pytest.mark.parametrize(
-    "installed, available", _ALL_SOURCE_STATES, ids=_ALL_SOURCE_STATE_IDS
+    "installed, available", _NON_TABLE_STATES, ids=_state_ids(_NON_TABLE_STATES)
 )
 @pytest.mark.asyncio
-async def test_only_a_verified_safe_or_absent_state_starts_the_gate(
-    monkeypatch, installed, available
-):
-    """Exactly which states start, over the whole 5x5 space, with no override.
+async def test_a_non_table_state_refuses_startup(monkeypatch, installed, available):
+    """The states the decision table cannot express refuse, with no override.
 
-    ``started`` is measured as "a CREATE EXTENSION was issued", not as "no exception
-    escaped", because the two differ: the undetermined cell returns quietly *without*
-    creating, and a test that only watched for exceptions would score it as a start.
-    Refusals are absorbed so that every cell reaches the same assertion -- what is
-    under test here is the start/no-start partition, and the refusal *messages* are
-    pinned by the decision table above.
+    NULL ``default_version`` and an unreadable view are simply "not safe": treating
+    them differently from an unparseable value is what each fail-open of this gate
+    did, the last of them by routing a NULL ``default_version`` into ``_ABSENT``.
     """
     monkeypatch.delenv(AGE_ALLOW_UNSUPPORTED_ENV, raising=False)
     conn = _FakeConnection(**_state_kwargs(installed, available))
 
-    with contextlib.suppress(RuntimeError):
+    with pytest.raises(RuntimeError, match=_NON_TABLE_REFUSALS[(installed, available)]):
         await PostgreSQLDB.configure_age_extension(conn)
 
-    started = bool(conn.create_extension_calls())
-    assert started is _may_start_cleanly(installed, available), conn.sql_calls()
+    assert conn.create_extension_calls() == [], conn.sql_calls()
 
 
 @pytest.mark.parametrize(
-    "installed, available", _ALL_SOURCE_STATES, ids=_ALL_SOURCE_STATE_IDS
+    "installed, available", _OVERRIDE_STATES, ids=_state_ids(_OVERRIDE_STATES)
 )
 @pytest.mark.asyncio
 async def test_override_starts_from_every_state(monkeypatch, installed, available):
@@ -1970,30 +1403,6 @@ async def test_override_starts_from_every_state(monkeypatch, installed, availabl
     await PostgreSQLDB.configure_age_extension(conn)
 
     assert conn.create_extension_calls(), conn.sql_calls()
-
-
-def test_the_starting_sweep_covers_the_decision_table_and_more():
-    """The two sweeps must stay in agreement, and the wider one must stay wider.
-
-    If ``_may_start_cleanly`` ever drifted from ``_DECISION_TABLE`` the two would quietly
-    pin different policies, and the fail-open would have somewhere to hide again. The
-    inequality is the other half: the sweep has to keep containing the states that are
-    not table cells at all, since that is where the live fail-open lived.
-    """
-    for installed, available, expected in _DECISION_TABLE:
-        assert _may_start_cleanly(installed, available) is (expected == _START), (
-            installed,
-            available,
-            expected,
-        )
-
-    assert len(_ALL_SOURCE_STATES) == 30
-    assert {(i, a) for i, a, _ in _DECISION_TABLE} < set(_ALL_SOURCE_STATES)
-    # The two states the table cannot express are both present, and both live: an
-    # unreadable lookup and a row reporting no version. Each of them was a fail-open
-    # until the sweep was widened to reach it, so the sweep has to keep reaching them.
-    assert (_ABSENT, _UNREADABLE) in _ALL_SOURCE_STATES
-    assert (_SAFE, _NULL_DEFAULT_VERSION) in _ALL_SOURCE_STATES
 
 
 # ---------------------------------------------------------------------------

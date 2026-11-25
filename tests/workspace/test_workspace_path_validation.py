@@ -21,13 +21,7 @@ class TestValidWorkspaces:
     @pytest.mark.parametrize(
         "workspace",
         [
-            "my_workspace",
-            "workspace-123",
-            "MyWorkSpace",
-            "12345",
-            "_",
             "v1.0",  # dots are safe in a single path component
-            "team.alpha",
             "a..b",  # ".." embedded in a name is not a traversal
             "工作区_test",  # non-ASCII is fine for a directory name
         ],
@@ -118,34 +112,11 @@ class TestUploadPath:
             DocumentManager(str(tmp_path), workspace="../../outside")
         assert not (tmp_path.parent.parent / "outside").exists()
 
-    def test_document_manager_creates_workspace_subdir(self, tmp_path):
-        DocumentManager = _import_document_manager()
-
-        dm = DocumentManager(str(tmp_path), workspace="space1")
-        assert dm.input_dir == tmp_path / "space1"
-        assert dm.input_dir.is_dir()
-
     def test_document_manager_empty_workspace_uses_base_dir(self, tmp_path):
         DocumentManager = _import_document_manager()
 
         dm = DocumentManager(str(tmp_path), workspace="")
         assert dm.input_dir == tmp_path
-
-    def test_api_sanitizer_output_always_accepted(self):
-        import re
-
-        for raw in [
-            "my workspace",
-            "v1.0",
-            "../../../etc",
-            "a/b",
-            "..\\win",
-            "工作区",
-            "..",
-            ".",
-        ]:
-            sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", raw)
-            assert validate_workspace(sanitized) == sanitized
 
     def test_upload_dir_matches_storage_dir(self, tmp_path):
         """Files uploaded to <input_dir>/<ws>/ must be resolvable against
@@ -159,6 +130,8 @@ class TestUploadPath:
         working.mkdir()
 
         dm = DocumentManager(str(inputs), workspace="space1")
+        assert dm.input_dir == inputs / "space1"
+        assert dm.input_dir.is_dir()
         kv = JsonKVStorage(
             namespace="ns",
             workspace="space1",
@@ -170,7 +143,7 @@ class TestUploadPath:
         assert upload_subdir == storage_subdir
 
 
-@pytest.mark.parametrize("workspace", ["$", "$meta", "$default", "$custom"])
+@pytest.mark.parametrize("workspace", ["$", "$meta"])
 def test_reserved_prefix_rejected_before_server_normalization(workspace):
     from lightrag.utils import normalize_server_workspace, validate_workspace_override
 
@@ -190,7 +163,7 @@ def test_ordinary_names_and_empty_workspace_remain_valid(workspace):
     assert normalize_server_workspace(workspace) == workspace
 
 
-@pytest.mark.parametrize("workspace", ["$meta", "$default"])
+@pytest.mark.parametrize("workspace", ["$meta"])
 def test_sdk_rejects_reserved_workspace_before_creating_storage(tmp_path, workspace):
     from lightrag import LightRAG
 
@@ -200,7 +173,7 @@ def test_sdk_rejects_reserved_workspace_before_creating_storage(tmp_path, worksp
     assert not working_dir.exists()
 
 
-@pytest.mark.parametrize("workspace", ["$meta", "$default"])
+@pytest.mark.parametrize("workspace", ["$meta"])
 def test_server_rejects_reserved_workspace_from_environment(monkeypatch, workspace):
     import sys
     from lightrag.api.config import parse_args

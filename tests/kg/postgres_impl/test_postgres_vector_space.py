@@ -30,6 +30,7 @@ pytest.importorskip(
 
 from lightrag.exceptions import (  # noqa: E402
     DataMigrationError,
+    StorageCapabilityError,
     VectorSpaceMismatchError,
 )
 from lightrag.kg.shared_storage import initialize_share_data  # noqa: E402
@@ -219,6 +220,40 @@ class TestPostgresVectorEmptinessIsFailLoud:
         db.query = AsyncMock(return_value={"has_data": has_data})
 
         assert await self._storage(db).is_empty() is expected
+
+    @pytest.mark.parametrize(
+        "pending,row,expected",
+        [
+            (False, {"row_count": 7}, 7),
+            (False, None, RuntimeError),
+            (True, {"row_count": 7}, StorageCapabilityError),
+        ],
+        ids=["counts-the-workspace", "no-row-raises", "buffered-write-raises"],
+    )
+    async def test_exact_count(self, pending, row, expected):
+        db = AsyncMock()
+        db.query = AsyncMock(return_value=row)
+        storage = self._storage(db)
+        if pending:
+            storage._pending_vector_deletes = {"ent-1"}
+
+        if isinstance(expected, int):
+            assert await storage.get_exact_count() == expected
+            sql, params = db.query.await_args.args
+            assert "WHERE workspace=$1" in sql and params == ["test_ws"]
+        else:
+            with pytest.raises(expected):
+                await storage.get_exact_count()
+            assert db.query.await_count == (0 if pending else 1)
+
+    async def test_strict_read_raises_where_get_by_ids_reports_nothing(self):
+        db = AsyncMock()
+        db.query = AsyncMock(side_effect=ConnectionError("connection reset"))
+        storage = self._storage(db)
+
+        assert await storage.get_by_ids(["ent-1"]) == []
+        with pytest.raises(ConnectionError):
+            await storage.get_by_ids_strict(["ent-1"])
 
     async def test_a_buffered_upsert_makes_it_non_empty_without_a_query(self):
         db = AsyncMock()

@@ -1,4 +1,3 @@
-import '@/lib/extensions'; // Import all global extensions
 import '@/bootstrap/webuiEntry'; // Entry-specific navigation policy — before anything can 401
 import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
@@ -14,6 +13,7 @@ import App from './App'
 import LoginPage from '@/features/LoginPage'
 import ThemeProvider from '@/components/ThemeProvider'
 import MigrationErrorScreen from '@/components/MigrationErrorScreen'
+import WebUIAuthBoundary from '@/components/WebUIAuthBoundary'
 
 const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
@@ -105,7 +105,9 @@ const AppRouter = () => {
   return (
     <ThemeProvider>
       <Router>
-        <AppContent />
+        <WebUIAuthBoundary>
+          <AppContent />
+        </WebUIAuthBoundary>
         <Toaster
           position="bottom-center"
           theme="system"

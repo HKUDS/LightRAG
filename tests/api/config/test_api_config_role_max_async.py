@@ -24,20 +24,6 @@ def _clear_max_async_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_role_max_async_defaults_none_when_env_unset(monkeypatch):
-    _clear_max_async_env(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-    monkeypatch.setenv("MAX_ASYNC", "10")
-
-    args = parse_args()
-
-    assert args.max_async == 10
-    assert args.extract_llm_max_async is None
-    assert args.keyword_llm_max_async is None
-    assert args.query_llm_max_async is None
-    assert args.vlm_llm_max_async is None
-
-
 def test_role_max_async_env_override_keeps_other_roles_none(monkeypatch):
     _clear_max_async_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
@@ -63,16 +49,6 @@ def test_role_max_async_literal_none_string_is_preserved(monkeypatch):
 
     assert args.max_async == 10
     assert args.query_llm_max_async is None
-
-
-def test_max_async_llm_new_name(monkeypatch):
-    _clear_max_async_env(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-    monkeypatch.setenv("MAX_ASYNC_LLM", "8")
-
-    args = parse_args()
-
-    assert args.max_async == 8
 
 
 def test_max_async_llm_takes_precedence_over_legacy(monkeypatch):

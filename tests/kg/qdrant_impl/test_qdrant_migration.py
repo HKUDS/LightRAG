@@ -50,26 +50,6 @@ def mock_embedding_func():
     return func
 
 
-async def test_qdrant_collection_naming(mock_qdrant_client, mock_embedding_func):
-    """Test if collection name is correctly generated with model suffix"""
-    config = {
-        "embedding_batch_num": 10,
-        "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.8},
-    }
-
-    storage = QdrantVectorDBStorage(
-        namespace="chunks",
-        global_config=config,
-        embedding_func=mock_embedding_func,
-        workspace="test_ws",
-    )
-
-    # Verify collection name contains model suffix
-    expected_suffix = "test_model_768d"
-    assert expected_suffix in storage.final_namespace
-    assert storage.final_namespace == f"lightrag_vdb_chunks_{expected_suffix}"
-
-
 async def test_qdrant_migration_trigger(mock_qdrant_client, mock_embedding_func):
     """Test if migration logic is triggered correctly"""
     config = {

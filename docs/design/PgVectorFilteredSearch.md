@@ -1,8 +1,8 @@
 # PostgreSQL filtered vector search (iterative index scan)
 
 Status: mitigation, not a guarantee. This document states what
-`PostgreSQLDB.iterative_scan_statement` and `_fetch_with_iterative_scan` fix,
-what they leave, and why.
+`PostgreSQLDB.iterative_scan_statement`, `ef_search_statement` and
+`_fetch_with_iterative_scan` fix, what they leave, and why.
 
 ## The defect
 
@@ -80,6 +80,57 @@ Threshold tight (almost no row qualifies): 0 rows in every configuration, but
 latency rises from ~1 ms to ~30 ms, because the scan runs to its budget before
 giving up.
 
+## HNSW candidate list (ef_search)
+
+`hnsw.ef_search` (default 40) is also the size of each scan batch, and so a
+bound on the query's `LIMIT` that has nothing to do with workspaces: without
+iterative scan an HNSW query returns at most `ef_search` rows. A `top_k` of
+60 or 100 then silently returns 40, however many rows qualify. With
+`strict_order` the rows are complete, but the first batch was searched with a
+narrower candidate list, so recall is lower.
+
+`PostgreSQLDB.ef_search_statement(top_k)` therefore raises the setting to the
+query's `top_k` for HNSW and HNSW_HALFVEC, in the same transaction and the
+same round trip as the iterative-scan `SET LOCAL`:
+
+```sql
+SELECT set_config('hnsw.ef_search',
+  GREATEST(COALESCE(NULLIF(current_setting('hnsw.ef_search', true), '')::int, 40), <top_k>)::text,
+  true)
+```
+
+* **It only raises.** A plain `SET LOCAL hnsw.ef_search = <top_k>` would
+  lower a value the operator configured (`ALTER ROLE` / `ALTER DATABASE` /
+  `POSTGRES_SERVER_SETTINGS`), so the value in force is kept when larger.
+  `NULLIF(..., '')` covers a connection where the library is not loaded yet:
+  after one transaction-local `set_config` the placeholder reads `''`, not
+  `NULL`, until the library loads.
+* **It is capped at 1000**, the GUC's maximum; a larger value raises and
+  would fail the query. A `top_k` above 1000 (possible through the core API;
+  the REST API caps it at 1000) relies on the iterative scan for the rest.
+* **pgvector < 0.8** gets it too: there it is the only bound that can be
+  widened.
+* A failure of the combined statement falls back to a plain query, as above,
+  losing both settings for that query (logged once).
+
+Measured (PostgreSQL 18.4, pgvector 0.8.6, 50,000 rows of 32-d random vectors,
+HNSW `m=16`, single workspace, `LIMIT 100`, 10 queries; recall against the
+exact top 100):
+
+| configuration | rows | recall |
+|---|---|---|
+| iterative scan off, `ef_search=40` (pgvector < 0.8, before) | 40 | 0.40 |
+| iterative scan off, `ef_search=100` | 100 | 0.89 |
+| `strict_order`, `ef_search=40` (before) | 100 | 0.78 |
+| `strict_order`, `ef_search=100` | 100 | 0.89 |
+
+Also verified on a real connection: an operator value of 200 stays 200 for
+`top_k=100` and becomes 500 for `top_k=500`, and is back to 200 after the
+transaction; `top_k=5000` sets 1000 without error. The cost is the candidate
+list itself: a larger `top_k` searches more of the graph, as it should.
+Random vectors are a hard case; real embeddings usually show a smaller recall
+gap.
+
 ## What remains
 
 1. **Very small workspaces.** The scan is bounded by `hnsw.max_scan_tuples`
@@ -92,7 +143,8 @@ giving up.
    small table; larger rows or dimensions cost more.
 3. **VCHORDRQ** is not covered; its filtering behaviour was not examined.
 4. **IVFFlat is covered, with a weaker guarantee** (see below).
-5. **pgvector < 0.8** keeps the old behaviour (a warning is logged).
+5. **pgvector < 0.8** keeps the old filtering behaviour (a warning is logged);
+   only its `ef_search` is widened.
 
 ## IVFFlat
 

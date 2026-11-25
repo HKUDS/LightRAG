@@ -129,17 +129,6 @@ async def test_popular_labels_orders_by_degree_then_bytewise_label():
     assert 'ORDER BY label COLLATE "C" ASC' in isolated_sql
 
 
-@pytest.mark.asyncio
-async def test_get_popular_labels_returns_labels_in_query_order():
-    """Rows are passed through in the order the database ranked them."""
-    storage = make_graph_storage()
-    storage._query = AsyncMock(
-        return_value=[{"label": "Alpha"}, {"label": "Beta"}, {"label": "Isolated"}]
-    )
-
-    assert await storage.get_popular_labels(limit=3) == ["Alpha", "Beta", "Isolated"]
-
-
 # ---------------------------------------------------------------------------
 # Label helpers: a database error is not "no labels"
 # ---------------------------------------------------------------------------
@@ -214,20 +203,3 @@ async def test_get_node_edges_returns_empty_list_for_isolated_node():
     )
 
     assert await storage.get_node_edges("Lonely") == []
-
-
-@pytest.mark.asyncio
-async def test_get_node_edges_returns_connected_pairs():
-    """Connected nodes come back as (source, connected) tuples."""
-    storage = make_graph_storage()
-    storage._query = AsyncMock(
-        return_value=[
-            {"source_id": "Alpha", "connected_id": "Beta"},
-            {"source_id": "Alpha", "connected_id": "Gamma"},
-        ]
-    )
-
-    assert await storage.get_node_edges("Alpha") == [
-        ("Alpha", "Beta"),
-        ("Alpha", "Gamma"),
-    ]

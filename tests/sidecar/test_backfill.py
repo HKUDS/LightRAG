@@ -6,8 +6,9 @@ no real chunker, tokenizer, or embedding is needed.
 
 Backfill is span-first: each F/R/V chunk carries a private ``_source_span`` (char
 offsets into the reconstructed merged text) and is mapped to the block(s) that span
-overlaps. A chunk without a usable span FAILs the document, except the inherently
-unlocatable replacement-char case, which degrades to no-sidecar.
+overlaps. A chunk without a usable span FAILs the document, except a span-less
+replacement-char chunk, which degrades to no-sidecar. A span located with boundary
+U+FFFD stripped is accepted against a body that still carries them at its edges.
 """
 
 from __future__ import annotations
@@ -189,9 +190,14 @@ def test_source_span_disambiguates_cross_block_from_later_duplicate(
 
 
 @pytest.mark.offline
-def test_missing_span_fails_document(tmp_path: Path) -> None:
-    blocks_path = _write_blocks(tmp_path, [("b1", "Present content.")])
-    chunks = [_chunk("Present content.", 4)]
+@pytest.mark.parametrize(
+    "content",
+    # A U+FFFD in the body (here the source's own) exempts nothing.
+    ["Present content.", "Present \ufffd content."],
+)
+def test_missing_span_fails_document(tmp_path: Path, content: str) -> None:
+    blocks_path = _write_blocks(tmp_path, [("b1", content)])
+    chunks = [_chunk(content, 4)]
 
     with pytest.raises(ChunkBlockMatchError) as exc:
         backfill_chunk_sidecars(chunks, blocks_path)
@@ -211,11 +217,25 @@ def test_out_of_range_span_fails_document(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
-def test_mismatched_span_text_fails_document(tmp_path: Path) -> None:
-    # The span points at "Alpha." but the chunk content is "Beta." — neither a
-    # byte-exact nor a whitespace-stripped match, so the span is treated as absent.
-    blocks_path = _write_blocks(tmp_path, [("b1", "Alpha."), ("b2", "Beta.")])
-    chunks = [_span_chunk("Beta.", 6, 0, 6)]
+@pytest.mark.parametrize(
+    ("blocks", "body", "start", "end"),
+    [
+        # The span points at "Alpha." but the chunk content is "Beta.".
+        ([("b1", "Alpha."), ("b2", "Beta.")], "Beta.", 0, 6),
+        # Edge U+FFFD the span does not cover: not stripped to make it match.
+        ([("b1", "garbled \ufffd text.")], "\ufffd garbled \ufffd text.", 0, 15),
+        # Interior U+FFFD the source does not hold.
+        ([("b1", "abcd efgh")], "abcd \ufffdefgh", 0, 9),
+    ],
+    ids=["other-text", "edge-replacement", "interior-replacement"],
+)
+def test_mismatched_span_text_fails_document(
+    tmp_path: Path, blocks: list[tuple[str, str]], body: str, start: int, end: int
+) -> None:
+    # Neither a byte-exact nor a whitespace-stripped match, so the span is
+    # treated as absent.
+    blocks_path = _write_blocks(tmp_path, blocks)
+    chunks = [_span_chunk(body, 6, start, end)]
 
     with pytest.raises(ChunkBlockMatchError) as exc:
         backfill_chunk_sidecars(chunks, blocks_path)
@@ -301,25 +321,3 @@ def test_empty_chunk_skipped_then_following_matches(tmp_path: Path) -> None:
 
     assert "sidecar" not in chunks[0]
     assert _refs(chunks[1]) == ["b1"]
-
-
-@pytest.mark.offline
-def test_replacement_char_chunk_skipped_not_failed(tmp_path: Path) -> None:
-    # A multi-byte UTF-8 char split at a token-window boundary decodes to U+FFFD in
-    # both the chunk content and its span probe, so the chunk is unlocatable by any
-    # means. It must be SKIPPED (no sidecar), not raise and FAIL the whole document;
-    # the following clean chunk (with a valid span) still maps correctly.
-    b1, b2 = "Status update 🎉 done.", "Clean tail block."
-    blocks_path = _write_blocks(tmp_path, [("b1", b1), ("b2", b2)])
-    merged = _BLOCK_SEPARATOR.join([b1, b2])
-    b2_start = merged.index(b2)
-    chunks = [
-        # First chunk lost a byte at the emoji boundary -> U+FFFD, no usable span.
-        _chunk("Status update � done.", 0),
-        _span_chunk(b2, 1, b2_start, b2_start + len(b2)),
-    ]
-
-    backfill_chunk_sidecars(chunks, blocks_path)
-
-    assert "sidecar" not in chunks[0]  # provenance degraded for the corrupt chunk
-    assert _refs(chunks[1]) == ["b2"]  # clean chunk still resolves

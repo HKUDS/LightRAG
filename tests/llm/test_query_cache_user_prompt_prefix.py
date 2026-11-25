@@ -19,7 +19,7 @@ configured must share an entry with a request that never had one.
 import pytest
 
 from lightrag.base import QueryContextResult, QueryParam
-from lightrag.operate import kg_query, naive_query
+from lightrag.operate import _ANSWER_CACHE_POLICY_VERSION, kg_query, naive_query
 from lightrag.utils import (
     Tokenizer,
     compute_args_hash,
@@ -107,6 +107,7 @@ def _v2_answer_cache_key(
     *,
     keywords: tuple[str, str] | None = None,
     policy_version: str = "query-answer-cache-v2",
+    kg_total_budget: bool = True,
 ) -> str:
     """Frozen snapshot of the v2 answer-cache key.
 
@@ -115,13 +116,14 @@ def _v2_answer_cache_key(
     written before the default answer prompts learned document-date semantics.
     Do NOT refresh this helper when later key fields are added.
 
-    The KG snapshot includes the chunk-selection fields added in PR #3877;
-    the naive snapshot does not. Defaults stay literal so later changes cannot
-    silently update the historical key.
+    The KG snapshot includes the chunk-selection fields added in PR #3877
+    and the total rendered budget marker added in PR #4221. Naive uses
+    neither. Literal defaults keep future configuration changes from
+    silently updating the historical key.
 
-    ``policy_version`` lets a test compose the same historical argument list
-    under the current version, to pin that a later key component is appended
-    only when it applies (see ``test_query_cache_keyword_fallback.py``).
+    Use "policy_version" to isolate key changes within the same version
+    (prefix composition, KG budget, or keyword fallback). Use
+    "kg_total_budget=False" to reproduce a KG key without that marker.
     """
     args = [
         policy_version,
@@ -151,6 +153,8 @@ def _v2_answer_cache_key(
                 cfg.get("kg_chunk_pick_method", "VECTOR"),
             ]
         )
+        if kg_total_budget:
+            args.append("\n<kg_total_budget>\n")
     args.extend(
         [
             "\n<llm_identity>\n",
@@ -457,8 +461,59 @@ async def test_disabled_prefix_keeps_the_prefix_out_of_the_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Policy v3 retires answers written under the pre-document-date prompts.
+# Cache-key compatibility across prefix, KG budget and policy changes.
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner,param,keywords",
+    [
+        (_run_naive, _naive_param, None),
+        (_run_kg, _kg_param, ("", "Tesla")),
+    ],
+)
+async def test_entry_without_prefix_hits_at_current_cache_version(
+    runner, param, keywords, stub_query_context
+):
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    p = param(user_prompt=USER_PROMPT)
+    key = _v2_answer_cache_key(
+        p, cfg, keywords=keywords, policy_version=_ANSWER_CACHE_POLICY_VERSION
+    )
+    cache._store[key] = {"return": "PRE-PREFIX-ANSWER", "create_time": 1}
+
+    result = await runner(p, cfg, cache)
+    assert result.content == "PRE-PREFIX-ANSWER"
+    assert model.calls == 0
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_kg_cache_entry_without_total_budget_misses_at_current_version(
+    stub_query_context,
+):
+    """A KG entry without the rendered-context budget marker is stale."""
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    param = _kg_param(user_prompt=USER_PROMPT)
+
+    old_key = _v2_answer_cache_key(
+        param,
+        cfg,
+        keywords=("", "Tesla"),
+        policy_version=_ANSWER_CACHE_POLICY_VERSION,
+        kg_total_budget=False,
+    )
+    cache._store[old_key] = {"return": "PRE-BUDGET-ANSWER", "create_time": 1}
+
+    result = await _run_kg(param, cfg, cache)
+    assert result.content == "answer-1"
+    assert model.calls == 1
 
 
 @pytest.mark.offline

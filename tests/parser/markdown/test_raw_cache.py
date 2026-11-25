@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -94,21 +95,6 @@ def test_first_parse_downloads_and_writes_bundle(tmp_path, monkeypatch):
     assert len(files) == 2 and "_manifest.json" in files
 
 
-def test_reparse_unchanged_source_is_cache_hit(tmp_path, monkeypatch):
-    _patch_download(monkeypatch)
-    p = NativeMarkdownParser()
-    src, parsed = _make_doc(tmp_path)
-    _extract(p, src, parsed)  # populate cache
-    _wipe_parsed(parsed)  # base parser would rmtree the .parsed dir
-
-    _forbid_download(monkeypatch)  # any download now fails the test
-    _, warnings, meta = _extract(p, src, parsed)
-    assert warnings.get("images_cache_hit") == 1
-    assert len(meta["md_assets"]) == 1
-    (asset,) = meta["md_assets"].values()
-    assert asset["data"] == _PNG_BYTES
-
-
 def test_pure_cache_hit_does_not_touch_bundle(tmp_path, monkeypatch):
     # A pure hit must write nothing: the manifest + image mtimes stay frozen, so
     # on-disk timestamps alone reveal whether the cache was hit.
@@ -119,10 +105,14 @@ def test_pure_cache_hit_does_not_touch_bundle(tmp_path, monkeypatch):
     raw = _raw_dir(tmp_path)
     before = {c.name: c.stat().st_mtime_ns for c in raw.iterdir()}
 
-    _wipe_parsed(parsed)
+    _wipe_parsed(parsed)  # base parser would rmtree the .parsed dir
     _forbid_download(monkeypatch)  # pure hit: no download allowed
-    _, warnings, _ = _extract(p, src, parsed)
+    _, warnings, meta = _extract(p, src, parsed)
     assert warnings.get("images_cache_hit") == 1
+    # The asset is served from the cache, bytes intact.
+    assert len(meta["md_assets"]) == 1
+    (asset,) = meta["md_assets"].values()
+    assert asset["data"] == _PNG_BYTES
 
     after = {c.name: c.stat().st_mtime_ns for c in raw.iterdir()}
     assert after == before  # nothing rewritten
@@ -241,25 +231,24 @@ def test_corrupt_manifest_can_be_rebuilt(tmp_path, manifest):
 
 def test_svg_cached_as_png_and_reused_without_rasterizing(tmp_path, monkeypatch):
     # _download returns the post-rasterization PNG, so a cache hit reuses PNG
-    # bytes and never calls cairosvg.
-    _patch_download(monkeypatch, payload=(_PNG_BYTES, "png"))
+    # bytes and bypasses the rasterizer.
+    _patch_download(monkeypatch)
     p = NativeMarkdownParser()
-    src, parsed = _make_doc(tmp_path, text=f"# H\n\n![s]({_URL})\n")
+    src, parsed = _make_doc(tmp_path, text="# H\n\n![s](http://host/y.svg)\n")
     _, _, meta = _extract(p, src, parsed)
     (asset,) = meta["md_assets"].values()
-    assert asset["fmt"] == "png" and asset["data"].startswith(b"\x89PNG")
+    assert (asset["data"], asset["fmt"]) == (_PNG_BYTES, "png")
 
     _wipe_parsed(parsed)
     _forbid_download(monkeypatch)
 
-    import cairosvg
-
-    def _boom(*a, **k):  # pragma: no cover - must not run on a cache hit
-        raise AssertionError("cairosvg must not run on a cache hit")
-
-    monkeypatch.setattr(cairosvg, "svg2png", _boom)
+    render = Mock(side_effect=AssertionError("SVG rasterizer ran on a cache hit"))
+    monkeypatch.setattr(md_parser, "_rasterize_svg", render)
     _, warnings, meta = _extract(p, src, parsed)
     assert warnings.get("images_cache_hit") == 1
+    (asset,) = meta["md_assets"].values()
+    assert (asset["data"], asset["fmt"]) == (_PNG_BYTES, "png")
+    render.assert_not_called()
 
 
 def test_a_failed_required_parse_persists_downloads_for_the_retry(

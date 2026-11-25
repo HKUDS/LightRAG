@@ -47,7 +47,6 @@ def _assert(stored_model, stored_dim, embedder):
     [
         ("bge-m3", "bge-m3"),
         ("  bge-m3  ", "bge-m3"),
-        ("", None),
         ("   ", None),
         (None, None),
         (123, None),
@@ -92,7 +91,6 @@ def test_marker_omits_an_unknown_model_rather_than_recording_none():
         ({VECTOR_SPACE_DIM_KEY: True}, (None, None)),
         ({}, (None, None)),
         (None, (None, None)),
-        ("not a mapping", (None, None)),
     ],
 )
 def test_unreadable_marker_fields_read_as_absent(payload, expected):

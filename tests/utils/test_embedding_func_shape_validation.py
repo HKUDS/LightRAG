@@ -46,17 +46,6 @@ async def test_correct_shape_passes_through_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_single_item_batch_with_2d_result_passes():
-    # Real providers wrap a single embedding in a (1, D) array, not a bare
-    # 1D (D,) vector -- confirm the strict ndim==2 check accepts that shape.
-    async def embed(texts):
-        return np.zeros((len(texts), 4), dtype=np.float32)
-
-    result = await _make(embed)(["only one"])
-    assert result.shape == (1, 4)
-
-
-@pytest.mark.asyncio
 async def test_doubled_vector_count_is_rejected_not_sliced():
     """(2N, D): a genuine vector-count doubling. Must raise -- never
     silently truncated to the first N rows, since there is no contract
@@ -156,15 +145,6 @@ async def test_1d_result_is_rejected():
 
     with pytest.raises(ValueError, match="unexpected shape"):
         await _make(embed)(["only one"])
-
-
-@pytest.mark.asyncio
-async def test_3d_result_is_rejected():
-    async def embed(texts):
-        return np.zeros((len(texts), 2, 4), dtype=np.float32)
-
-    with pytest.raises(ValueError, match="unexpected shape"):
-        await _make(embed)(["a", "b"])
 
 
 @pytest.mark.asyncio

@@ -181,6 +181,9 @@ async def test_decode_cursor_normalizes_timezone_aware_iso():
         '["not-a-date", "doc-1"]',
         '["2026-01-01T00:00:00", "a", "extra"]',
         "{}",
+        # A two-entry object unpacks to its two keys; an ISO-date first key
+        # would otherwise pass fromisoformat and mis-position the sweep.
+        '{"2026-01-01T00:00:00": "x", "doc-1": "y"}',
     ],
 )
 async def test_malformed_cursor_raises_control_plane_error(opaque):

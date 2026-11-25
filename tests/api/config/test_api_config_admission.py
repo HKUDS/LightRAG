@@ -42,13 +42,6 @@ def test_env_value_is_honoured(monkeypatch):
     validate_admission_configuration(args)
 
 
-def test_explicit_zero_is_accepted(monkeypatch):
-    """Unlike the scan batch size, 0 is a meaningful setting here: admission off."""
-    args = _parse(monkeypatch, "0")
-    assert args.max_pending_documents == 0
-    validate_admission_configuration(args)
-
-
 def test_negative_capacity_fails_fast(monkeypatch):
     args = _parse(monkeypatch, "-5")
     with pytest.raises(ValueError, match="MAX_PENDING_DOCUMENTS"):
@@ -181,7 +174,9 @@ def test_negative_texts_limit_fails_fast(monkeypatch):
 
 @pytest.mark.parametrize(
     "value,expected",
-    [(None, False), ("true", True), ("false", False), ("1", True), ("0", False)],
+    # The spellings themselves are get_env_value's (tests/utils); these pin the
+    # default and that the value is parsed as a bool, not as a truthy string.
+    [(None, False), ("true", True), ("false", False)],
 )
 def test_strict_reads_gate_parses_as_a_bool(monkeypatch, value, expected):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])

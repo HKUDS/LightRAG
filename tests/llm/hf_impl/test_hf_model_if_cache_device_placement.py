@@ -180,6 +180,9 @@ async def test_cpu_only_host_cpu_model_generation_succeeds(monkeypatch):
     assert fake_model.received_kwargs["input_ids"].device.type == "cpu"
     # Item 5: prompt-length slicing excludes the prompt tokens from decode.
     assert result == "decoded:[901, 902]"
+    # With no generation options, the existing 512-token default applies.
+    assert fake_model.received_kwargs["max_new_tokens"] == 512
+    assert "max_tokens" not in fake_model.received_kwargs
 
 
 @pytest.mark.asyncio
@@ -237,9 +240,8 @@ async def test_prompt_length_slicing_excludes_prompt_tokens(monkeypatch):
 @pytest.mark.parametrize(
     ("generation_kwargs", "expected_max_new_tokens"),
     [
-        ({}, 512),
+        # The no-options default is asserted by the CPU generation test.
         ({"max_tokens": 37}, 37),
-        ({"max_new_tokens": 41}, 41),
         ({"max_tokens": 37, "max_new_tokens": 41}, 41),
     ],
 )

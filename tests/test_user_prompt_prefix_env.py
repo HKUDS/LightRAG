@@ -65,7 +65,9 @@ def test_inline_special_characters_are_preserved(monkeypatch):
 
 def test_long_inline_value_is_not_truncated(monkeypatch):
     """No length bound: this is operator config, not client input."""
-    value = "policy. " * 5000
+    # 28,000 characters: long, yet under the 32,767-character cap Windows
+    # puts on a single environment variable, so the test runs there too.
+    value = "policy. " * 3500
     monkeypatch.setenv("USER_PROMPT_PREFIX", value)
     assert load_user_prompt_prefix_source() == value
 

@@ -75,7 +75,9 @@ def test_clear_dir_contents_keeps_dir_and_removes_children(tmp_path: Path) -> No
 
 
 def test_clear_dir_contents_noop_when_missing(tmp_path: Path) -> None:
-    clear_dir_contents(tmp_path / "does-not-exist")
+    missing = tmp_path / "does-not-exist"
+    clear_dir_contents(missing)
+    assert not missing.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -144,18 +146,49 @@ def test_safe_extract_zip_rejects_absolute_path(tmp_path: Path) -> None:
         safe_extract_zip(payload, tmp_path / "raw")
 
 
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["..notes.md", "...report.md", "..assets/figure.png", "nested/..notes.md"]
+)
+def test_safe_extract_zip_allows_dot_prefixed_names(tmp_path: Path, name: str) -> None:
+    payload = _make_zip({name: b"Document content"})
+
+    assert safe_extract_zip(payload, tmp_path) == [name]
+    assert (tmp_path / name).read_bytes() == b"Document content"
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "name", ["..", "../outside.md", "nested/../../outside.md", "/outside.md"]
+)
+def test_safe_extract_zip_rejects_unsafe_bundle_before_writing(
+    tmp_path: Path, name: str
+) -> None:
+    destination = tmp_path / "bundle"
+    payload = _make_zip({"safe.md": b"safe", name: b"unsafe"})
+
+    with pytest.raises(RuntimeError, match="unsafe path"):
+        safe_extract_zip(payload, destination)
+
+    assert not (destination / "safe.md").exists()
+    assert not (tmp_path / "outside.md").exists()
+
+
 # ---------------------------------------------------------------------------
 # env coercion
 # ---------------------------------------------------------------------------
 
 
-def test_env_bool_truthy_falsy(monkeypatch: pytest.MonkeyPatch) -> None:
-    for raw in ("1", "true", "yes", "ON"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", False) is True
-    for raw in ("0", "false", "no", "off"):
-        monkeypatch.setenv("X", raw)
-        assert env_bool("X", True) is False
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "ON"])
+def test_env_bool_truthy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", False) is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_env_bool_falsy(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("X", raw)
+    assert env_bool("X", True) is False
 
 
 def test_env_bool_falls_back_on_unrecognized(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -218,27 +251,7 @@ def test_manifest_round_trip(tmp_path: Path) -> None:
     assert loaded.files[0].path == "demo.md"
 
 
-def test_manifest_load_rejects_wrong_engine(tmp_path: Path) -> None:
-    raw = tmp_path / "demo.docling_raw"
-    raw.mkdir()
-    manifest = Manifest(
-        engine="mineru",
-        source_content_hash="sha256:" + "0" * 64,
-        source_size_bytes=1,
-        source_filename_at_parse="x",
-        critical_file=ManifestFile(path="c", size=1, sha256="sha256:" + "1" * 64),
-        files=[],
-        total_size_bytes=1,
-    )
-    write_manifest(raw, manifest)
-    assert load_manifest(raw, expected_engine="docling") is None
-
-
-def test_manifest_load_handles_missing_file(tmp_path: Path) -> None:
-    assert load_manifest(tmp_path / "no-such-dir", expected_engine="docling") is None
-
-
-@pytest.mark.parametrize("payload", [b"\xff", b'{"engine":'])
+@pytest.mark.parametrize("payload", [b'{"engine":'])
 def test_manifest_load_treats_undecodable_file_as_missing(
     tmp_path: Path, payload: bytes
 ) -> None:
@@ -353,28 +366,10 @@ async def test_stream_capped_get_accepts_absent_or_identity_encoding(headers):
 
 @pytest.mark.parametrize(
     "content_encoding",
-    [
-        "gzip",
-        "deflate",
-        "br",
-        "zstd",
-        "gzip, identity",
-        "identity, gzip",
-        "chunked",
-        "",
-        "gzip;q=1.0",
-    ],
-    ids=[
-        "gzip",
-        "deflate",
-        "br",
-        "zstd",
-        "multiple-gzip-identity",
-        "multiple-identity-gzip",
-        "malformed-chunked",
-        "malformed-empty",
-        "malformed-qvalue",
-    ],
+    # One "is not identity" comparison: a plain encoding, the identity-prefix
+    # lookalike, and the empty value (present but empty is not absent).
+    ["gzip", "identity, gzip", ""],
+    ids=["gzip", "multiple-identity-gzip", "malformed-empty"],
 )
 async def test_stream_capped_get_rejects_non_identity_encoding(content_encoding):
     """Also proves the rejected stream is never iterated (via

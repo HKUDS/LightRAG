@@ -144,5 +144,6 @@ async def test_azure_openai_embed_preserves_positional_arguments(
         context="query",
         query_prefix="query: ",
         document_prefix="document: ",
+        timeout=None,
     )
     assert result is embed.return_value

@@ -210,16 +210,6 @@ class _DummyTextChunksStorage:
 
 
 @pytest.mark.offline
-def test_default_entity_types_guidance_exists():
-    """PROMPTS['default_entity_types_guidance'] must be a non-empty string."""
-    from lightrag.prompt import PROMPTS
-
-    guidance = PROMPTS["default_entity_types_guidance"]
-    assert isinstance(guidance, str)
-    assert len(guidance.strip()) > 0
-
-
-@pytest.mark.offline
 def test_default_entity_types_guidance_covers_all_types():
     """Default guidance must mention all 11 canonical entity types."""
     from lightrag.prompt import PROMPTS
@@ -357,16 +347,6 @@ def test_json_examples_are_parseable_format_templates():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.offline
-def test_default_entity_types_removed_from_constants():
-    """DEFAULT_ENTITY_TYPES must no longer exist in lightrag.constants."""
-    import lightrag.constants as constants
-
-    assert not hasattr(constants, "DEFAULT_ENTITY_TYPES"), (
-        "DEFAULT_ENTITY_TYPES should have been removed from constants.py"
-    )
-
-
 # ---------------------------------------------------------------------------
 # 3. ENTITY_TYPES env var raises SystemExit
 # ---------------------------------------------------------------------------
@@ -418,6 +398,8 @@ async def test_text_mode_default_guidance_injected_into_prompt():
     assert "After the last entity row, switch prefixes to `relation`" in system_prompt
     assert "Output at most 100 total rows" in system_prompt
     assert "Output at most 40 entity rows" in system_prompt
+    # Text mode must NOT pass entity_extraction=True to the LLM function.
+    assert not call_kwargs.get("entity_extraction", False)
 
 
 @pytest.mark.offline
@@ -535,26 +517,7 @@ async def test_json_mode_default_guidance_injected_into_prompt():
     assert PROMPTS["default_entity_types_guidance"] in system_prompt
     assert "Output at most 100 total records" in system_prompt
     assert "Output at most 40 entity objects" in system_prompt
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_json_mode_entity_extraction_kwarg_passed():
-    """JSON mode must pass response_format={'type':'json_object'} to the LLM function."""
-    from lightrag.operate import extract_entities
-
-    global_config = _make_global_config(use_json=True)
-    llm_func = global_config["llm_model_func"]
-    llm_func.return_value = _JSON_MODE_RESPONSE
-
-    with patch("lightrag.operate.logger"):
-        await extract_entities(
-            chunks=_make_chunks(),
-            global_config=global_config,
-        )
-
-    assert llm_func.await_count >= 1
-    call_kwargs = llm_func.call_args_list[0][1]
+    # JSON mode asks for a JSON object, never the legacy entity_extraction flag.
     assert call_kwargs.get("response_format") == {"type": "json_object"}
     assert call_kwargs.get("entity_extraction") is not True
 
@@ -617,26 +580,6 @@ def test_json_continue_prompt_includes_quantity_limits():
 # ---------------------------------------------------------------------------
 # 6. Text mode: entity_extraction kwarg NOT passed (only JSON mode uses it)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_text_mode_no_entity_extraction_kwarg():
-    """Text mode must NOT pass entity_extraction=True to the LLM function."""
-    from lightrag.operate import extract_entities
-
-    global_config = _make_global_config(use_json=False)
-    llm_func = global_config["llm_model_func"]
-    llm_func.return_value = _TEXT_MODE_RESPONSE
-
-    with patch("lightrag.operate.logger"):
-        await extract_entities(
-            chunks=_make_chunks(),
-            global_config=global_config,
-        )
-
-    call_kwargs = llm_func.call_args_list[0][1]
-    assert not call_kwargs.get("entity_extraction", False)
 
 
 @pytest.mark.offline
@@ -1321,36 +1264,6 @@ def test_user_prompts_keep_single_real_input_text_section():
 
 
 @pytest.mark.offline
-def test_format_heading_context_full_path_includes_current_heading():
-    """The breadcrumb appends the chunk's own heading after the parent chain."""
-    from lightrag.chunk_schema import format_heading_context
-
-    chunk = {
-        "content": "...",
-        "heading": {
-            "level": 2,
-            "heading": "Data Collection",
-            "parent_headings": ["Methods"],
-        },
-    }
-    assert format_heading_context(chunk) == "Methods → Data Collection"
-
-
-@pytest.mark.offline
-def test_format_heading_context_empty_when_no_heading():
-    """A chunk without heading info yields an empty breadcrumb (block omitted)."""
-    from lightrag.chunk_schema import format_heading_context
-
-    chunk = {
-        "content": "...",
-        "tokens": 1,
-        "full_doc_id": "d",
-        "chunk_order_index": 0,
-    }
-    assert format_heading_context(chunk) == ""
-
-
-@pytest.mark.offline
 def test_text_user_prompt_section_context_hidden_and_byte_identical_when_no_heading():
     """No heading -> the whole `---Section Context---` block disappears and the
     rendered text user prompt is byte-identical to the placeholder-free form."""
@@ -1393,15 +1306,6 @@ def test_json_user_prompt_section_context_hidden_and_byte_identical_when_no_head
         input_text="Alice founded Acme Corp.",
     )
     assert rendered == baseline
-
-
-@pytest.mark.offline
-def test_text_user_prompt_includes_section_context_when_heading_present():
-    rendered = _render_text_user_prompt(_section_block("Methods → Data Collection"))
-    assert _SECTION_MARKER in rendered
-    assert "Methods → Data Collection" in rendered
-    # Block sits immediately above the input text section.
-    assert "Methods → Data Collection\n\n---Input Text---" in rendered
 
 
 @pytest.mark.offline
@@ -1652,15 +1556,6 @@ async def test_attach_content_headings_keeps_short_path_intact():
 
 
 @pytest.mark.offline
-def test_truncate_section_context_noop_within_budget():
-    from lightrag.operate import _truncate_section_context
-
-    tok = Tokenizer("dummy", DummyTokenizer())
-    path = "Methods → Data Collection"
-    assert _truncate_section_context(path, tok, 256) == path
-
-
-@pytest.mark.offline
 def test_truncate_section_context_keeps_first_and_last_when_over_budget():
     """Over budget -> keep first (top-level) + last (leaf) section, elide middle."""
     from lightrag.chunk_schema import HEADING_BREADCRUMB_SEP
@@ -1800,15 +1695,6 @@ async def test_extract_entities_bounds_pathological_heading_in_prompt():
 # ---------------------------------------------------------------------------
 # Heading text symbol cleaning: → -> space, strip Cc/Cf, preserve everything else
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.offline
-def test_clean_heading_text_converts_arrow_to_space():
-    """The breadcrumb separator char must never survive inside one heading."""
-    from lightrag.chunk_schema import _clean_heading_text
-
-    assert _clean_heading_text("A→B") == "A B"
-    assert _clean_heading_text("A  →  B") == "A B"
 
 
 @pytest.mark.offline

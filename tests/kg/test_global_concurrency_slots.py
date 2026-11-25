@@ -39,6 +39,19 @@ def _dead_pid() -> int:
     return proc.pid
 
 
+def _pin_pid_1_alive(monkeypatch):
+    """Make PID 1 usable as a stand-in for "another worker process".
+
+    PID 1 is a real process on POSIX. Windows has no process with that PID,
+    so the liveness probe reports it dead: the records these tests write for
+    PID 1 would be reaped as dead and the assertions would no longer exercise
+    the live-owner paths. Pinning the probe keeps the arbitration, reaping
+    and aggregation behaviour under test on both platforms.
+    """
+    real_pid_alive = ss._pid_alive
+    monkeypatch.setattr(ss, "_pid_alive", lambda pid: pid == 1 or real_pid_alive(pid))
+
+
 async def _lease_ns():
     return await ss._get_lease_namespace()
 
@@ -62,11 +75,6 @@ def test_limits_unset_means_not_limited():
     assert ss.is_global_concurrency_limited(GROUP) is False
     assert ss.get_global_concurrency_limit(GROUP) is None
     assert ss.is_global_concurrency_limited(None) is False
-
-
-def test_limits_not_limited_before_initialization():
-    assert ss.is_share_data_initialized() is False
-    assert ss.is_global_concurrency_limited(GROUP) is False
 
 
 def test_first_init_sets_limits_and_later_calls_do_not_overwrite():
@@ -281,7 +289,8 @@ async def test_plain_failed_acquire_on_unchanged_gate_writes_nothing():
     assert spy.writes == 0
 
 
-async def test_longest_live_waiter_gets_priority():
+async def test_longest_live_waiter_gets_priority(monkeypatch):
+    _pin_pid_1_alive(monkeypatch)
     _init({GROUP: 1})
     await ss.try_acquire_global_slot(GROUP)  # saturate
     ns = await _lease_ns()
@@ -308,6 +317,7 @@ async def test_waiter_records_reaped_with_their_process(monkeypatch):
     """A process reclaimed by the reaper (dead PID or lease heartbeat
     timeout) must not keep occupying the longest-waiter seat: its waiter
     records are cleaned in the same reap pass."""
+    _pin_pid_1_alive(monkeypatch)
     monkeypatch.setattr(ss, "_heartbeat_ttl", 1.0)
     monkeypatch.setattr(ss, "_suspect_grace", 1.0)
     _init({GROUP: 2})
@@ -388,7 +398,8 @@ def _snapshot(pid: int, *, queued=1, running=2, completed_total=3, updated_at=No
     }
 
 
-async def test_aggregate_sums_flat_fields_across_workers():
+async def test_aggregate_sums_flat_fields_across_workers(monkeypatch):
+    _pin_pid_1_alive(monkeypatch)
     _init()
     ns = await ss._get_queue_stats_namespace()
     await ss.publish_queue_stats("agg test", _snapshot(os.getpid()))

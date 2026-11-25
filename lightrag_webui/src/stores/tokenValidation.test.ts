@@ -3,7 +3,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'b
 /**
  * Local token validity (client-state partitioning doc §5). These cases pin
  * the REPLACEMENT of the old "token exists ⇒ authenticated" rule — an
- * implementation that only checks existence fails five of the six cases.
+ * implementation that only checks existence fails every rejection case. They
+ * go through `initAuthState`, the one caller of `isTokenLocallyValid`, so each
+ * also pins what a rejected token leaves behind in storage.
  */
 
 type StateModule = typeof import('./state')
@@ -56,40 +58,6 @@ const jwt = (payload: unknown) =>
 
 const futureExp = Math.floor(Date.now() / 1000) + 3600
 const pastExp = Math.floor(Date.now() / 1000) - 3600
-
-describe('isTokenLocallyValid', () => {
-  test('malformed: not three segments', () => {
-    expect(stateModule.isTokenLocallyValid('justonestring')).toBe(false)
-    expect(stateModule.isTokenLocallyValid('a.b')).toBe(false)
-    expect(stateModule.isTokenLocallyValid('a.b.c.d')).toBe(false)
-  })
-
-  test('payload is not valid Base64URL', () => {
-    expect(stateModule.isTokenLocallyValid('head.@@@@@.sig')).toBe(false)
-  })
-
-  test('payload decodes but is not JSON', () => {
-    expect(stateModule.isTokenLocallyValid(`head.${b64url('not json at all')}.sig`)).toBe(false)
-  })
-
-  test('missing exp', () => {
-    expect(stateModule.isTokenLocallyValid(jwt({ sub: 'alice', role: 'user' }))).toBe(false)
-  })
-
-  test('expired exp', () => {
-    expect(stateModule.isTokenLocallyValid(jwt({ sub: 'alice', exp: pastExp }))).toBe(false)
-  })
-
-  test('valid and unexpired — the ONLY case counted as logged in', () => {
-    expect(stateModule.isTokenLocallyValid(jwt({ sub: 'alice', exp: futureExp }))).toBe(true)
-  })
-
-  test('base64url payloads (with - and _) parse correctly', () => {
-    // A payload whose base64 contains '+'/'/' in standard encoding.
-    const payload = { sub: '???>>>???>>>', exp: futureExp }
-    expect(stateModule.isTokenLocallyValid(jwt(payload))).toBe(true)
-  })
-})
 
 describe('initAuthState local validation', () => {
   beforeEach(() => {

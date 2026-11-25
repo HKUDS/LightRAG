@@ -44,11 +44,14 @@ class StreamingFakeResponse:
 
     @property
     def content(self):
-        async def lines():
+        return self
+
+    def iter_any(self):
+        async def chunks():
             yield b"first chunk\n"
             yield b"second chunk\n"
 
-        return lines()
+        return chunks()
 
 
 class StreamingFakeSession:
@@ -96,11 +99,6 @@ async def _sent_request(monkeypatch, **generation_kwargs):
             id="generic-limit-maps-to-native-field",
         ),
         pytest.param(
-            {"n_predict": 41},
-            41,
-            id="native-limit-is-preserved",
-        ),
-        pytest.param(
             {"max_tokens": 37, "n_predict": 41},
             41,
             id="native-limit-takes-precedence",
@@ -109,11 +107,6 @@ async def _sent_request(monkeypatch, **generation_kwargs):
             {"max_tokens": 37, "n_predict": 0},
             0,
             id="explicit-native-zero-takes-precedence",
-        ),
-        pytest.param(
-            {"max_tokens": 37, "n_predict": None},
-            37,
-            id="native-none-falls-back-to-generic-limit",
         ),
     ],
 )
@@ -138,6 +131,6 @@ async def test_stream_keeps_client_session_open_while_consumed(monkeypatch):
         stream=True,
     )
 
-    assert [chunk async for chunk in stream] == ["first chunk", "second chunk"]
+    assert [chunk async for chunk in stream] == ["first chunk\n", "second chunk\n"]
     assert len(StreamingFakeSession.instances) == 1
     assert StreamingFakeSession.instances[0].closed

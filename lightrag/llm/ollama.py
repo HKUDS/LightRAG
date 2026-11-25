@@ -28,7 +28,10 @@ from lightrag.api import __api_version__
 
 import numpy as np
 from typing import Any, Optional, Union
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    embedding_timeout,
+    provider_timeout,
     TruncatedResponse,
     empty_length_truncated_hint,
     format_response_diagnostics,
@@ -201,12 +204,63 @@ def _ollama_usage_counts(payload: Any) -> dict[str, int] | None:
     }
 
 
+# Statuses worth another attempt besides 5xx: 429 is the documented
+# rate-limit status (https://docs.ollama.com/api/errors), mainly relevant to
+# Ollama Cloud models. 408 / 409 are not documented for Ollama, so they stay
+# fail-fast like every other 4xx.
+_RETRYABLE_OLLAMA_4XX_STATUS_CODES = frozenset({429})
+
+# Transport failures ollama.AsyncClient lets through unwrapped (it converts only
+# httpx.ConnectError, into the builtin ConnectionError). NetworkError covers a
+# read/write failing on an established connection; RemoteProtocolError is the
+# server closing the connection without a complete response -- what the client
+# sees when the `ollama serve` process itself dies mid-request.
+_RETRYABLE_OLLAMA_TRANSPORT_ERRORS = (
+    ConnectionError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
+
+
+def _is_retryable_ollama_response_error(exc: BaseException) -> bool:
+    """True for an ``ollama.ResponseError`` with a 5xx or 429 status.
+
+    The Ollama server itself can fail mid-request -- its llama-server runner
+    subprocess dying under memory pressure from a large embedding batch is
+    the common case -- and reports that as an HTTP 500 whose body is the
+    runner's own error text (e.g. "Post http://127.0.0.1:PORT/embedding:
+    EOF"). ``ollama.AsyncClient`` converts that into
+    ``ollama.ResponseError(body, status_code=500)``, not a raw connection
+    exception, so this has to read the status code rather than rely on
+    exception type alone. Any other 4xx (bad model name, bad request) is a
+    caller error, not a transient one, and must not be retried.
+
+    A 429 is retried without distinguishing a short throttle from an exhausted
+    Ollama Cloud usage allowance: the docs give no field to tell them apart,
+    and the cost of a wrong retry is bounded at the two backoff waits.
+    """
+    if not isinstance(exc, ollama.ResponseError):
+        return False
+    status = exc.status_code
+    return status >= 500 or status in _RETRYABLE_OLLAMA_4XX_STATUS_CODES
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
+    # Same transient set as ollama_embed: see _RETRYABLE_OLLAMA_TRANSPORT_ERRORS
+    # and _is_retryable_ollama_response_error.
+    retry=(
+        retry_if_exception_type(
+            (RateLimitError, APIConnectionError, APITimeoutError)
+            + _RETRYABLE_OLLAMA_TRANSPORT_ERRORS
+        )
+        | retry_if_exception(_is_retryable_ollama_response_error)
     ),
+    # Surface the last attempt's own error (e.g. "Failed to connect to
+    # Ollama...") instead of an opaque tenacity.RetryError.
+    reraise=True,
 )
 async def _ollama_model_if_cache(
     model,
@@ -251,8 +305,10 @@ async def _ollama_model_if_cache(
             kwargs["options"] = options.model_copy(update={"num_predict": max_tokens})
     # Deprecation shims: map legacy boolean flags to response_format only when
     # an explicit response_format was not supplied by the caller.
+    keyword_extraction = kwargs.pop("keyword_extraction", False)
+    entity_extraction = kwargs.pop("entity_extraction", False)
     if kwargs.get("response_format") is None:
-        if kwargs.pop("entity_extraction", False):
+        if entity_extraction:
             warnings.warn(
                 "_ollama_model_if_cache(entity_extraction=True) is deprecated; "
                 "pass response_format={'type': 'json_object'} instead.",
@@ -260,7 +316,7 @@ async def _ollama_model_if_cache(
                 stacklevel=2,
             )
             kwargs["response_format"] = {"type": "json_object"}
-        elif kwargs.pop("keyword_extraction", False):
+        elif keyword_extraction:
             warnings.warn(
                 "_ollama_model_if_cache(keyword_extraction=True) is deprecated; "
                 "pass response_format={'type': 'json_object'} instead.",
@@ -268,10 +324,6 @@ async def _ollama_model_if_cache(
                 stacklevel=2,
             )
             kwargs["response_format"] = {"type": "json_object"}
-    else:
-        # response_format was supplied explicitly; drop legacy flags silently.
-        kwargs.pop("entity_extraction", None)
-        kwargs.pop("keyword_extraction", None)
 
     _normalize_ollama_response_format(kwargs)
 
@@ -292,9 +344,8 @@ async def _ollama_model_if_cache(
         kwargs["options"] = {k: v for k, v in options.items() if k != "think"}
 
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None)
-    if timeout == 0:
-        timeout = None
+    # <= 0 or unset: None, which is the Ollama client's own default.
+    timeout = provider_timeout(kwargs.pop("timeout", None))
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
     # fallback to environment variable when not provided explicitly
@@ -310,7 +361,9 @@ async def _ollama_model_if_cache(
     host = _coerce_host_for_cloud_model(host, model)
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
-
+    # This function closes the client on every exit except a successful stream
+    # setup, which hands it to inner(): that generator's finally closes it.
+    stream_owns_client = False
     try:
         messages = []
         if system_prompt:
@@ -363,6 +416,7 @@ async def _ollama_model_if_cache(
                     except Exception as close_error:
                         logger.warning(f"Failed to close Ollama client: {close_error}")
 
+            stream_owns_client = True
             return inner()
         else:
             model_response = response["message"]["content"]
@@ -430,26 +484,13 @@ async def _ollama_model_if_cache(
                 model_response = TruncatedResponse(model_response)
 
             return model_response
-    except Exception as e:
-        try:
-            await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after exception")
-        except Exception as close_error:
-            logger.warning(
-                f"Failed to close Ollama client after exception: {close_error}"
-            )
-        raise e
     finally:
-        if not stream:
+        if not stream_owns_client:
             try:
                 await ollama_client._client.aclose()
-                logger.debug(
-                    "Successfully closed Ollama client for non-streaming response"
-                )
+                logger.debug("Successfully closed Ollama client")
             except Exception as close_error:
-                logger.warning(
-                    f"Failed to close Ollama client in finally block: {close_error}"
-                )
+                logger.warning(f"Failed to close Ollama client: {close_error}")
 
 
 async def ollama_model_complete(
@@ -462,6 +503,7 @@ async def ollama_model_complete(
     token_tracker: Any | None = None,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
+    apply_llm_timeout(kwargs)
     # Forward legacy extraction flags as kwargs so _ollama_model_if_cache can
     # emit a single DeprecationWarning with the correct stack frame.
     if keyword_extraction:
@@ -484,48 +526,6 @@ async def ollama_model_complete(
     )
 
 
-# Statuses worth another attempt besides 5xx: 429 is the documented
-# rate-limit status (https://docs.ollama.com/api/errors), mainly relevant to
-# Ollama Cloud models. 408 / 409 are not documented for Ollama, so they stay
-# fail-fast like every other 4xx.
-_RETRYABLE_OLLAMA_4XX_STATUS_CODES = frozenset({429})
-
-# Transport failures ollama.AsyncClient lets through unwrapped (it converts only
-# httpx.ConnectError, into the builtin ConnectionError). NetworkError covers a
-# read/write failing on an established connection; RemoteProtocolError is the
-# server closing the connection without a complete response -- what the client
-# sees when the `ollama serve` process itself dies mid-request.
-_RETRYABLE_OLLAMA_TRANSPORT_ERRORS = (
-    ConnectionError,
-    httpx.TimeoutException,
-    httpx.NetworkError,
-    httpx.RemoteProtocolError,
-)
-
-
-def _is_retryable_ollama_response_error(exc: BaseException) -> bool:
-    """True for an ``ollama.ResponseError`` with a 5xx or 429 status.
-
-    The Ollama server itself can fail mid-request -- its llama-server runner
-    subprocess dying under memory pressure from a large embedding batch is
-    the common case -- and reports that as an HTTP 500 whose body is the
-    runner's own error text (e.g. "Post http://127.0.0.1:PORT/embedding:
-    EOF"). ``ollama.AsyncClient`` converts that into
-    ``ollama.ResponseError(body, status_code=500)``, not a raw connection
-    exception, so this has to read the status code rather than rely on
-    exception type alone. Any other 4xx (bad model name, bad request) is a
-    caller error, not a transient one, and must not be retried.
-
-    A 429 is retried without distinguishing a short throttle from an exhausted
-    Ollama Cloud usage allowance: the docs give no field to tell them apart,
-    and the cost of a wrong retry is bounded at the two backoff waits.
-    """
-    if not isinstance(exc, ollama.ResponseError):
-        return False
-    status = exc.status_code
-    return status >= 500 or status in _RETRYABLE_OLLAMA_4XX_STATUS_CODES
-
-
 @wrap_embedding_func_with_attrs(
     embedding_dim=1024,
     max_token_size=8192,
@@ -536,10 +536,11 @@ def _is_retryable_ollama_response_error(exc: BaseException) -> bool:
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     # Transport errors: see _RETRYABLE_OLLAMA_TRANSPORT_ERRORS. Its
-    # httpx.TimeoutException member only fires when the caller passes a
-    # per-request ``timeout``. The API server passes none, so there the outer
-    # embedding worker's ``wait_for`` is the deadline, and it cancels this
-    # whole retry loop rather than one attempt.
+    # httpx.TimeoutException member fires on the client ``timeout``, which
+    # defaults to LightRAG's embedding timeout inside a LightRAG call. With
+    # none set (0, or outside a LightRAG call) the outer embedding worker's
+    # ``wait_for`` is the only deadline, and it cancels this whole retry loop
+    # rather than one attempt.
     # ollama.ResponseError(5xx / 429): see _is_retryable_ollama_response_error.
     retry=(
         retry_if_exception_type(_RETRYABLE_OLLAMA_TRANSPORT_ERRORS)
@@ -583,7 +584,11 @@ async def ollama_embed(
             reports ``prompt_eval_count`` for an embed call and no
             ``eval_count``, so a tracked embedding contributes prompt tokens
             only.
-        **kwargs: Additional arguments passed to the Ollama client.
+        **kwargs: Additional arguments passed to the Ollama client. A
+            ``timeout`` (seconds) here is the client's request timeout; without
+            one, LightRAG's ``default_embedding_timeout`` applies inside a
+            LightRAG embedding call. 0 or a negative value, or no timeout
+            outside one, keeps the Ollama client's default.
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -612,7 +617,7 @@ async def ollama_embed(
         headers["Authorization"] = f"Bearer {api_key}"
 
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None)
+    timeout = embedding_timeout(kwargs.pop("timeout", None))
 
     host = _coerce_host_for_cloud_model(host, embed_model)
 
@@ -631,14 +636,7 @@ async def ollama_embed(
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")
-        try:
-            await ollama_client._client.aclose()
-            logger.debug("Successfully closed Ollama client after exception in embed")
-        except Exception as close_error:
-            logger.warning(
-                f"Failed to close Ollama client after exception in embed: {close_error}"
-            )
-        raise e
+        raise
     finally:
         try:
             await ollama_client._client.aclose()

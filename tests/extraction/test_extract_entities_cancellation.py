@@ -43,10 +43,11 @@ async def unretrieved_task_exceptions():
 
 async def _never_retrieved(reported: list[str]) -> list[str]:
     # The report is emitted when the task object is collected, and the loop
-    # still references a finished task until its pending callbacks have run.
+    # still references a finished task until its pending callbacks have run:
+    # let them run, then collect once (a full collection takes ~0.15 s here).
     for _ in range(3):
         await asyncio.sleep(0)
-        gc.collect()
+    gc.collect()
     return [m for m in reported if "never retrieved" in m]
 
 
@@ -90,7 +91,6 @@ async def test_external_cancellation_cancels_the_running_chunk_tasks(
 
     # Whatever might still be running would fail now; nothing is.
     release.set()
-    await asyncio.sleep(0.05)
     del extract_task
     assert await _never_retrieved(unretrieved_task_exceptions) == []
 

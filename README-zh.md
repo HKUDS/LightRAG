@@ -46,9 +46,12 @@
 
 </div>
 
-<div align="center" style="margin: 30px 0;">
-  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
-</div>
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="assets/stargazers/stargazer-affiliations.png">
+    <img src="assets/stargazers/stargazer-affiliations.gif" width="900" alt="LightRAG 的 GitHub Star 账号自报归属。图中机构选自 2026 年 11 月 23 日识别到的 304 家机构。Star 为个人行为。">
+  </picture>
+</p>
 
 <div align="center" style="margin: 30px 0;">
     <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
@@ -59,7 +62,7 @@
 ## 🎉 新闻
 - [2026.07]🎯[新功能]: 添加 Word 文档 **智能章节标题** 识别功能。
 - [2026.05]🎯[新功能]：**将 RagAnything 合并至 LightRAG**🎉。支持通过 **MinerU / Docling** 服务进行多模态内容解析与提取。
-- [2026.05]🎯[新功能]：引入四种可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）和 `Paragraph`（段落语义）。
+- [2026.05]🎯[新功能]：引入可选的文本分块策略：`Fix`（固定）、`Recursive`（递归）、`Vector`（向量）、`Paragraph`（段落语义）以及自定义 `C`。
 - [2026.05]🎯[新功能]：**支持按角色配置 LLM**，提供四个独立角色：EXTRACT、QUERY、KEYWORDS 和 VLM，每个角色拥有独立的 LLM 设置。
 - [2026.03]🎯[新功能]: 集成了 **OpenSearch** 作为统一存储后端，为 LightRAG 的全部四种存储类型提供全面支持。
 - [2026.03]🎯[新功能]: 推出交互式安装向导，支持通过 Docker 在本地部署 Embedding、Reranking 及存储后端服务。
@@ -295,7 +298,7 @@ brew install cairo
 - **极高的检索效率与低成本**：LightRAG不需要依赖低效的社区报告和复杂查询时的多跳推理，大幅度减少了索引和查询阶段对LLM的调用，显著减少了响应延迟与LLM计算成本。
 - **支持增量更新与局部删除**：LightRAG 解决了基于图的知识库难以增量更新和局部删除的问题，保证系统在动态数据环境下的时效性。删除文档时，系统可以利用构建阶段的 LLM 缓存快速重建受影响的实体与关系，大幅提升知识库的更新效率。
 - **支持多种文档解析引擎**：LightRAG 的文件处理管线支持 MinerU、Docling 和 Native 等文档解析引擎，也支持第三方扩展解析引擎。LightRAG 专属的 Native 引擎可高效解析 Word 和 Markdown 文档中的图片、表格和公式，尤其适合处理多模态内容丰富的文档。Native 引擎还支持自动识别和纠正 Word 文档的章节标题，即使文档大纲不规范，也能改善内容提取效果，为后续按章节进行文本分块打下基础。
-- **支持多种文本分块策略**：LightRAG 支持 4 种文本分块策略，分别是 `固定长度分块(F)`、`递归字符分块(R)`、`向量语义分块(V)` 和 `段落语义分块(P)`。其中，`段落语义分块(P)` 是 LightRAG 专属的分块策略，可以**让分块边界尽可能对齐文档原生的语义边界**（标题、段落和表格），从而减少标题与内容错配、长表格切分后丢失标题行等问题。
+- **支持多种文本分块策略**：LightRAG 支持内置的 `固定长度分块(F)`、`递归字符分块(R)`、`向量语义分块(V)` 和 `段落语义分块(P)` 策略，以及自定义 `C` 分块回调。`P` 策略使用受支持解析器产出的结构化 sidecar，**让分块边界尽可能对齐文档原生的语义边界**（标题、段落和表格），从而减少标题与内容错配、长表格切分后丢失标题行等问题。
 - **支持多种存储后端**：LightRAG 默认的 KV、向量和图存储均采用基于本地文件持久化的内存数据库，**仅适合小数据量的测试与效果评估，不适用于生产环境**。LightRAG 还支持多种主流后端存储（推荐 PostgreSQL），可用于大规模数据集的生产部署。
 
 ### 多模态能力的升级
@@ -340,7 +343,7 @@ LightRAG 的默认查询模式为 mix。使用 mix 模式通常可以获得最�
 
 在选择 Embedding 模型的时候需要注意其对多语言的支持能力。LightRAG 的检索质量对 Embedding 模型的依赖有限，因此建议尽量选择低维度和速度快的模型。`env.example` 的默认值 OpenAI `text-embedding-3-large`（3072 维）更注重多语言质量；`text-embedding-3-small`（1536 维，需设置 `EMBEDDING_DIM=1536`）更便宜、更快。选择主流最新的 Embedding 模型即可；本地部署首选 `BAAI/bge-m3`。建议尽量本地部署 Embedding 模型，以获得最好的性能。
 
-**重要提示**：在文档索引前必须确定使用的 Embedding 模型，且在文档查询阶段必须沿用与索引阶段相同的模型。嵌入模型一旦选定通常就不能修改。如果修改的话，需要对所有文本块、实体和关系进行重新嵌入。LightRAG 目前没有提供重新嵌入的工具。有些存储（例如 PostgreSQL）在首次建立数据表的时候需要确定向量维度，因此更换 Embedding 模型后需要删除向量相关库表，以便让 LightRAG 重建新的库表。
+**重要提示**：请在文档索引前确定 Embedding 模型，并在查询阶段沿用同一模型。更换模型需要重新嵌入文本块、实体和关系；请使用 `lightrag-rebuild-vdb`，从知识图谱和文本块重建向量，详见[切换 Embedding 模型](./docs/ProgramingWithCore.md#switching-embedding-models)。不要通过删除向量表或工作目录来替代该工具。
 
 ### 开启 Rerank 选项
 
@@ -414,12 +417,21 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 - **模型存在缺陷，陷入输出死循环。** 某些模型（尤其是本地部署的 Qwen 模型）在遇到特殊文本时偶尔会陷入无尽的输出死循环。如果是偶发情况，通常只需将该文档重新处理一次即可解决。
 - **专门针对参考文献（P 分块策略）。** 使用段落语义（`P`）分块策略（例如 `LIGHTRAG_PARSER=...-iteP`）时，设置 `CHUNK_P_DROP_REFERENCES=true` 可在分块前自动删除匹配的参考文献块，从而避免参考文献产生大量低价值的实体关系（这是导致超时的常见原因）。也可以通过文件名提示 `paper.[-P(drop_rf=true)].pdf` 对单个文件启用；相关的检测参数（`CHUNK_P_REFERENCES_TAIL_N`、`CHUNK_P_REFERENCES_HEADINGS`）详见 `env.example`。
 
+### 解决 Embedding 超时
+
+类似 `Embedding func: Worker execution timeout after 60s` 的错误来自 Embedding 队列，该队列有独立的超时设置，不跟随 `LLM_TIMEOUT`：
+
+- **超时由 `EMBEDDING_TIMEOUT` 控制（默认 `30`）。** 与 LLM 超时一样，实际的执行超时是所配置值的**两倍**，因此默认值对应报错中的 `60s`。增大 `LLM_TIMEOUT` 对 Embedding 调用没有任何作用。
+- **通常的原因是 Embedding 服务太慢。** 正常情况下一个 Embedding 批次几秒内即可完成，因此增大 `EMBEDDING_TIMEOUT` 往往只是掩盖问题。请先检查 Embedding 服务。
+- **让并发数与服务的处理能力相匹配。** LightRAG 最多同时发送 `EMBEDDING_FUNC_MAX_ASYNC`（默认 `8`）个批次。使用 Ollama 时，请将 `OLLAMA_NUM_PARALLEL` 设置为不小于该值，或调低 `EMBEDDING_FUNC_MAX_ASYNC`，并让 Embedding 模型保持加载状态（`OLLAMA_KEEP_ALIVE=-1`，或使用独立的 Ollama 实例），因为它与 LLM 在显存中来回切换会导致 Embedding 请求停滞。
+
 ### 文档查询阶段其他重要配置
 
 在文档查询阶段还有以下环境变量建议根据实际需要进行调整：
 - **MAX_ENTITY_TOKENS / MAX_RELATION_TOKENS / MAX_TOTAL_TOKENS**：控制召回内容送给LLM上下文的Token长度。召回内容包含`实体`、`关系`和`文本块`三部分，实体和关系的长度可以单独控制长度，文本块的长度由总长度减去实体和关系的长度来控制。
 - **ENABLE_CONTENT_HEADINGS**：控制是否把文本块所在的章节标题送给LLM；默认开启，可以为LLM提供更加丰富的上下文信息，提高回答质量。
 - **ENABLE_LLM_CACHE**：是否允许缓存查询结果。默认开启，相同的查询问题、查询模式、LLM模型参数将返回相同的结果。
+- **KEYWORD_EXTRACTION_JSON_MODE**：控制查询关键词抽取如何向LLM请求结构化输出。`auto`（默认）请求 `response_format={"type": "json_object"}`，仅当服务端拒绝该字段本身时才去掉它重试一次；`json_object` 始终发送，`none` 从不发送。仅当你明确知道服务端的取向时才设为 `json_object` 或 `none`——LM Studio 这类服务只接受 `json_schema`/`text` 并返回 HTTP 400，此前会导致所有 `hybrid`/`local`/`global` 查询都返回 "No relevant context found"。
 - **USER_PROMPT_PREFIX / USER_PROMPT_PREFIX_FILE**：拼接在每个请求的 `user_prompt` 前面的全局指令（对应回答提示词中的"Additional Instructions"部分），为运维方提供一个统一定制LLM输出的入口。拼接是逐字节的、不会自动插入分隔符，请自行在内容结尾加上 `\n\n`。如果请求的 `user_prompt` 为空，该前缀将单独成为送给 LLM 的指令；只有 API 字段 `disable_user_prompt_prefix` 能禁用它，且请求无法读取或替换它。较长或多段落的内容请使用 `USER_PROMPT_PREFIX_FILE`（`PROMPT_DIR/user_prompt` 目录下的 `.md`/`.txt` 文件名），因为 `.env` 中的值必须写在一行内。
 
 ### WebUI 入口与默认入口
@@ -431,6 +443,8 @@ LightRAG 需要使用到 4 种后台存储类型，分别是：
 - **ENABLE_AI_CONTENT_NOTICE**：在两个查询界面（`/workspace` 与 `/webui` 的检索面板）中为每条**由 LLM 生成的**回答标注"由AI生成"；不是模型写的文本——无检索结果时的固定回复、管理面板的调试输出——不会被标注。默认关闭；它只是界面元素，不会进入 API 响应，也不会写入聊天历史。
 
 把最终用户引导到 `/workspace` 之前有两点需要了解。其一，那里的查询参数**只继承、不可编辑**：每次查询使用同一浏览器中 `/webui` 保存的设置（未保存时使用前端默认值），这是按浏览器的本地状态，不是服务端全局策略。其二，隐藏后台界面是使用体验上的划分，**不是**安全边界——服务端仍会对每个接口执行鉴权。查询入口的完整行为参见 [LightRAG-API-Server-zh.md](./docs/LightRAG-API-Server-zh.md#workspace-查询入口)。
+
+**WebUI 认证迁移：** 受保护的 `/webui` 与 `/workspace` 需要配置 `AUTH_ACCOUNTS` 和高强度、非默认的 `TOKEN_SECRET`。API Key 继续用于程序化访问，WebUI 不再输入或发送密钥。原 API-key-only WebUI 用户应保留密钥、配置账户与 secret、重启并刷新所有标签页后登录。完全开放部署（账户和有效 API Key 均未配置）保留 guest token 流程。详见 [迁移说明](docs/LightRAG-API-Server-zh.md#webui-兼容性变更受保护访问仅使用账户登录)。
 
 ## 使用LightRAG SDK
 
@@ -581,7 +595,11 @@ LightRAG 在农业、计算机科学、法律和混合等领域均显著优于 N
 
 删除查询模式的 LLM 缓存条目（`mix:*`、`hybrid:*`、`local:*`、`global:*`、`naive:*`），同时保留成本高昂的抽取缓存。
 
-**`migrate_llm_cache.py`** — `python -m lightrag.tools.migrate_llm_cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
+**`gc_llm_cache.py`** — `lightrag-gc-llm-cache [--apply]` — [README_GC_LLM_CACHE.md](./lightrag/tools/README_GC_LLM_CACHE.md)
+
+删除所属文本块已不存在、且没有任何现存文本块仍在引用的 LLM 缓存记录。这些记录无法通过删除文档清除，仍保留抽取提示词及结果。默认仅报告，指定 `--apply` 后才删除，且必须先通过严格读取确认文本块已不存在。
+
+**`migrate_llm_cache.py`** — `lightrag-migrate-llm-cache` — [README_MIGRATE_LLM_CACHE.md](./lightrag/tools/README_MIGRATE_LLM_CACHE.md)
 
 在不同 KV 存储后端之间迁移 default 模式缓存（抽取、摘要、多模态分析、智能标题判定），并保持 workspace 隔离。
 

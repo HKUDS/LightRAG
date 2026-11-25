@@ -53,6 +53,10 @@ class NoopVectorDBStorage(BaseVectorStorage):
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any] | None]:
         return [None] * len(ids)
 
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        # Nothing is ever stored, so every id is positively absent.
+        return [None] * len(ids)
+
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         return {}
 

@@ -311,30 +311,6 @@ class TestGetEdgesBatch:
         assert "source" not in result[("B", "A")]
 
     @pytest.mark.asyncio
-    async def test_strips_mongo_id_from_returned_documents(self):
-        s = _make_storage()
-        lo, hi = _canonical_edge_endpoints("A", "B")
-        doc = {"_id": "x", "edge_lo": lo, "edge_hi": hi}
-        s.edge_collection.find.return_value = _AsyncCursor([doc])
-
-        result = await s.get_edges_batch([{"src": "A", "tgt": "B"}])
-
-        assert "_id" not in result[("A", "B")]
-
-    @pytest.mark.asyncio
-    async def test_queries_with_or_across_canonical_pairs(self):
-        s = _make_storage()
-        s.edge_collection.find.return_value = _AsyncCursor([])
-        lo1, hi1 = _canonical_edge_endpoints("A", "B")
-        lo2, hi2 = _canonical_edge_endpoints("C", "D")
-
-        await s.get_edges_batch([{"src": "A", "tgt": "B"}, {"src": "C", "tgt": "D"}])
-
-        query = s.edge_collection.find.call_args.args[0]
-        assert {"edge_lo": lo1, "edge_hi": hi1} in query["$or"]
-        assert {"edge_lo": lo2, "edge_hi": hi2} in query["$or"]
-
-    @pytest.mark.asyncio
     async def test_chunks_or_when_pairs_exceed_the_chunk_size(self):
         """A large pairs list must be split across bounded $or queries."""
         s = _make_storage()

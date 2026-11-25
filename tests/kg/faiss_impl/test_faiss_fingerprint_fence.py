@@ -42,6 +42,38 @@ def _shared_data():
     finalize_share_data()
 
 
+@pytest.fixture(autouse=True)
+def _fine_grained_clock(monkeypatch):
+    """Stamp every published file strictly after the one published before it.
+
+    ``file_fingerprint.publication_complete`` compares mtimes STRICTLY, and its
+    docstring accepts the cost: a complete pair whose two writes land inside
+    one timestamp tick is refused as torn. Linux stamps files from the coarse
+    (jiffy) clock, and on tmpfs, where ``fsync`` costs nothing, the index and
+    metadata writes almost always share a tick. Without this fixture every
+    commit looks torn there and the file channel never fires, so the tests
+    would pin the clock's resolution instead of the fence.
+
+    The stamp is a monotonic clock across ALL writes, not a per-pair nudge:
+    nudging only the metadata would let the next publication's index land
+    older than it, which no real clock does, and a torn pair would then pass
+    for a complete one. The order is the writer's own; the fixture only makes
+    it resolvable. A failed write stamps nothing, so torn pairs stay torn, and
+    the same-tick test forces its own tie with ``os.utime`` afterwards.
+    """
+    real_atomic_write = faiss_impl.atomic_write
+    last_stamp = [0]
+
+    def stamped_atomic_write(file_name, write_fn, workspace="_", *args, **kwargs):
+        result = real_atomic_write(file_name, write_fn, workspace, *args, **kwargs)
+        stamp = max(os.stat(file_name).st_mtime_ns, last_stamp[0] + 1)
+        os.utime(file_name, ns=(stamp, stamp))
+        last_stamp[0] = stamp
+        return result
+
+    monkeypatch.setattr(faiss_impl, "atomic_write", stamped_atomic_write)
+
+
 @pytest.fixture
 def multiprocess(monkeypatch):
     """Pretend peer processes exist, so the file channel is armed."""

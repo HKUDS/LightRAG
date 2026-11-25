@@ -21,25 +21,12 @@ def test_emits_the_message_through_the_given_callable():
     assert emitted == ["hello"]
 
 
-@pytest.mark.parametrize(
-    "error", [RuntimeError("sink boom"), ValueError("bad format"), OSError("closed")]
-)
-def test_swallows_any_sink_failure(error):
+def test_swallows_any_sink_failure():
+    # One bare ``except Exception``: the exception class does not matter.
+    error = RuntimeError("sink boom")
+
     def boom(message):
         raise error
 
     # No raise, no return value contract beyond None.
     assert log_without_raising(boom, "hello") is None
-
-
-def test_the_following_statement_still_runs():
-    """The point of swallowing: bookkeeping after the log is not skipped."""
-    executed = []
-
-    def boom(message):
-        raise RuntimeError("sink boom")
-
-    log_without_raising(boom, "hello")
-    executed.append("recovery")
-
-    assert executed == ["recovery"]

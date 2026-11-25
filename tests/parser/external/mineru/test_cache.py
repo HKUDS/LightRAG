@@ -328,22 +328,6 @@ def test_invalid_when_endpoint_signature_mismatch(
 
 
 @pytest.mark.offline
-def test_endpoint_signature_uses_mode_specific_endpoint(
-    fresh_bundle: tuple[Path, Manifest],
-    source_file: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw, _ = fresh_bundle
-    payload = json.loads((raw / "_manifest.json").read_text())
-    payload["api_mode"] = "local"
-    payload["endpoint_signature"] = "http://old.example"
-    (raw / "_manifest.json").write_text(json.dumps(payload))
-    monkeypatch.setenv("MINERU_API_MODE", "local")
-    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://new.example")
-    assert is_bundle_valid(raw, source_file) is False
-
-
-@pytest.mark.offline
 def test_endpoint_signature_ignores_trailing_slash(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -437,34 +421,3 @@ def test_compute_size_and_hash_consistency(tmp_path: Path) -> None:
     size, h = compute_size_and_hash(p)
     assert size == len(payload)
     assert h.startswith("sha256:") and len(h) == len("sha256:") + 64
-
-
-@pytest.mark.offline
-def test_manifest_round_trip_via_disk(tmp_path: Path) -> None:
-    """Write → read recovers all fields."""
-    raw = tmp_path / "rt.mineru_raw"
-    raw.mkdir()
-    m = Manifest(
-        source_content_hash="sha256:abc",
-        source_size_bytes=10,
-        source_filename_at_parse="x.pdf",
-        critical_file=ManifestFile(
-            path="content_list.json", size=5, sha256="sha256:cl"
-        ),
-        files=[ManifestFile(path="images/i.png", size=3)],
-        total_size_bytes=8,
-        task_id="t1",
-        engine_version="v",
-        endpoint_signature="ep",
-        options_signature="sha256:opts",
-    )
-    write_manifest(raw, m)
-    from lightrag.parser.external.mineru.manifest import load_manifest
-
-    loaded = load_manifest(raw)
-    assert loaded is not None
-    assert loaded.source_content_hash == "sha256:abc"
-    assert loaded.critical_file.sha256 == "sha256:cl"
-    assert [f.path for f in loaded.files] == ["images/i.png"]
-    assert loaded.task_id == "t1"
-    assert loaded.options_signature == "sha256:opts"

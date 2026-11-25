@@ -12,6 +12,13 @@ on:
       - 'scripts/setup/**'
       - 'tests/setup/**'
       - 'tests/conftest.py'
+      # The wizard's configuration-storage checks are differential tests
+      # against these modules (tests/setup/test_config_anchor.py, test_misc.py).
+      - 'lightrag/config_anchor.py'
+      - 'lightrag/config_shards.py'
+      - 'lightrag/config_store.py'
+      - 'lightrag/exceptions.py'
+      - 'lightrag/kg/__init__.py'
       - 'env.example'
       - 'docker-compose*.yml'
       - 'Makefile'
@@ -25,6 +32,13 @@ on:
       - 'scripts/setup/**'
       - 'tests/setup/**'
       - 'tests/conftest.py'
+      # The wizard's configuration-storage checks are differential tests
+      # against these modules (tests/setup/test_config_anchor.py, test_misc.py).
+      - 'lightrag/config_anchor.py'
+      - 'lightrag/config_shards.py'
+      - 'lightrag/config_store.py'
+      - 'lightrag/exceptions.py'
+      - 'lightrag/kg/__init__.py'
       - 'env.example'
       - 'docker-compose*.yml'
       - 'Makefile'
@@ -32,6 +46,13 @@ on:
       - 'uv.lock'
       - '.github/workflows/setup-tests.yml'
   workflow_dispatch:
+
+# A new push to a pull request cancels that PR's runs still in progress, so
+# superseded commits stop holding runner slots. Push, dispatch and other events
+# group by run id and are never cancelled: every commit on main is still tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   setup-tests:

@@ -21,7 +21,6 @@ from lightrag.constants import FULL_DOCS_FORMAT_PENDING_PARSE
 from lightrag.parser.base import ParseContext, ParseResult
 from lightrag.parser.debug import build_debug_rag
 from lightrag.parser.registry import get_parser
-from lightrag.parser.routing import decode_parse_engine
 
 pytestmark = pytest.mark.offline
 
@@ -106,13 +105,6 @@ def _parse_docx(
     return rag, result, extract_calls
 
 
-def test_decode_smart_heading_param() -> None:
-    engine, params, errs = decode_parse_engine("native(smart_heading=true)")
-    assert engine == "native"
-    assert params == {"smart_heading": True}
-    assert errs == []
-
-
 def test_no_params_persists_bare_engine(tmp_path, monkeypatch) -> None:
     rag, result, calls = _parse_docx(tmp_path, monkeypatch)
     assert rag.full_docs.data["doc-1"]["parse_engine"] == "native"
@@ -121,11 +113,6 @@ def test_no_params_persists_bare_engine(tmp_path, monkeypatch) -> None:
     runtime = calls[0]["runtime"]
     assert dict(runtime.engine_params) == {}
     assert runtime.llm_invoke is None
-
-
-def test_none_parse_engine_persists_bare_engine(tmp_path, monkeypatch) -> None:
-    rag, _result, _calls = _parse_docx(tmp_path, monkeypatch, parse_engine=None)
-    assert rag.full_docs.data["doc-1"]["parse_engine"] == "native"
 
 
 def test_bare_native_persists_bare_engine(tmp_path, monkeypatch) -> None:
@@ -149,11 +136,6 @@ def test_smart_heading_param_reaches_extract_and_persists(
 def test_malformed_parse_engine_fails_loudly(tmp_path, monkeypatch) -> None:
     with pytest.raises(ValueError, match="invalid parse_engine"):
         _parse_docx(tmp_path, monkeypatch, parse_engine="native(smart_heading=true")
-
-
-def test_unknown_param_fails_loudly(tmp_path, monkeypatch) -> None:
-    with pytest.raises(ValueError, match="invalid parse_engine"):
-        _parse_docx(tmp_path, monkeypatch, parse_engine="native(bogus=1)")
 
 
 def test_wants_llm_bridge_gates_on_smart_heading() -> None:

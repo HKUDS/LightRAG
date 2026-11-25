@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, fields
 from typing import (
     Any,
     ClassVar,
+    Collection,
     Literal,
     Sequence,
     TypedDict,
@@ -163,7 +164,7 @@ class QueryParam:
     ``{user_prompt}`` placeholder silently drops it.
     """
 
-    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
+    enable_rerank: bool = get_env_value("RERANK_BY_DEFAULT", True, bool)
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
@@ -362,6 +363,24 @@ class BaseVectorStorage(StorageNameSpace, ABC):
                 "Please provide a valid EmbeddingFunc instance."
             )
 
+    @staticmethod
+    def _collection_suffix_for(model_name: Any, embedding_dim: Any) -> str | None:
+        """Fold a model name and dimension into a container-name suffix.
+
+        The single definition of the fold, shared by the container this
+        instance is configured for and by ``model_container_name``. Returns
+        ``None`` when the name is not a non-blank string.
+        """
+        import re
+
+        if not isinstance(model_name, str):
+            return None
+        model_name = model_name.strip()
+        if not model_name:
+            return None
+        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
+        return f"{safe_model_name}_{embedding_dim}d"
+
     def _generate_collection_suffix(self) -> str | None:
         """Generates collection/table suffix from embedding_func.
 
@@ -371,23 +390,84 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         Returns:
             str | None: Suffix string e.g. "text_embedding_3_large_3072d", or None if model_name not available
         """
-        import re
+        # model_name is optional in EmbeddingFunc; embedding_dim is required.
+        return self._collection_suffix_for(
+            getattr(self.embedding_func, "model_name", None),
+            self.embedding_func.embedding_dim,
+        )
 
-        # Check if model_name exists (model_name is optional in EmbeddingFunc)
-        model_name = getattr(self.embedding_func, "model_name", None)
-        if not isinstance(model_name, str):
-            return None
+    def model_container_name(self, model_name: str, embedding_dim: int) -> str | None:
+        """Name of this workspace+namespace's container for ANOTHER model.
 
-        model_name = model_name.strip()
-        if not model_name:
-            return None
+        ``None`` on a backend whose container name does not encode the model
+        (the default), or when the arguments cannot name one. The rebuild tool
+        uses it to vouch for the container a recorded baseline names.
+        """
+        return None
 
-        # embedding_dim is required in EmbeddingFunc
-        embedding_dim = self.embedding_func.embedding_dim
+    async def unvouched_sibling_containers(self) -> list[str]:
+        """Sibling-shaped containers ``drop_sibling_models`` would refuse to touch.
 
-        # Generate suffix: clean model name and append dimension
-        safe_model_name = re.sub(r"[^a-zA-Z0-9_]", "_", model_name.lower())
-        return f"{safe_model_name}_{embedding_dim}d"
+        Read-only. These match this workspace's naming pattern but carry no
+        evidence of who owns them; an operator who confirms them passes the
+        names back as ``vouched``. Empty on every backend whose ownership
+        evidence is always present (the default). Raises on a backend error.
+        """
+        return []
+
+    async def drop_sibling_models(
+        self, vouched: Collection[str] = ()
+    ) -> dict[str, str]:
+        """Clear this workspace's data from every OTHER embedding model's container.
+
+        ``drop()`` empties only the container of the model this instance is
+        configured for. That is what ``lightrag-rebuild-vdb`` needs: until a
+        target's rebuild succeeds its baseline has not moved, and the previous
+        model's container is what the operator falls back to by reverting the
+        configuration. A workspace clear has no such fallback to keep, and a
+        container left behind is adopted by the next start that names its
+        model -- see *Workspace clear and sibling model containers* in
+        ``docs/design/VectorSpaceProvenance.md``.
+
+        Rules:
+          - Call it only under the same precondition as ``drop()``, and only
+            once nothing can still fall back to a sibling: after ``drop()`` in
+            a clear, after the baseline moved in a rebuild.
+          - Containers are selected by evidence of ownership (see each
+            override), never by name pattern alone. ``vouched`` names
+            containers the CALLER has evidence for (a recorded baseline, an
+            operator's confirmation); a backend whose own evidence is always
+            present ignores it.
+          - A candidate left in place for want of evidence is an ERROR
+            result, never a silent success.
+
+        Backends whose containers are named per model override this; the
+        default has no siblings.
+
+        Returns:
+            dict[str, str]: ``{"status": "success"|"error", "message": str}``
+        """
+        return {"status": "success", "message": "no sibling model containers"}
+
+    async def drop_all_models(self, vouched: Collection[str] = ()) -> dict[str, str]:
+        """``drop()`` plus ``drop_sibling_models()``: the workspace-clear contract.
+
+        Siblings are only touched once the active container is cleared, so a
+        failed ``drop()`` is reported as is. Both results are surfaced when the
+        sibling step fails, since the active model's data is already gone then.
+        Never call it from a rebuild: it removes the containers a failed
+        rebuild falls back to.
+        """
+        result = await self.drop()
+        if result.get("status") != "success":
+            return result
+        sibling_result = await self.drop_sibling_models(vouched=vouched)
+        if sibling_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"active model cleared; {sibling_result.get('message')}",
+            }
+        return result
 
     @abstractmethod
     async def query(
@@ -473,6 +553,52 @@ class BaseVectorStorage(StorageNameSpace, ABC):
             List of vector data objects that were found
         """
         pass
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Point read with complete-or-raise semantics, one entry per id.
+
+        Returns a list aligned with ``ids``: the record, in the shape
+        ``get_by_ids`` returns (``id`` included), or ``None`` only when the
+        backend positively determined that the id is absent. A transport or
+        server error, a response that failed for some items, or a container
+        that cannot be read MUST raise -- never a ``None`` slot and never a
+        short list. Writes this instance still buffers are served the way
+        ``get_by_ids`` serves them.
+
+        It exists because ``get_by_ids`` may answer a failed read with a miss
+        (logged, then ``[]`` or ``None`` slots), which is harmless where a miss
+        only defers or displays something. Use this one wherever a miss drives
+        a decision, as the offline ``lightrag-rebuild-vdb`` check does.
+
+        The default raises :class:`~lightrag.exceptions.StorageCapabilityError`:
+        a backend without it cannot prove a miss, and callers must treat that
+        as "unknown", never as "absent".
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support strict point reads"
+        )
+
+    async def get_exact_count(self) -> int:
+        """Return the exact number of persisted records ``get_by_ids`` can address.
+
+        An optional maintenance capability, consumed by the offline
+        consistency check in ``lightrag/tools/rebuild_vdb.py``. Rules for
+        implementers:
+
+        * count this namespace and workspace only, in the id space
+          ``get_by_ids`` answers;
+        * exact or raise: a transport error, an unreadable container, writes
+          still buffered in this process, or an index whose parts disagree
+          raise ``StorageCapabilityError`` -- never return an estimate, and
+          never return zero for "could not tell";
+        * read-only: never repair what the count finds.
+
+        The default raises ``StorageCapabilityError``, so the check reports
+        the target ``inconclusive`` rather than guessing.
+        """
+        raise StorageCapabilityError(
+            f"{type(self).__name__} does not support exact persisted counts"
+        )
 
     @abstractmethod
     async def delete(self, ids: list[str]):
@@ -631,6 +757,49 @@ class BaseKVStorage(StorageNameSpace, ABC):
     unconfirmed miss). Callers MUST gate on this flag before calling
     :meth:`get_by_id_strict`.
     """
+
+    buffers_writes_per_process: ClassVar[bool] = False
+    """Class-level declaration: ``upsert`` stays in a buffer only THIS process
+    can read until ``index_done_callback`` flushes it.
+
+    ``LightRAG._admin_write_gate`` keys off this for the chunk-tracking
+    namespaces. The document pipeline updates a tracking row under a keyed
+    lock but flushes only at the end of the document, so on such a backend an
+    admin graph write on another worker would read the row without that
+    addition and overwrite it. Where this is ``True`` the admin writers
+    therefore take the pipeline ``busy`` reservation, so the two never
+    overlap. An immediate-write backend, and one whose buffer every worker
+    shares (``JsonKVStorage``), leave it ``False``. See *Admin graph writes*
+    in ``docs/design/PipelineConcurrencyContract.md``.
+    """
+
+    def discard_buffered_writes(self) -> int:
+        """Drop every buffered, uncommitted operation; return how many.
+
+        The synchronous counterpart of ``drop_pending_index_ops``, for
+        ``LightRAG._admin_write_gate``: it runs while a cancellation is
+        propagating, where an ``await`` could be interrupted by a second one
+        and leave the buffer in place. A backend that declares
+        ``buffers_writes_per_process`` MUST override it; the default has
+        nothing buffered and returns ``0``.
+        """
+        return 0
+
+    async def has_retained_writes(self) -> bool:
+        """Whether a commit returned normally but kept operations it could not write.
+
+        A per-item backend keeps a retryable bulk failure (408/429/5xx) in its
+        buffer and returns from ``index_done_callback`` without raising. This
+        answers "did the latest commit leave something behind", and must NOT
+        count operations buffered after that commit, which no commit has tried
+        yet: ``has_pending_index_ops`` does count them, so a caller running
+        beside concurrent writers cannot use it for this question.
+
+        A backend that declares ``buffers_writes_per_process`` MUST override
+        it; the default has nothing buffered and returns ``False``. See
+        ``LightRAG._require_tracking_commit_landed`` for the caller.
+        """
+        return False
 
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -796,7 +965,8 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     # admin graph writers take the workspace admin lock and the pipeline
     # ``busy`` reservation; where it is ``False`` (every server-backed store,
     # which has row/transaction-level concurrency of its own) they run
-    # unserialized, as before.
+    # unserialized, unless a chunk-tracking KV storage asks for the gate
+    # through ``BaseKVStorage.buffers_writes_per_process``.
     #
     # ``ClassVar`` on purpose: the storage bases are dataclasses, so a bare
     # annotated attribute would become an ``__init__`` field and change the

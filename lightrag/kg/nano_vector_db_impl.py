@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import zlib
 from functools import partial
 from hashlib import md5
@@ -10,7 +11,11 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
-from lightrag.exceptions import CommitBookkeepingError, CorruptStorageSnapshotError
+from lightrag.exceptions import (
+    CommitBookkeepingError,
+    CorruptStorageSnapshotError,
+    StorageCapabilityError,
+)
 from lightrag.file_atomic import atomic_write, reap_orphan_tmp_files
 from lightrag.utils import (
     commit_in_storage_io,
@@ -55,6 +60,49 @@ class _PendingNanoDoc:
 
     record: dict[str, Any]
     vector: np.ndarray | None = None
+
+
+# Exactly the code points UTF-8 cannot encode. Deliberately narrower than
+# ``lightrag.utils._SURROGATE_PATTERN``: that one also drops U+FFFE / U+FFFF,
+# which this store has always persisted, and record values include identity
+# fields (``entity_name``, ``src_id`` / ``tgt_id``) that must keep matching
+# the graph keys they name.
+_LONE_SURROGATE_PATTERN = re.compile("[\ud800-\udfff]")
+
+
+def _sanitize_record_value(value: Any) -> Any:
+    """Strip lone surrogates from a record value; keep everything else.
+
+    The namespace file is written by the external ``NanoVectorDB.save`` with
+    ``json.dump(..., ensure_ascii=False)`` into a UTF-8 file, so a lone
+    surrogate anywhere in a record makes the commit raise
+    ``UnicodeEncodeError`` — and the poisoned row stays buffered, so every
+    later commit on that namespace fails the same way until the row is
+    deleted. Clean string values at upsert time, recursing into list, tuple
+    and dict values.
+
+    Remove only what the save cannot encode. Every other character, U+FFFE /
+    U+FFFF included, was persisted unchanged before and must stay so: a
+    vector record's ``entity_name`` / ``src_id`` / ``tgt_id`` is looked up
+    as a graph key, so rewriting an encodable character would detach the
+    record from its graph object. Clean strings pass through unchanged.
+    """
+    if isinstance(value, str):
+        if not _LONE_SURROGATE_PATTERN.search(value):
+            return value
+        return _LONE_SURROGATE_PATTERN.sub("", value)
+    if isinstance(value, list):
+        return [_sanitize_record_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_record_value(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_record_value(k) if isinstance(k, str) else k: (
+                _sanitize_record_value(v)
+            )
+            for k, v in value.items()
+        }
+    return value
 
 
 @final
@@ -503,7 +551,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             them until that commit fires (see the contract doc,
             *Cross-process sync protocol*). Until the flush, an upserted id
             is observable only through the read-your-writes read paths, not
-            through ``query``.
+            through ``query``. Record string values are stripped of lone
+            surrogates here -- the only characters the on-disk snapshot
+            cannot hold -- so a buffered record can never wedge the
+            namespace's commits; every other character is kept as given.
         """
         # logger.debug(f"[{self.workspace}] Buffering {len(data)} to {self.namespace}")
         if not data:
@@ -522,7 +573,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     "__id__": k,
                     "__created_at__": current_time,
                     WRITE_SEQ_FIELD: write_seq,
-                    **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
+                    **{
+                        k1: _sanitize_record_value(v1)
+                        for k1, v1 in v.items()
+                        if k1 in self.meta_fields
+                    },
                 },
             )
             for k, v in data.items()
@@ -1004,6 +1059,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         Args:
             ids: List of vector IDs to be deleted
+
+        Raises:
+            Exception: whatever queuing the ids raised, re-raised after being
+                logged. A caller that treats a non-raising return as proof the
+                ids are queued for removal must not be told that when none of
+                them were.
         """
         try:
             # Cancelling the pending upsert and queueing the id are one
@@ -1024,6 +1085,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(
                 f"[{self.workspace}] Error while deleting vectors from {self.namespace}: {e}"
             )
+            raise
 
     async def delete_entity(self, entity_name: str) -> None:
         """Delete the vector associated with a single entity name.
@@ -1522,6 +1584,50 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     result_map[str(requested_id)] = self._format_record(redo.record)
 
         return [result_map.get(str(requested_id)) for requested_id in ids]
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Same as ``get_by_ids``: the data is in this process, so no read can
+        fail into a miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self.get_by_ids(ids)
+
+    async def get_exact_count(self) -> int:
+        """Count the persisted, addressable rows of this namespace.
+
+        Raises :class:`~lightrag.exceptions.StorageCapabilityError` instead of
+        answering while this process holds writes not yet on disk, or when the
+        persisted rows are malformed, unidentifiable or duplicated. Read-only:
+        nothing is repaired. See *Maintenance consistency capabilities* in
+        ``docs/design/FileBackedSnapshotContract.md``.
+        """
+        async with self._storage_lock:
+            self._reload_client_from_disk_locked()
+            if (
+                self._pending_upserts
+                or self._pending_deletes
+                or self._unsaved_upserts
+                or self._unsaved_deletes
+                or self._client_dirty
+            ):
+                raise StorageCapabilityError("unflushed_writes")
+            try:
+                storage = getattr(self._client, "_NanoVectorDB__storage")
+                rows = storage["data"]
+            except (AttributeError, KeyError, TypeError) as exc:
+                raise StorageCapabilityError("malformed_persisted_data") from exc
+            if not isinstance(rows, list):
+                raise StorageCapabilityError("malformed_persisted_data")
+            seen: set[str] = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise StorageCapabilityError("malformed_persisted_row")
+                row_id = row.get("__id__")
+                if row_id is None or not str(row_id).strip():
+                    raise StorageCapabilityError("unidentifiable_persisted_row")
+                normalized = str(row_id)
+                if normalized in seen:
+                    raise StorageCapabilityError("duplicate_persisted_id")
+                seen.add(normalized)
+            return len(rows)
 
     async def get_vectors_by_ids(self, ids: list[str]) -> dict[str, list[float]]:
         """Get vectors by their IDs (read-your-writes), returning only ID and vector.

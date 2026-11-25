@@ -20,10 +20,10 @@ LIGHTRAG_PARSER=*:legacy-F
 
 - `ENTITY_TYPES` is no longer supported. Use `ENTITY_TYPE_PROMPT_FILE` instead, with a YAML profile stored under `PROMPT_DIR/entity_type` (`PROMPT_DIR` defaults to `./prompts`). A sample template is available at `prompts/samples/entity_type_prompt.sample.yml`.
 - If you use OpenSearch storage and the cluster is older than OpenSearch 3.3.0, upgrade OpenSearch before enabling the v1.5 storage path and validate existing indices. For new deployments, use OpenSearch 3.3.0 or later.
-- Changing the embedding model, embedding dimension, asymmetric embedding behavior, or query/document prefixes changes vector semantics. Clear the affected LightRAG workspace/vector data and re-index source files.
+- Changing the embedding model, embedding dimension, asymmetric embedding behavior, or query/document prefixes changes vector semantics. Stop the server and run `lightrag-rebuild-vdb` with the new embedding configuration to rebuild the vectors from the knowledge graph and text chunks; see [Switching embedding models](ProgramingWithCore.md#switching-embedding-models). Do not clear the workspace or the data directory: that destroys the graph and chunks the rebuild reads from.
 - Changing parser routing (`LIGHTRAG_PARSER`) or filename hints affects newly uploaded files. To switch an existing document to another parser engine, delete that document and upload it again.
 - Changing chunker settings (`CHUNK_*`) affects documents enqueued after the server restarts. Reprocess older documents if you want their stored `chunk_options` snapshot to match the new settings.
-- Enabling multimodal options (`i/t/e`) requires parsed sidecars plus `VLM_PROCESS_ENABLE=true`. Existing documents can be reprocessed to run VLM analysis on available sidecars; switching extraction engines still requires delete + re-upload.
+- Enabling multimodal options (`i/t/e`) requires parsed sidecars; `VLM_PROCESS_ENABLE=true` gates image analysis only, while tables and equations use the `EXTRACT` role. Existing documents can be reprocessed to analyze available sidecars; switching extraction engines still requires delete + re-upload.
 
 ## Upgrading to bounded request sizes
 
@@ -222,7 +222,7 @@ During startup, configurations in the `.env` file can be overridden by command-l
 
 - `--host`: Server listening address (default: 0.0.0.0)
 - `--port`: Server listening port (default: 9621)
-- `--timeout`: LLM request timeout (default: 150 seconds)
+- `--timeout`: Base of the Gunicorn worker timeout, in seconds; the worker timeout is this value + 30 (default: 150). Ignored by `lightrag-server`; LLM requests use `LLM_TIMEOUT`
 - `--log-level`: Log level (default: INFO)
 - `--working-dir`: Database persistence directory (default: ./rag_storage)
 - `--input-dir`: Directory for uploaded files (default: ./inputs)
@@ -262,7 +262,7 @@ Using Docker Compose is the most convenient way to deploy and run the LightRAG S
 
 - Create a project directory.
 - Copy the `docker-compose.yml` file from the LightRAG repository into your project directory.
-- Prepare the `.env` file: Duplicate the sample file [`env.example`](https://ai.znipower.com:5013/c/env.example)to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
+- Prepare the `.env` file: Duplicate the sample file [`env.example`](../env.example) to create a customized `.env` file, and configure the LLM and embedding parameters according to your specific requirements.
 - Start the LightRAG Server with the following command:
 
 ```shell
@@ -310,10 +310,10 @@ VLM_PROCESS_ENABLE=false
 LLM_BINDING=openai
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
 
 #######################################################################################
 ### Embedding Configuration (do not change after the first file is processed)
@@ -381,7 +381,7 @@ Use this after the basic document flow works. The MinerU official API avoids run
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 
 VLM_PROCESS_ENABLE=true
-VLM_LLM_MODEL=gpt-5-mini
+VLM_LLM_MODEL=gpt-6.1-terra
 
 MINERU_API_MODE=official
 MINERU_API_TOKEN=your_mineru_api_token
@@ -390,7 +390,7 @@ MINERU_MODEL_VERSION=vlm
 MINERU_IS_OCR=false
 ```
 
-This routing uses the built-in `native` parser for supported DOCX files, MinerU for other MinerU-supported files such as PDFs and images, and `legacy` as the fallback. The `i`, `t`, and `e` options enable VLM analysis for image, table, and equation sidecars when the parser produces them.
+This routing uses the built-in `native` parser for supported DOCX, Markdown, and textpack files, MinerU for other MinerU-supported files such as PDFs and images, and `legacy` as the fallback. The `i`, `t`, and `e` options enable analysis for image, table, and equation sidecars when the parser produces them; image analysis uses VLM, while tables and equations use the `EXTRACT` role.
 
 For official mode, Docker does not need a host-loopback MinerU endpoint. The container only needs outbound network access to `MINERU_OFFICIAL_ENDPOINT`.
 
@@ -697,13 +697,45 @@ Passwords without a prefix are treated as plaintext. To store a bcrypt password,
 lightrag-hash-password --username admin
 ```
 
-The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`.
+The command prompts for the password and prints an `admin:{bcrypt}...` entry ready to paste into `.env`. bcrypt only uses the first 72 bytes of a password, so the command refuses a longer one (UTF-8 bytes, not characters); choose a shorter password instead.
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
 
-If Account credentials are not configured, the Web UI will access the system as a Guest. Therefore, even if only an API Key is configured, all APIs can still be accessed through the Guest account, which remains insecure. Hence, to safeguard the API, it is necessary to configure both authentication methods simultaneously.
+### WebUI compatibility change: account-only protected access
 
-> Although the server can be configured with **both** an API key and account credentials, a single request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied.
+Both `/webui` and `/workspace` no longer prompt for, store, or send API keys.
+API keys remain supported for programmatic API access; this transition does not
+change backend credential acceptance, dual-credential failures, or token renewal.
+
+| Accounts (`AUTH_ACCOUNTS`) | Effective API key (`LIGHTRAG_API_KEY` or `--key`) | WebUI |
+| --- | --- | --- |
+| Not configured | Not configured | Existing guest-token acquisition, transmission, refresh and renewal |
+| Configured | Not configured | Account login; user token only |
+| Configured | Configured | Account login; user token only |
+| Not configured | Configured | Configuration guidance; no guest application access or API-key prompt |
+
+**Migration for existing API-key-only WebUI users:** keep the API key, configure
+`AUTH_ACCOUNTS` and a strong, non-default `TOKEN_SECRET`, restart, reload all WebUI
+tabs, and sign in. Do not remove API-key protection to regain WebUI access.
+Deploy matching frontend/backend builds. A new WebUI cannot safely distinguish
+fully open from API-key-only on an older server without the discovery field and
+shows guidance instead of guessing guest access. Known legacy browser settings
+have only their `apiKey` removed; unrelated settings are retained. Unknown future
+storage versions remain untouched and are never used as credentials.
+
+Fully open WebUI access still uses guest tokens; a guest is not an authenticated
+account. Tokenless programmatic requests remain supported in fully open mode.
+A guest token alone does **not** bypass API-key protection on protected routes.
+The server still starts and serves programmatic clients in API-key-only mode.
+
+`GET /auth-status` adds the non-secret boolean `api_key_configured`, calculated
+from the effective server key. Existing fields, including `auth_configured`
+(account configuration only), retain their meanings; `/login` is unchanged.
+The browser uses discovery to choose its supported flow, not to enforce a new
+backend authorization policy. This migration does not change `WHITELIST_PATHS`
+handling either.
+
+> Although the server can be configured with **both** an API key and account credentials, a single programmatic request should send **either** `X-API-Key` **or** `Authorization: Bearer <token>` — not both. When both headers are present, the `Authorization` token is validated first; if it is invalid or expired the request is rejected with `401 Invalid token` even when a valid `X-API-Key` is also supplied. This WebUI migration does not change that behavior.
 
 ## For Azure OpenAI Backend
 
@@ -804,13 +836,13 @@ lightrag-server --embedding-binding gemini --help
 Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `240s * 50 tokens/s = 12000`, max_tokens should smaller than 12000)
 
 ```
-# For vLLM/SGLang doployed models, or most of OpenAI compatible API provider
+# For vLLM/SGLang deployed models, or most of OpenAI compatible API provider
 OPENAI_LLM_MAX_TOKENS=9000
 
-# For Ollama Deployed Modeles
+# For Ollama Deployed Models
 OLLAMA_LLM_NUM_PREDICT=9000
 
-# For OpenAI o1-mini or newer modles
+# For OpenAI o1-mini or newer models
 OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 ```
 
@@ -823,20 +855,20 @@ The server can use different models for different stages without changing client
 | `EXTRACT` | Entity/relation extraction and merge summaries |
 | `KEYWORD` | Query keyword generation before retrieval |
 | `QUERY` | Final answers, bypass queries, and Ollama-compatible chat responses |
-| `VLM` | Multimodal analysis for images, tables, equations, and similar sidecar items |
+| `VLM` | Image/drawing analysis for eligible sidecar items |
 
 If a role is not configured, it inherits the base `LLM_*` settings. Minimal same-provider example:
 
 ```bash
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
-EXTRACT_LLM_MODEL=gpt-5-mini
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
-VLM_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
+VLM_LLM_MODEL=gpt-6.1-terra
 ```
 
 **Recommended models by role:**
@@ -894,6 +926,18 @@ MAX_EXTRACTION_ENTITIES=40
 ```
 
 If an old `.env` still contains `ENTITY_TYPES`, remove it before startup. The server fails fast because this variable has been replaced by prompt profiles.
+
+### Query Keyword Extraction Configuration
+
+Keyword extraction runs on the query path (the `KEYWORD` role LLM) for the `hybrid`, `local` and `global` modes. Its structured-output policy is independent of `ENTITY_EXTRACTION_USE_JSON`:
+
+- `KEYWORD_EXTRACTION_JSON_MODE`: `auto` (default) requests `response_format={"type": "json_object"}` and retries the same prompt once without it, but only when the provider rejects that field itself; `json_object` always sends it; `none` never sends it. Set `json_object` or `none` only when you know your provider's position: servers such as LM Studio accept only `json_schema`/`text` and answer HTTP 400, which the query path surfaces as an empty retrieval result.
+
+Example:
+
+```bash
+KEYWORD_EXTRACTION_JSON_MODE=auto
+```
 
 ### Storage Types Supported
 
@@ -1024,6 +1068,8 @@ python -m lightrag.tools.migrate_graph_storage --apply
 
 Only the graph moves; vector and KV data are untouched and stay valid, because the migrated graph keeps the same entity and relation identities. The tool requires an empty target graph slice and refuses, before writing anything, on every construct it can see that would not survive the move — a node without a usable identity, a duplicate node id, a reciprocal edge pair, or a value PostgreSQL `jsonb` cannot store. If a write fails it removes exactly what that run wrote. One limit worth knowing: Apache AGE enumerates edges with `SELECT DISTINCT`, so two byte-identical relationships between the same pair arrive as one row and the tool cannot see that the graph's degree will change. Re-indexing remains the general guidance for changing storage backends — this is an advanced path for one specific pair. For preconditions, the report format, and the failure handling, refer to [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
+In a Docker Compose deployment, run the tool in a one-off container of the `lightrag` service and follow [Migrate from PGGraphStorage to PGTableGraphStorage](DockerDeployment.md#migrate-from-pggraphstorage-to-pgtablegraphstorage), which also removes the AGE graph before the PostgreSQL image is switched.
+
 ### LightRAG API Server Command Line Options
 
 | Parameter | Default | Description |
@@ -1032,7 +1078,7 @@ Only the graph moves; vector and KV data are untouched and stay valid, because t
 | `--port` | `9621` | Server port |
 | `--working-dir` | `./rag_storage` | Working directory for RAG storage |
 | `--input-dir` | `./inputs` | Directory containing uploaded/input documents |
-| `--timeout` | `150` | Gunicorn worker timeout and fallback request timeout |
+| `--timeout` | `150` | Base of the Gunicorn worker timeout in seconds (worker timeout = value + 30); not an LLM request timeout |
 | `--max-async` | `4` | Base maximum LLM concurrency; also the per-document chunk-extraction task limit (each entity/relation merge phase uses twice this task limit) |
 | `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `--verbose` | `False` | Verbose debug output, effective with debug logging |
@@ -1270,7 +1316,7 @@ Supported engines:
 | Engine | Use case |
 | --- | --- |
 | `legacy` | Original extraction behavior. Good for compatibility and simple text-like files. |
-| `native` | Built-in structured parser, currently focused on `.docx` and LightRAG Document sidecars. |
+| `native` | Built-in structured parser for `.docx`, `.md`, and `.textpack`; emits LightRAG Document sidecars. |
 | `mineru` | External MinerU parser for PDFs, Office files, and images. Requires `MINERU_API_MODE` plus `MINERU_LOCAL_ENDPOINT` or `MINERU_API_TOKEN`. |
 | `docling` | External docling-serve parser for PDFs, Office files, Markdown/HTML, and images. Requires `DOCLING_ENDPOINT`. |
 
@@ -1294,15 +1340,16 @@ Processing options are appended after the engine with a hyphen, or supplied alon
 | Option | Meaning |
 | --- | --- |
 | `i` | Run VLM analysis for image/drawing sidecars when present |
-| `t` | Run VLM analysis for table sidecars when present |
-| `e` | Run VLM analysis for equation sidecars when present |
+| `t` | Analyze table sidecars with the `EXTRACT` role when present |
+| `e` | Analyze equation sidecars with the `EXTRACT` role when present |
 | `!` | Skip entity/relation extraction and graph writes; chunk vectors are still stored |
 | `F` | Fixed token chunking, the legacy chunking method |
 | `R` | Recursive character chunking with configurable separator cascade |
 | `V` | Semantic vector chunking; oversize chunks are re-split by `R` |
 | `P` | Paragraph semantic chunking for structured LightRAG Document content; falls back to `R` when structured content is unavailable |
+| `C` | Custom chunker callback; uses its fixed-token fallback when no callback is configured |
 
-At most one of `F`, `R`, `V`, and `P` should be selected for a file. Chunker parameters are configured with `CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`, and strategy-specific variables such as `CHUNK_R_SEPARATORS`, `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`, `CHUNK_P_SIZE`, and `CHUNK_P_OVERLAP_SIZE`. These values are read at server startup and stored as a per-document `chunk_options` snapshot when a document is enqueued.
+At most one of `F`, `R`, `V`, `P`, and `C` should be selected for a file. Chunker parameters are configured with `CHUNK_SIZE`, `CHUNK_OVERLAP_SIZE`, and strategy-specific variables such as `CHUNK_R_SEPARATORS`, `CHUNK_V_BREAKPOINT_THRESHOLD_TYPE`, `CHUNK_P_SIZE`, and `CHUNK_P_OVERLAP_SIZE`. These values are read at server startup and stored as a per-document `chunk_options` snapshot when a document is enqueued.
 
 The `V` strategy's sentence splitter is the one chunker parameter that cannot be set per request: `CHUNK_V_SENTENCE_SPLIT_REGEX` (or the SDK's `addon_params`) is the only way to change it. `/documents/text` and `/documents/texts` reject a `sentence_split_regex` key inside `chunking.params` with HTTP 422. A caller-supplied pattern is applied to that same request's text, and CPython's regex engine holds the GIL while backtracking, so a pattern such as `(a+)+$` can freeze an entire worker process — see [GHSA-32jh-39m7-8x84](https://github.com/HKUDS/LightRAG/security/advisories/GHSA-32jh-39m7-8x84). A value already stored in a document's `chunk_options` snapshot is discarded at processing time as well (logged at `WARNING`), so a pattern persisted by an older build cannot freeze the worker after an upgrade.
 

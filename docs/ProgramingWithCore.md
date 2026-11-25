@@ -86,12 +86,14 @@ Notes:
 | **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
 | **embedding_batch_num** | `int` | Maximum batch size for embedding processes (multiple texts sent per batch) | `32` |
 | **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
+| **default_embedding_timeout** | `int` | Embedding request timeout in seconds. It sizes the embedding queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the client's request timeout: the bundled embedding bindings (`openai_embed`, `azure_openai_embed`, `ollama_embed`, `gemini_embed`, `bedrock_embed`, `jina_embed`, `voyageai_embed`, `zhipu_embedding`, `nvidia_openai_embed`, `lollms_embed`) read it during the call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `embedding_func` as an argument; one that builds its own client can read it with `lightrag.utils.embedding_timeout()`. A binding's own positive `timeout` argument takes precedence, and a `timeout` in `openai_embed`'s `client_configs` outranks the LightRAG value. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and the client keeps its SDK default (or the `client_configs` timeout, if one is set). | `30` (configured by env var EMBEDDING_TIMEOUT) |
 | **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | LLM model name for generation | `gpt-4o-mini` |
 | **summary_context_size** | `int` | Maximum tokens send to LLM to generate summaries for entity relation merging | `10000`（configured by env var SUMMARY_CONTEXT_SIZE) |
 | **summary_max_tokens** | `int` | Maximum token size for entity/relation description | `500`（configured by env var SUMMARY_MAX_TOKENS) |
 | **llm_model_max_async** | `int` | Base maximum LLM concurrency; also caps per-document chunk extraction tasks, while each entity/relation merge phase uses twice this task limit | `4`（default value changed by env var MAX_ASYNC_LLM; MAX_ASYNC is still accepted as a deprecated alias; `EXTRACT_MAX_ASYNC_LLM` can independently limit actual Extract-role requests) |
-| **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
+| **llm_model_kwargs** | `dict` | Additional parameters for LLM generation. A role without its own `RoleLLMConfig(kwargs=...)` receives this dict, unless the role is cross-provider (`is_cross_provider` in its metadata, also set when a runtime update changes its binding away from `base_binding`): such a role receives no base kwargs at all. A role's own kwargs replace this dict as a whole (nothing is merged in). To count token usage, pass a `lightrag.utils.TokenTracker` here (`llm_model_kwargs={"token_tracker": tracker}`), and repeat it in every role's own kwargs (`kwargs` / `model_kwargs`), and in the kwargs of every cross-provider role; the OpenAI (incl. Azure OpenAI and OpenAI Responses), Ollama, Gemini, Anthropic, Bedrock and Zhipu provider functions add each call's usage to it. The OpenAI Chat Completions binding also adds the provider's `cached_prompt_tokens` (part of `prompt_tokens`) when the response reports it; `get_usage()` includes that key only once some call reported it. `with tracker:` only resets the tracker and prints it on exit, it does not attach it to any call. | |
+| **default_llm_timeout** | `int` | Base LLM request timeout in seconds. A role uses it unless its `RoleLLMConfig(timeout=...)` is set. The role's effective timeout sizes its queue (each call is capped at twice the timeout, which leaves room for a retry) and is also the provider client's request timeout: the bundled `*_complete` provider wrappers read it during the role call, including when they are reached through a `functools.partial` or a custom function. It is never passed to a custom `llm_model_func` as an argument; one that calls a provider's `*_if_cache` function directly can apply it with `lightrag.llm_roles.apply_llm_timeout(kwargs)`. A `timeout` in `llm_model_kwargs`, in the role's kwargs or in `openai_client_configs` takes precedence. `0` (or a negative value) means LightRAG sets no timeout: the queue applies no cap and each provider client keeps its SDK default (for example 600 s for OpenAI, 60 s for Bedrock through botocore). | `240` (configured by env var LLM_TIMEOUT) |
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
@@ -110,7 +112,7 @@ Notes:
 | `language` | Non-empty string. Defaults to `SUMMARY_LANGUAGE`, then `English`. | Output language used in entity and relationship extraction, entity/relation summaries, keyword extraction, and multimodal analysis prompts. |
 | `entity_type_prompt_file` | `.yml` or `.yaml` file name only. Loaded from `${PROMPT_DIR:-./prompts}/entity_type`. | Loads an entity extraction prompt profile. The profile can define `entity_types_guidance`, `entity_extraction_examples`, and `entity_extraction_json_examples`. The active extraction mode must have matching examples: text mode needs `entity_extraction_examples`; JSON mode needs `entity_extraction_json_examples`. |
 | `entity_types_guidance` | Non-empty string. | Inline entity type guidance injected into extraction prompts. This overrides both the prompt profile file and the built-in default guidance. |
-| `chunker` | Dict with F/R/V/P chunking settings (the `C` selector reuses the `fixed_token` sub-dictionary). | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
+| `chunker` | Dict with F/R/V/P chunking settings; `C` selects a custom chunker callback and reuses the `fixed_token` sub-dictionary for its fallback. | Runtime baseline for chunker parameters. Each document gets a slim `chunk_options` snapshot at enqueue time; later edits affect only future enqueues. |
 
 Compact `chunker` shape:
 
@@ -302,6 +304,48 @@ class QueryParam:
 
 > The default value of `top_k` can be changed by the environment variable `TOP_K`.
 
+For graph query modes (`local`, `global`, `hybrid`, `mix`), `max_total_tokens`
+also caps the graph context when the entity and relationship limits are larger.
+Whole records are retained in ranking order before selecting their source chunks;
+the final check includes the rendered system prompt, user query, chunk references,
+and configured user instructions. If the required prompt and query alone cannot
+fit, the query returns no result without calling the answer model. Graph records
+are filled before chunks: when they use up the budget, no chunk is sent, the answer
+relies on the graph context alone, and a "Token budget left no room" warning is
+logged. Conversation history and provider-specific message framing are outside
+this context budget.
+
+
+### Streaming queries
+
+Use `aquery(..., QueryParam(stream=True))` from async code and consume the
+returned chunks with `async for`. Even with `stream=True`, the result is a
+complete string instead of a stream when the answer comes from the query
+cache, when no context is found, or when the model does not stream, so handle
+both return values.
+
+```python
+from lightrag import QueryParam
+
+
+async def print_answer(rag, question):
+    answer = await rag.aquery(question, param=QueryParam(mode="hybrid", stream=True))
+    if isinstance(answer, str):
+        print(answer)
+        return
+
+    async for chunk in answer:
+        print(chunk, end="", flush=True)
+    print()
+```
+
+Call this helper on the event loop that initialized the LightRAG instance.
+The synchronous `query()` wrapper returns the same value as `aquery()` once
+retrieval has finished and the model call has started, so a streamed answer
+comes back as an async iterator that cannot be read with a plain `for` loop.
+There is no synchronous stream: for synchronous scripts that need a string,
+use `QueryParam(stream=False)`.
+
 
 ## LLM and Embedding Injection
 
@@ -475,6 +519,23 @@ async def initialize_rag():
     return rag
 ```
 
+**Embedding batch sizes:** `llama_index_embed` calls the model's public
+`aget_text_embedding_batch`, so the model's `embed_batch_size` and
+`embeddings_cache` apply. The two batch sizes stack:
+
+- LightRAG's `embedding_batch_num` (`EMBEDDING_BATCH_NUM`) sets how many texts
+  one `embedding_func` call hands to the adapter, and `embedding_func_max_async`
+  (`EMBEDDING_FUNC_MAX_ASYNC`) caps how many of those calls run at once.
+- The model's `embed_batch_size` (LlamaIndex default: 10) splits each call into
+  sub-batches of at most that many texts, one embedding request each, and
+  LlamaIndex sends a call's sub-batches concurrently. Up to
+  `embedding_func_max_async × ceil(embedding_batch_num / embed_batch_size)`
+  requests can therefore be in flight; with `EMBEDDING_BATCH_NUM=32` and the
+  default `embed_batch_size`, each call becomes four concurrent requests.
+- Set `embed_batch_size` to the provider's per-request input limit. To keep one
+  request per call, set `embed_batch_size >= embedding_batch_num`; to lower the
+  overall request concurrency, lower `embedding_func_max_async`.
+
 **Further reading:**
 - [LlamaIndex Documentation](https://developers.llamaindex.ai/python/framework/)
 - [Direct OpenAI Example](../examples/unofficial-sample/lightrag_llamaindex_direct_demo.py)
@@ -540,26 +601,30 @@ async def llm_model_func(
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model_name="gemini-2.0-flash",
+        model_name="gemini-flash-latest",
         **kwargs
     )
 
+# send_dimensions=True makes LightRAG pass embedding_dim to the wrapper, which
+# must accept it and forward it so Gemini returns vectors of that size.
 @wrap_embedding_func_with_attrs(
     embedding_dim=768,
+    send_dimensions=True,
     max_token_size=2048,
-    model_name="models/text-embedding-004"
+    model_name="gemini-embedding-001"
 )
-async def embedding_func(texts: list[str]) -> np.ndarray:
+async def embedding_func(texts: list[str], embedding_dim: int | None = None) -> np.ndarray:
     return await gemini_embed.func(
         texts,
         api_key=os.getenv("GEMINI_API_KEY"),
-        model="models/text-embedding-004"
+        model="gemini-embedding-001",
+        embedding_dim=embedding_dim
     )
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
-    llm_model_name="gemini-2.0-flash",
+    llm_model_name="gemini-flash-latest",
     embedding_func=embedding_func
 )
 ```
@@ -616,6 +681,8 @@ To enhance retrieval quality, documents can be re-ranked based on a more effecti
 - **Aliyun**: `ali_rerank`
 
 Inject one of these functions into the `rerank_model_func` attribute of the LightRAG object. For detailed usage, refer to `examples/rerank_example.py`.
+
+`default_rerank_timeout` (env var `RERANK_TIMEOUT`, default `30`) sizes the rerank queue the same way `default_embedding_timeout` sizes the embedding queue, and these three functions use it as their HTTP session's total timeout per attempt; a timed-out attempt is retried. A `timeout` argument passed to the function takes precedence, a custom `rerank_model_func` can read the value with `lightrag.utils.rerank_timeout()`, and `0` (or a negative value) keeps aiohttp's session default (300 s).
 
 ### Injecting a Custom Tokenizer
 
@@ -735,6 +802,14 @@ Contract:
 - **Coverage.** Every path that extracts goes through it: the document pipeline
   and `ainsert_custom_chunks` alike. `ainsert_custom_kg` does not extract — the
   caller supplies the graph directly — so it is not filtered.
+- **It also runs when a document is deleted.** The deletion rebuild re-reads
+  each surviving chunk's extraction cache, which stores the raw LLM answer from
+  *before* the hook ran, and passes those records through the hook again (or
+  through a fresh extraction, when the cache row is gone). So the hook is
+  called again for chunks it already filtered, once per chunk per rebuild: it
+  must give the same answer on a repeat call, and any state it keeps (an audit
+  log) sees the repeat. A hook that raises fails the deletion, which stays
+  retryable.
 - **Multimodal entities are not shown to the hook.** For a drawing / table /
   equation chunk, LightRAG synthesizes one entity from the sidecar and links it
   to the chunk's surviving entities. That injection happens *after* the hook, so
@@ -765,7 +840,10 @@ Contract:
   repeating the same call resumes the operation (roll-forward belongs to the
   SDK caller), while `/documents/scan` — through
   `arollback_failed_custom_chunk_patches` — is what rolls it back. Do not
-  assume a failed custom-chunk call left no recoverable state.
+  assume a failed custom-chunk call left no recoverable state. A chunk over
+  the embedding function's `max_token_size` is refused before any of this
+  (`ChunkTokenLimitExceededError`, nothing written), on every call, so a retry
+  after the limit was lowered is refused too and only the scan can clear it.
 - **A stateful validator keeps its identity.** A bound method or callable object
   that accumulates an audit log sees its own instance, not a per-document copy.
   As with a custom tokenizer, however, `LightRAG` builds its internal config
@@ -865,7 +943,7 @@ changes can still advance the cache version and retire older entries.
 
 ## Storage Backends
 
-### Sotrage Types
+### Storage Types
 
 LightRAG uses 4 types of storage for different purposes:
 
@@ -1392,7 +1470,7 @@ upsert contract rather than relying on PostgreSQL behavior.
 
 ```python
 rag = LightRAG(..)
-await rag.apipeline_enqueue_documents(input)
+await rag.apipeline_enqueue_documents(["TEXT1", "TEXT2"])
 # Your routine in loop
 await rag.apipeline_process_enqueue_documents()
 ```
@@ -1538,8 +1616,11 @@ field, copying the stored weight verbatim without touching the graph.
 
 A rebuild re-derives the relation from the extraction results cached for the
 surviving chunks, so — like the rebuilt description and keywords — the weight is
-recomputed rather than preserved: it becomes the summed fragment weights lifted
-to the surviving evidence count. Weight therefore follows evidence downward as a
+recomputed rather than preserved: each surviving chunk contributes the weight of
+its first cached fragment once, even when its extraction states the relation
+several times or in both directions, and the sum is lifted to the surviving
+evidence count. Extraction applies the same rule on insert, counting each new
+source once per merge. Weight therefore follows evidence downward as a
 purge removes chunks, and an importance boost applied through `edit_relation`
 does not survive a rebuild that finds cached fragments. When no cached fragment
 survives, the rebuild keeps the stored weight.
@@ -1553,6 +1634,13 @@ merged weight = max(all input weights, distinct merged real source IDs)
 
 This preserves a larger manual boost while preventing the merged weight from
 falling below its evidence count.
+
+When `insert_custom_kg` writes a relation that already exists, the same rule
+applies to the stored edge and the custom one:
+
+```text
+weight = max(custom weight, stored weight, distinct merged real source IDs)
+```
 
 ### Chunk tracking across a rename or merge
 
@@ -1648,6 +1736,14 @@ custom_kg = {
 rag.insert_custom_kg(custom_kg)
 ```
 
+Writing an entity or relation that already exists replaces its `description`,
+`entity_type` and `keywords` with the custom values but **merges** its
+provenance: the custom chunk is added to the chunk tracking rows
+(`entity_chunks` / `relation_chunks`), to `source_id` and to `file_path`, and
+an existing relationship endpoint gains the relationship's chunk, as a document
+merge does. Deleting a document that contributed to the object therefore keeps
+it, attributed to the custom chunk.
+
 * Other Entity and Relation Operations
   - **create_entity**: Creates a new entity with specified attributes
   - **edit_entity**: Updates an existing entity's attributes or renames it
@@ -1732,8 +1828,9 @@ deletion is always the recovery step:
 
 #### Concurrent admin writes
 
-On a graph storage that declares `requires_single_writer` — `NetworkXStorage`,
-the only one — every public admin graph writer (`acreate_entity`,
+On a graph storage that declares `requires_single_writer` (`NetworkXStorage`,
+the only one), or when chunk tracking sits on a KV storage that buffers writes
+per process (`OpenSearchKVStorage`, the only one), every public admin graph writer (`acreate_entity`,
 `acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
 `adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
 every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
@@ -1957,13 +2054,16 @@ What remains, and why it is tolerated:
   out of the create, edit, merge and delete paths alike, so the caller sees a
   500 instead of a success for a write that was discarded.
 
-A workspace-wide admin lock was specified and dropped: it would not have changed
-what a crash can leave behind, since the same residue is reachable with no
-concurrency at all. If you drive the public Python admin API yourself
-(`acreate_entity`, `aedit_entity`, `amerge_entities`, `adelete_by_entity` and
-their relation counterparts) **do not call them concurrently on a file-backed
-workspace** — one at a time, or use a server-backed graph and KV store.
-`ainsert_custom_kg` is subject to the same rule.
+Serializing admin writers would not remove any of these: they are what a crash
+can leave behind, and the same residue is reachable with no concurrency at all.
+Concurrency is handled separately and per storage: when the graph backend
+declares `requires_single_writer` (`NetworkXStorage`, the only one), or chunk
+tracking sits on `OpenSearchKVStorage`, public admin
+graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
+lock plus the pipeline `busy` reservation. Other backend combinations do not take that
+gate and rely on the per-entity keyed locks. See
+[Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
+and recovery behavior.
 
 #### Repairing chunk tracking
 
@@ -2082,6 +2182,19 @@ The deletion process:
 3. Rebuild entities/relationships that still exist in other documents
 4. Update all related vector indexes
 5. Clean up document status records
+
+Step 3 rebuilds each shared entity and relation from the extraction cache of
+the surviving chunks. A surviving chunk whose initial extraction is no longer
+cached (the cache was cleared, the row was shared with a document deleted with
+`delete_llm_cache=True`, or `enable_llm_cache_for_entity_extract` was off) is
+**re-extracted with the LLM** during the deletion, so a deletion can make LLM
+calls and fails, retryably, when the LLM is unavailable. A re-extraction may
+name things differently from the original one: the pipeline history then lists
+the surviving documents involved, and reprocessing them (delete with
+`delete_llm_cache=False`, then insert the same content again) merges the new
+names. An entity or relation that no surviving chunk's extraction names is
+kept, with its `source_id` / `file_path` rewritten to the surviving chunks. See
+[Deletion rebuild evidence](design/PurgeRecoveryContract.md#deletion-rebuild-evidence).
 
 **Important Reminders:**
 1. All deletion operations are **irreversible** — use with caution

@@ -18,7 +18,6 @@ from lightrag.llm.binding_options import (
     OpenAIResponsesLLMOptions,
 )
 from lightrag.base import OllamaServerInfos
-import sys
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -77,23 +76,22 @@ class DefaultRAGStorageConfig:
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
 
-def get_default_host(binding_type: str) -> str:
-    default_hosts = {
-        "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
-        "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
+def get_default_host(binding_type: str, *, use_llm_host: bool = True) -> str:
+    """Resolve a binding's endpoint, optionally applying the base host override."""
+    defaults = {
+        "ollama": "http://localhost:11434",
+        "lollms": "http://localhost:9600",
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
-        "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
-        "openai_responses": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
-        # Let boto3 select the regional Bedrock endpoint unless the user
-        # explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
-        "bedrock": os.getenv("LLM_BINDING_HOST", "DEFAULT_BEDROCK_ENDPOINT"),
-        # Let google-genai pick the correct default endpoint/version unless the
-        # user explicitly overrides LLM_BINDING_HOST / EMBEDDING_BINDING_HOST.
-        "gemini": os.getenv("LLM_BINDING_HOST", "DEFAULT_GEMINI_ENDPOINT"),
+        "openai": "https://api.openai.com/v1",
+        "openai_responses": "https://api.openai.com/v1",
+        # Let the SDK choose its regional endpoint unless explicitly overridden.
+        "bedrock": "DEFAULT_BEDROCK_ENDPOINT",
+        "gemini": "DEFAULT_GEMINI_ENDPOINT",
     }
-    return default_hosts.get(
-        binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
-    )  # fallback to ollama if unknown
+    default_host = defaults.get(binding_type, "http://localhost:11434")
+    if use_llm_host and binding_type != "azure_openai":
+        return os.getenv("LLM_BINDING_HOST", default_host)
+    return default_host
 
 
 def resolve_asymmetric_embedding_opt_in(
@@ -406,7 +404,11 @@ def parse_args() -> argparse.Namespace:
         "--timeout",
         default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
         type=int,
-        help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
+        help=(
+            "Base of the Gunicorn worker timeout in integer seconds "
+            "(worker timeout = value + 30; 0 does not disable it). "
+            "Ignored by lightrag-server; LLM requests use LLM_TIMEOUT"
+        ),
     )
 
     # RAG configuration
@@ -580,19 +582,25 @@ def parse_args() -> argparse.Namespace:
     # This registers command line arguments (e.g., --openai-llm-temperature)
     # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
 
-    # Determine LLM binding value consistently from command line or environment
-    llm_binding_value = None
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
-                llm_binding_value = sys.argv[idx + 1]
-        except IndexError:
-            pass
-
-    # Fall back to environment variable using same function as argparse default
-    if llm_binding_value is None:
-        llm_binding_value = get_binding_env_value("LLM_BINDING", "ollama")
+    # Pre-parse the two selectors with argparse itself, so the provider options
+    # registered below follow the binding the final parse will report: equals
+    # syntax, the last of repeated options and abbreviations (``allow_abbrev``
+    # stays on, as on ``parser``) all resolve the same way. ``add_help=False``
+    # keeps --help for the final parse, which lists the provider options. A
+    # malformed selector (e.g. a missing value) falls back to the defaults and
+    # is reported by the final parse, with the full usage text.
+    binding_parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    binding_parser.add_argument(
+        "--llm-binding", default=parser.get_default("llm_binding")
+    )
+    binding_parser.add_argument(
+        "--embedding-binding", default=parser.get_default("embedding_binding")
+    )
+    try:
+        binding_args, _ = binding_parser.parse_known_args()
+    except argparse.ArgumentError:
+        binding_args = binding_parser.parse_known_args([])[0]
+    llm_binding_value = binding_args.llm_binding
 
     # Add LLM binding options based on determined value
     if llm_binding_value == "ollama":
@@ -606,19 +614,7 @@ def parse_args() -> argparse.Namespace:
     elif llm_binding_value == "bedrock":
         BedrockLLMOptions.add_args(parser)
 
-    # Determine embedding binding value consistently from command line or environment
-    embedding_binding_value = None
-    if "--embedding-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--embedding-binding")
-            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
-                embedding_binding_value = sys.argv[idx + 1]
-        except IndexError:
-            pass
-
-    # Fall back to environment variable using same function as argparse default
-    if embedding_binding_value is None:
-        embedding_binding_value = get_binding_env_value("EMBEDDING_BINDING", "ollama")
+    embedding_binding_value = binding_args.embedding_binding
 
     # Add embedding binding options based on determined value
     if embedding_binding_value == "ollama":
@@ -839,8 +835,13 @@ def parse_args() -> argparse.Namespace:
             if not role_model:
                 missing.append(model_key)
             if not role_host:
-                role_host = get_default_host(role_binding)
+                role_host = get_default_host(role_binding, use_llm_host=False)
                 setattr(args, f"{attr_prefix}_llm_binding_host", role_host)
+                logger.warning(
+                    f"Role '{spec.name}' ({role_binding}) has no {host_key}; "
+                    f"using the {role_binding} default host {role_host}, "
+                    "not LLM_BINDING_HOST"
+                )
             if role_binding != "bedrock" and not role_apikey:
                 missing.append(apikey_key)
             if missing:

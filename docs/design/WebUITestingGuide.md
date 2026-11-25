@@ -20,7 +20,7 @@ only the component tests break. `src/test/render.tsx` calls
 cause and the fix; `bun test --config <path>` does NOT work around it, because
 the preload paths inside the file are still resolved against the CWD.
 
-Rules for new tests:
+## Writing a test
 
 - **Test rendered behavior by rendering it.** Assert what the user gets —
   roles, accessible names, visibility, what a click does. Do NOT write new
@@ -30,6 +30,11 @@ Rules for new tests:
   working nearby is welcome. String and AST assertions stay correct for what
   genuinely IS a source-level property — an i18n key present in every locale, a
   forbidden import — just not for what the component renders.
+- **Render through `renderWithProviders`** (`src/test/render.tsx`), not
+  Testing Library's bare `render`. It supplies a fixed English i18n instance
+  built from `locales/en.json` and deliberately does not import `@/i18n`, whose
+  bootstrap resolves a language from `localStorage` and runs the settings
+  migration — ambient state that asserted strings must not depend on.
 - **Seed the stores a page reads, rather than stubbing its requests.**
   Pages behind `useCustomizedContent` render NOTHING until the first
   customization response settles, so an unseeded render finds an empty page:
@@ -45,32 +50,26 @@ Rules for new tests:
   ALREADY DID when it was first imported. Importing after the mock is
   unconditionally safe and costs nothing, so do that rather than auditing
   which access pattern every module in the chain happens to use.
-- **Render through `renderWithProviders`** (`src/test/render.tsx`), not
-  Testing Library's bare `render`. It supplies a fixed English i18n instance
-  built from `locales/en.json` and deliberately does not import `@/i18n`, whose
-  bootstrap resolves a language from `localStorage` and runs the settings
-  migration — ambient state that asserted strings must not depend on.
-- **A file-local `afterEach` runs BEFORE the preload's `cleanup()`.** So a
-  store reset written there lands on a STILL-MOUNTED component: its effects
-  re-run, and a page behind `useCustomizedContent` starts a real
-  `/ui/customization` request during teardown that can land during the NEXT
-  test and overwrite its seeded snapshot. Call `cleanup()` yourself at the top
-  of the hook, before resetting anything; it is idempotent, so the preload's
-  own call afterwards is harmless.
-- **Never assert `toBeNull()` / `not.toBeInTheDocument()` on a DOM element.**
-  Use a count instead — `expect(screen.queryAllByRole(...)).toHaveLength(0)`.
-  When such an assertion fails, Bun serialises the entire happy-dom element
-  it received, which is large enough that the run appears to HANG rather than
-  report a failure. The count form fails instantly and legibly
-  (`Expected length: 0, Received length: 1`). The same applies to any
-  assertion whose failure message would carry a DOM node — **including an
-  identity check like `expect(document.activeElement).toBe(link)`**: compare a
-  boolean or a string you extracted instead
-  (`expect(document.activeElement === link).toBe(true)`,
-  `expect(card.contains(footer)).toBe(false)`,
-  `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
-  page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
-  form, and the gap grows with the size of the rendered DOM.
+- **Inputs must tell the right answer from the wrong one.** A setting left at
+  its default cannot show that an entry overrode it back to the default, and
+  two switches that always take the same value cannot show that one was copied
+  into the other. Seed non-default values, give sibling fields different
+  values, and cover the unequal combinations. Both of these slipped through a
+  source-to-rendered conversion until review: the debug switches were only
+  ever tested equal, and `disable_user_prompt_prefix` was left at `false`.
+- **Import-time behavior needs a fresh module instance.** Bun caches a module
+  per specifier, so in a full run a test that imports an already-loaded module
+  and checks "the import touched no storage" evaluates nothing and cannot
+  fail. Import it under a unique specifier
+  (`` await import(`./legacySettingsChain?fresh=${Date.now()}`) ``; building it
+  at runtime keeps `tsc` from resolving the query string), and assert an
+  export of the fresh instance to prove it was evaluated.
+- **Prove the test can fail.** Before calling it done, break the behavior it
+  pins (flip the `aria-label`, drop the guard), confirm it goes red, then
+  restore. A test written against already-passing code is worth nothing until
+  it has been seen to fail: `harnessIsolation.test.ts` originally matched only
+  `from '…'` and silently let a bare side-effect `import '…'` through, which
+  only the mutation check surfaced.
 - **Converting a source-text test: enumerate what the old one PROHIBITS,
   not just what it asserts.** A `readFileSync` test buys its negatives almost
   for free — one `expect(source).not.toContain('BuiltInLogo')` forbids a whole
@@ -100,12 +99,49 @@ Rules for new tests:
 
   Where the old negative genuinely has no rendered counterpart, say so in the
   PR rather than letting it disappear.
-- **Prove the test can fail.** Before calling it done, break the behavior it
-  pins (flip the `aria-label`, drop the guard), confirm it goes red, then
-  restore. A test written against already-passing code is worth nothing until
-  it has been seen to fail: `harnessIsolation.test.ts` originally matched only
-  `from '…'` and silently let a bare side-effect `import '…'` through, which
-  only the mutation check surfaced.
+
+## Every test must earn its place
+
+The backend criteria apply unchanged: see
+[Every test must earn its place](BackendTestingGuide.md#every-test-must-earn-its-place)
+and [Removing or merging a test](BackendTestingGuide.md#removing-or-merging-a-test).
+In WebUI terms:
+
+- **One rendered scenario, one test.** Render once and assert every facet of
+  that outcome, rather than rendering the same page in three tests that each
+  check one attribute.
+- **One case per branch.** Two status codes that share a `case` label, or two
+  results that take the same branch of a dialog, are one case.
+- **Render the smallest tree that shows the behavior.** A component with its
+  stores seeded, not the whole `App`; where a full render would be the only
+  way to see one dependency list, a narrow source assertion is the cheaper
+  honest choice, and a comment says why.
+- **A converted test still lists what it no longer pins** in the PR (see
+  *Converting a source-text test* above).
+
+## Harness gotchas
+
+- **A file-local `afterEach` runs BEFORE the preload's `cleanup()`.** So a
+  store reset written there lands on a STILL-MOUNTED component: its effects
+  re-run, and a page behind `useCustomizedContent` starts a real
+  `/ui/customization` request during teardown that can land during the NEXT
+  test and overwrite its seeded snapshot. Call `cleanup()` yourself at the top
+  of the hook, before resetting anything; it is idempotent, so the preload's
+  own call afterwards is harmless.
+- **Never assert `toBeNull()` / `not.toBeInTheDocument()` on a DOM element.**
+  Use a count instead — `expect(screen.queryAllByRole(...)).toHaveLength(0)`.
+  When such an assertion fails, Bun serialises the entire happy-dom element
+  it received, which is large enough that the run appears to HANG rather than
+  report a failure. The count form fails instantly and legibly
+  (`Expected length: 0, Received length: 1`). The same applies to any
+  assertion whose failure message would carry a DOM node — **including an
+  identity check like `expect(document.activeElement).toBe(link)`**: compare a
+  boolean or a string you extracted instead
+  (`expect(document.activeElement === link).toBe(true)`,
+  `expect(card.contains(footer)).toBe(false)`,
+  `expect(el.getAttribute('href')).toBe('./')`). Measured on a two-element
+  page, one failing `toBe(element)` took 5.15 s against 548 ms for the boolean
+  form, and the gap grows with the size of the rendered DOM.
 - **The DOM is process-wide.** Bun evaluates every test file in one process, so
   `delete globalThis.window` in one file removes it for every file that runs
   later — and the failure surfaces somewhere else entirely. To exercise a

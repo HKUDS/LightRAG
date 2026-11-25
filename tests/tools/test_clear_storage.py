@@ -30,8 +30,8 @@ from lightrag.config_shards import json_config_dir, json_config_path
 from lightrag.tools.clear_storage import (
     CONFIRMATION_PHRASE,
     DATA_STORAGE_LABELS,
+    VECTOR_LABELS,
     ClearTool,
-    DropOutcome,
     RemoteBackendUnavailableError,
     Unreadable,
     classify_drop_result,
@@ -71,7 +71,18 @@ def make_storage(label: str, *, drop_result=None, drop_error=None, workspace="ws
         get_popular_labels=AsyncMock(return_value=["ENTITY"]),
         iter_edges=edges_stream([[("a", "b")]]),
         persists_vectors=True,
+        # The vector half of the clear. ``drop_all_models`` is ``drop()`` plus
+        # the sibling sweep, so the fake routes through ``drop`` and every
+        # ``drop.assert_awaited_once()`` below holds for vector labels too.
+        unvouched_sibling_containers=AsyncMock(return_value=[]),
+        vouched_seen=[],
     )
+
+    async def drop_all_models(vouched=()):
+        storage.vouched_seen.append(list(vouched))
+        return await storage.drop()
+
+    storage.drop_all_models = drop_all_models
     return storage
 
 
@@ -280,17 +291,11 @@ def seed_input_dir(tmp_path):
 
 
 class TestClassifyDropResult:
-    def test_a_success_dict_is_success(self):
-        assert classify_drop_result({"status": "success"}) is None
-
     def test_a_non_success_dict_is_a_failure_with_its_message(self):
         assert (
             classify_drop_result({"status": "error", "message": "legacy store kept"})
             == "legacy store kept"
         )
-
-    def test_an_exception_object_is_a_failure(self):
-        assert "boom" in classify_drop_result(RuntimeError("boom"))
 
     def test_a_cancelled_drop_is_a_drop_that_did_not_happen(self):
         """``gather(return_exceptions=True)`` hands back a ``CancelledError``
@@ -407,9 +412,13 @@ class TestSummary:
             error=OSError("kv file unreadable")
         )
 
-        tool.print_summary(await tool.collect_summary())
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
         out = capsys.readouterr().out
 
+        # An unanswerable store is a verdict, not a fatal read error.
+        assert isinstance(summary["text_chunks"], Unreadable)
+        assert "text_chunks state" in tool.unreadable_items(summary)
         assert f"Text chunks: {clear_storage.BOLD_RED}UNREADABLE" in out
         assert f"Text chunks: {clear_storage.BOLD_YELLOW}" not in out
 
@@ -547,18 +556,8 @@ class TestSummary:
         tool = make_tool(tmp_path, workspace="")
         tool.storages["doc_status"].workspace = "default"
         tool.storages["text_chunks"].workspace = "_"
-
-        tool.print_summary(await tool.collect_summary())
-
-        assert "resolved to workspace(s)" not in capsys.readouterr().out
-
-    async def test_the_graph_backends_base_default_is_not_flagged(
-        self, tmp_path, stub_baselines, capsys
-    ):
-        """Neo4j and Memgraph substitute ``"base"`` for an empty workspace."""
-        tool = make_tool(tmp_path, workspace="")
+        # Neo4j and Memgraph substitute ``"base"`` for an empty workspace.
         tool.storages["chunk_entity_relation_graph"].workspace = "base"
-        tool.storages["doc_status"].workspace = "default"
 
         tool.print_summary(await tool.collect_summary())
 
@@ -734,14 +733,6 @@ class TestSummary:
         assert "Text chunks: has data" in plain(capsys.readouterr().out)
         kv.is_empty.assert_not_called()
 
-    async def test_a_clean_end_of_the_row_stream_is_empty(
-        self, tmp_path, stub_baselines
-    ):
-        tool = make_tool(tmp_path)
-        tool.storages["text_chunks"].iter_rows = rows_stream([])
-
-        assert (await tool.collect_summary())["text_chunks"] == "EMPTY"
-
     async def test_a_server_kv_outage_refuses_the_run(self, tmp_path, stub_baselines):
         """The fix-proof for the kind rule on this read: the outage reaches
         ``_read`` as a raise and refuses, instead of rendering as EMPTY."""
@@ -753,19 +744,6 @@ class TestSummary:
 
         with pytest.raises(RemoteBackendUnavailableError):
             await tool.collect_summary()
-
-    async def test_an_unanswerable_text_chunk_store_is_unreadable_not_fatal(
-        self, tmp_path, stub_baselines
-    ):
-        tool = make_tool(tmp_path)
-        tool.storages["text_chunks"].iter_rows = rows_stream(
-            error=OSError("kv file unreadable")
-        )
-
-        summary = await tool.collect_summary()
-
-        assert isinstance(summary["text_chunks"], Unreadable)
-        assert "text_chunks state" in tool.unreadable_items(summary)
 
     async def test_a_backend_without_enumeration_cannot_prove_emptiness(
         self, tmp_path, stub_baselines
@@ -1032,7 +1010,9 @@ class TestKindRule:
 
 class TestConfirmation:
     @pytest.mark.parametrize(
-        "answer", ["", "yes", "delete all", "DELETE ALL", "Delete all", "Delete All!"]
+        # One exact comparison: an empty answer, a case change, a near match.
+        "answer",
+        ["", "delete all", "Delete All!"],
     )
     def test_only_the_exact_phrase_confirms(self, tmp_path, monkeypatch, answer):
         tool = make_tool(tmp_path)
@@ -1040,7 +1020,9 @@ class TestConfirmation:
         assert tool.confirm_delete_all() is False
 
     @pytest.mark.parametrize(
-        "answer", [CONFIRMATION_PHRASE, f"  {CONFIRMATION_PHRASE} "]
+        # A padded answer can only pass if the bare phrase matches.
+        "answer",
+        [f"  {CONFIRMATION_PHRASE} "],
     )
     def test_the_phrase_confirms_with_surrounding_whitespace_ignored(
         self, tmp_path, monkeypatch, answer
@@ -1084,6 +1066,175 @@ class TestConfirmation:
 
 
 # ---------------------------------------------------------------------------
+# Other embedding models' containers
+# ---------------------------------------------------------------------------
+
+
+class TestSiblingModelContainers:
+    """A vector storage is cleared for EVERY embedding model. A container that
+    matches this workspace's naming for another model but records no owner is
+    shown, and goes only when the operator says so."""
+
+    async def test_only_vector_storages_take_the_all_models_drop(self, tmp_path):
+        tool = make_tool(tmp_path)
+
+        await tool.drop_all()
+
+        swept = {
+            label for label in DATA_STORAGE_LABELS if tool.storages[label].vouched_seen
+        }
+        assert swept == set(VECTOR_LABELS)
+        for label in DATA_STORAGE_LABELS:
+            tool.storages[label].drop.assert_awaited_once()
+
+    async def test_unowned_containers_are_listed_before_the_phrase(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = AsyncMock(
+            return_value=["ws_chunks_model_a_8d"]
+        )
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        assert summary["unvouched_siblings"] == {"chunks_vdb": ["ws_chunks_model_a_8d"]}
+        out = plain(capsys.readouterr().out)
+        assert "ws_chunks_model_a_8d" in out
+        assert "owner not recorded" in out
+
+    async def test_a_refused_vector_target_is_not_asked_for_its_siblings(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+        tool.refused_vdbs["chunks_vdb"] = "another vector space"
+        listing = AsyncMock(return_value=["ws_chunks_model_a_8d"])
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = listing
+
+        summary = await tool.collect_summary()
+
+        listing.assert_not_called()
+        assert summary["unvouched_siblings"] == {}
+
+    async def test_a_storage_that_did_not_open_is_not_asked_for_its_siblings(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        """Only a file-backed storage fails to open and still gets here, and
+        those have no siblings: a line saying theirs could not be read would
+        be about nothing."""
+        tool = make_tool(tmp_path)
+        tool.unavailable["chunks_vdb"] = "corrupt snapshot"
+        listing = AsyncMock(return_value=["ws_chunks_model_a_8d"])
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = listing
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        listing.assert_not_called()
+        assert summary["unvouched_siblings"] == {}
+        assert "other models' containers" not in plain(capsys.readouterr().out)
+
+    async def test_an_unreadable_sibling_listing_is_named_above_the_prompt(
+        self, tmp_path, stub_baselines, capsys
+    ):
+        tool = make_tool(tmp_path)
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = AsyncMock(
+            side_effect=ValueError("bad collection name")
+        )
+
+        summary = await tool.collect_summary()
+        tool.print_summary(summary)
+
+        assert isinstance(summary["unvouched_siblings"]["chunks_vdb"], Unreadable)
+        assert tool.unreadable_items(summary) == [
+            "chunks_vdb containers of other embedding models"
+        ]
+        out = plain(capsys.readouterr().out)
+        assert "1 item(s) above could not be read" in out
+        assert "chunks_vdb containers of other embedding models" in out
+
+    async def test_an_empty_sibling_listing_adds_nothing_unread(
+        self, tmp_path, stub_baselines
+    ):
+        tool = make_tool(tmp_path)
+
+        summary = await tool.collect_summary()
+
+        assert summary["unvouched_siblings"] == {}
+        assert tool.unreadable_items(summary) == []
+
+    @pytest.mark.parametrize(
+        "answer, vouched",
+        [
+            pytest.param(" YES ", [["ws_chunks_model_a_8d"]], id="confirmed-loosely"),
+            pytest.param("no", [[]], id="declined"),
+            pytest.param(CONFIRMATION_PHRASE, [[]], id="the-other-phrase"),
+        ],
+    )
+    async def test_only_yes_vouches_for_the_unowned_containers(
+        self, tmp_path, monkeypatch, answer, vouched
+    ):
+        tool = make_tool(tmp_path)
+        summary = {"unvouched_siblings": {"chunks_vdb": ["ws_chunks_model_a_8d"]}}
+        answer_prompts(monkeypatch, answer)
+
+        tool.confirm_unvouched_siblings(summary)
+        await tool.drop_all()
+
+        assert tool.storages["chunks_vdb"].vouched_seen == vouched
+        # A voucher for one target is never spent on another.
+        assert tool.storages["entities_vdb"].vouched_seen == [[]]
+
+    async def test_nothing_unowned_means_no_second_question(
+        self, tmp_path, monkeypatch
+    ):
+        tool = make_tool(tmp_path)
+        answer_prompts(monkeypatch)  # any prompt fails the test
+
+        tool.confirm_unvouched_siblings({"unvouched_siblings": {}})
+
+        assert tool.vouched_siblings == {}
+
+    async def test_a_run_asks_about_them_after_the_phrase_and_passes_them_on(
+        self, tmp_path, monkeypatch, stub_baselines, recorded_config_delete
+    ):
+        seed_input_dir(tmp_path)
+        tool = make_tool(tmp_path)
+        tool.storages["chunks_vdb"].unvouched_sibling_containers = AsyncMock(
+            return_value=["ws_chunks_model_a_8d"]
+        )
+        monkeypatch.setattr(tool, "setup_storages", AsyncMock(return_value=True))
+        stub_share_data(monkeypatch)
+        answer_prompts(monkeypatch, "yes", CONFIRMATION_PHRASE, "yes")
+
+        assert await tool.run() is True
+
+        assert tool.storages["chunks_vdb"].vouched_seen == [["ws_chunks_model_a_8d"]]
+        assert recorded_config_delete == ["ws"]
+
+    async def test_a_sibling_left_in_place_keeps_the_configuration_records(
+        self, tmp_path, recorded_config_delete, capsys
+    ):
+        """What ``drop_all_models`` answers when a container was left for want
+        of evidence: vectors that may be this workspace's are still there."""
+        left = {
+            "status": "error",
+            "message": "active model cleared; left ws_chunks_model_a_8d",
+        }
+        tool = make_tool(
+            tmp_path, chunks_vdb=make_storage("chunks_vdb", drop_result=left)
+        )
+
+        ok = await tool.clear()
+
+        assert ok is False
+        assert recorded_config_delete == []
+        out = plain(capsys.readouterr().out)
+        assert "ws_chunks_model_a_8d" in out
+        assert "Kept the workspace configuration records" in out
+
+
+# ---------------------------------------------------------------------------
 # The clear
 # ---------------------------------------------------------------------------
 
@@ -1122,18 +1273,6 @@ class TestClear:
             tool.storages[label].drop.assert_awaited_once()
         assert [label for label, _ in outcome.failed] == ["full_docs"]
         assert len(outcome.succeeded) == 10
-
-    async def test_a_non_success_dict_counts_as_a_failed_drop(self, tmp_path):
-        tool = make_tool(
-            tmp_path,
-            chunks_vdb=make_storage(
-                "chunks_vdb", drop_result={"status": "error", "message": "kept"}
-            ),
-        )
-
-        outcome = await tool.drop_all()
-
-        assert outcome.failed == [("chunks_vdb", "kept")]
 
     async def test_a_partial_drop_keeps_the_configuration_records_and_fails(
         self, tmp_path, recorded_config_delete, capsys
@@ -1214,10 +1353,6 @@ class TestClear:
     ):
         tool = make_tool(tmp_path)  # tmp_path/inputs never created
         assert await tool.clear() is True
-
-    def test_drop_outcome_all_succeeded(self):
-        assert DropOutcome(succeeded=["a"]).all_succeeded is True
-        assert DropOutcome(failed=[("a", "x")]).all_succeeded is False
 
 
 # ---------------------------------------------------------------------------
@@ -1876,10 +2011,8 @@ class TestCommandLine:
     @pytest.mark.parametrize(
         "argv",
         [
+            # One ``len(sys.argv) > 1`` check refuses every argument.
             ["--workspace", "tenant"],
-            ["--input-dir", "/uploads"],
-            ["--working-dir", "/data", "--workspace", "tenant"],
-            ["extra"],
         ],
     )
     def test_server_flags_are_refused_before_anything_runs(

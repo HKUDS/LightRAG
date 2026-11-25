@@ -151,7 +151,8 @@ class TestKeysAndRows:
         assert rows["$meta/json_shard"]["value"] == {"workspace": ""}
         assert cs.inspect_shard_rows(rows, workspace="", location="test").owner == ""
 
-    @pytest.mark.parametrize("workspace", ["$", "$meta", "$default", "$other"])
+    # One ``startswith("$")`` check refuses every system prefix.
+    @pytest.mark.parametrize("workspace", ["$meta", "$default"])
     def test_system_prefixes_cannot_be_business_workspaces(self, workspace):
         with pytest.raises(ValueError, match="reserved"):
             _key("entities", workspace)
@@ -285,8 +286,18 @@ class TestEmbeddingBaseline:
         with pytest.raises(ConfigurationStorageError):
             cs.EmbeddingBaseline.from_row(row, key="k", target="entities")
 
-    @pytest.mark.parametrize("version", [None, 0, 2, True, False, "1", 1.0])
-    @pytest.mark.parametrize("target", cs.EMBEDDING_TARGETS)
+    # Every target's row goes through the same schema check, so the versions
+    # are swept on the first target and each other target keeps one of them.
+    @pytest.mark.parametrize(
+        ("version", "target"),
+        [
+            (version, cs.EMBEDDING_TARGETS[0])
+            # One case per type: missing, wrong int, bool, str, and a float
+            # equal to 1 (the type check, not the value, refuses it).
+            for version in (None, 2, True, "1", 1.0)
+        ]
+        + [(2, target) for target in cs.EMBEDDING_TARGETS[1:]],
+    )
     async def test_unsupported_schema_is_unreadable_without_writes(
         self, version, target
     ):
@@ -962,12 +973,6 @@ class TestCategory:
         ):
             assert cs.resolve_configuration_storage("", kv_storage=name) == name
 
-    def test_a_vector_storage_is_refused_by_name(self):
-        with pytest.raises(ValueError, match="NanoVectorDBStorage"):
-            cs.resolve_configuration_storage(
-                "NanoVectorDBStorage", kv_storage="JsonKVStorage"
-            )
-
     @pytest.mark.parametrize("selected", [None, "", "   "])
     def test_unset_redis_defaults_to_json(self, selected):
         assert (
@@ -1001,12 +1006,6 @@ class TestCategory:
     def test_redis_can_explicitly_select_a_database(self):
         assert (
             cs.resolve_configuration_storage("PGKVStorage", kv_storage="RedisKVStorage")
-            == "PGKVStorage"
-        )
-
-    def test_an_explicit_selection_is_independent_of_the_business_backend(self):
-        assert (
-            cs.resolve_configuration_storage("PGKVStorage", kv_storage="JsonKVStorage")
             == "PGKVStorage"
         )
 

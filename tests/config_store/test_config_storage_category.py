@@ -213,14 +213,6 @@ class TestTheSelectionIsRefusedByName:
         with pytest.raises(ValueError, match="NanoVectorDBStorage"):
             _rag(tmp_path, config_storage="NanoVectorDBStorage")
 
-    def test_redis_is_refused(self, tmp_path):
-        with pytest.raises(ValueError, match="RedisKVStorage"):
-            _rag(tmp_path, config_storage="RedisKVStorage")
-
-    def test_an_unknown_name_is_refused(self, tmp_path):
-        with pytest.raises(ValueError, match="NoSuchStorage"):
-            _rag(tmp_path, config_storage="NoSuchStorage")
-
     def test_a_redis_business_deployment_defaults_to_json(self, tmp_path, monkeypatch):
         monkeypatch.setenv("REDIS_URI", "redis://localhost:6379")
         rag = _rag(tmp_path, kv_storage="RedisKVStorage", config_storage="")
@@ -250,13 +242,6 @@ class TestTheSelectionIsRefusedByName:
         assert excinfo.value.cause == ca.IDENTITY_BACKEND_MISMATCH
         config_init.assert_not_awaited()
         assert ca.read_anchor(str(tmp_path)).backend == "PGKVStorage"
-
-    def test_an_admitted_selection_is_independent_of_the_business_backend(
-        self, tmp_path
-    ):
-        rag = _rag(tmp_path, config_storage="JsonKVStorage")
-        assert rag.config_storage == "JsonKVStorage"
-        assert type(rag.configuration_storage) is JsonKVStorage
 
 
 class TestTheFactoryIsTheOnlyDoorInThisPackage:

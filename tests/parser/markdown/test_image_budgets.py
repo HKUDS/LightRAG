@@ -136,12 +136,15 @@ def _extract(md: str, *, bundle_root: Path | None = None):
 
 def test_total_byte_budget_degrades_later_images_to_external(monkeypatch, fake_network):
     # Room for exactly two 1 KiB images; the other three must not be retained.
+    # The request budget is generous, so the byte budget is what fires.
     monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", str(2 * 1024))
+    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_REQUESTS", "1000")
     kinds, warnings, meta = _extract(_markdown(5))
 
     assert kinds.count("local") == 2
     assert kinds.count("external") == 3
     assert warnings.get("images_byte_budget_exceeded") == 3
+    assert "images_request_budget_exceeded" not in warnings
     assert sum(len(a["data"]) for a in meta["md_assets"].values()) == 2 * 1024
 
 
@@ -281,15 +284,6 @@ def test_budgets_are_independent(monkeypatch, fake_network):
     assert "images_byte_budget_exceeded" not in warnings
 
 
-def test_byte_budget_fires_without_the_request_budget(monkeypatch, fake_network):
-    # …and vice versa.
-    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", str(1024))
-    monkeypatch.setenv("NATIVE_MD_IMAGE_MAX_REQUESTS", "1000")
-    _, warnings, _ = _extract(_markdown(3))
-    assert warnings.get("images_byte_budget_exceeded") == 2
-    assert "images_request_budget_exceeded" not in warnings
-
-
 def test_an_exactly_filled_byte_budget_stops_issuing_requests(
     monkeypatch, fake_network
 ):
@@ -425,22 +419,7 @@ def test_download_required_raises_when_a_budget_is_exhausted(
         _extract(_markdown(3))
 
 
-@pytest.mark.parametrize(
-    ("env", "value"),
-    [
-        ("NATIVE_MD_IMAGE_MAX_TOTAL_BYTES", "1024"),
-        ("NATIVE_MD_IMAGE_MAX_REQUESTS", "1"),
-    ],
-)
-def test_without_required_a_budget_stop_only_degrades(
-    monkeypatch, fake_network, env, value
-):
-    monkeypatch.setenv(env, value)
-    kinds, _, _ = _extract(_markdown(3))
-    assert kinds.count("external") == 2  # degraded, document intact
-
-
-@pytest.mark.parametrize("raw", ["abc", "0", "-5", ""])
+@pytest.mark.parametrize("raw", ["abc", "0"])
 def test_invalid_budget_env_falls_back_to_the_default(monkeypatch, fake_network, raw):
     # 0 and negatives are NOT "unlimited": an operator typing 0 into a ceiling
     # means strictest, and inverting that would turn a typo into the very

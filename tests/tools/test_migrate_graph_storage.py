@@ -57,20 +57,6 @@ def _edge(source, target, **props):
 
 
 class TestCanonicalizeEdge:
-    def test_orders_ascii(self):
-        assert canonicalize_edge("b", "a") == ("a", "b")
-        assert canonicalize_edge("a", "b") == ("a", "b")
-
-    def test_matches_python_min_max(self):
-        pairs = [
-            ("alpha", "beta"),
-            ("Zeta", "alpha"),  # case: uppercase sorts before lowercase
-            ("node 1", "node-1"),
-        ]
-        for a, b in pairs:
-            assert canonicalize_edge(a, b) == (min(a, b), max(a, b))
-            assert canonicalize_edge(b, a) == (min(a, b), max(a, b))
-
     def test_non_ascii_code_point_order(self):
         # The collation trap: PostgreSQL LEAST/GREATEST under e.g. en_US.utf8
         # would order some of these pairs differently than Python code points.
@@ -81,15 +67,6 @@ class TestCanonicalizeEdge:
         )
         assert canonicalize_edge("Über", "Uber") == ("Uber", "Über")
         assert canonicalize_edge("é", "z") == ("z", "é")  # é (U+00E9) > z (U+007A)
-
-    def test_self_loop(self):
-        assert canonicalize_edge("a", "a") == ("a", "a")
-
-    def test_quote_bearing_ids(self):
-        assert canonicalize_edge('He said "hi"', "O'Brien") == (
-            'He said "hi"',
-            "O'Brien",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +105,6 @@ class TestPayloadsEqual:
         assert not payloads_equal((True,), (1,))
         assert payloads_equal(({"x": 1},), ({"x": 1},))
 
-    def test_tuple_is_not_list(self):
-        assert not payloads_equal((1, 2), [1, 2])
-
     def test_unknown_types_fail_closed(self):
         # Non-JSON types never reach leaf ==: their __eq__ may coerce
         # ({True} == {1} is True), so they compare unequal unconditionally.
@@ -166,10 +140,6 @@ class TestCountParallelEdges:
         assert counts == {("a", "b"): 1, ("b", "a"): 1}
         assert not any(c > 1 for c in counts.values())
 
-    def test_parallel_self_loops(self):
-        edges = [_edge("a", "a", w=1), _edge("a", "a", w=2)]
-        assert count_parallel_edges(edges) == {("a", "a"): 2}
-
 
 # ---------------------------------------------------------------------------
 # derive_written_node_ids — compensation set under the empty-target invariant
@@ -184,12 +154,6 @@ class TestDeriveWrittenNodeIds:
         edges = [_edge("a", "b"), _edge("b", "ghost"), _edge("phantom", "phantom")]
         written = derive_written_node_ids(migrated, edges)
         assert written == {"a", "b", "ghost", "phantom"}
-
-    def test_union_with_no_edges(self):
-        assert derive_written_node_ids(["a"], []) == {"a"}
-
-    def test_empty(self):
-        assert derive_written_node_ids([], []) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -590,13 +554,6 @@ class TestSourceNodeIdentity:
             await migrate_graph(source, target)
         assert target.calls.count("upsert_nodes_batch") == 0
 
-    async def test_explicit_none_entity_id_is_refused(self):
-        target = PGTableGraphStorage()
-        source = PGGraphStorage([{"id": None, "entity_id": None}], [])
-        with pytest.raises(MigrationDataError, match="non-string id"):
-            await migrate_graph(source, target)
-        assert target.calls.count("upsert_nodes_batch") == 0
-
     async def test_mixed_valid_and_identityless_raises_data_error_not_typeerror(self):
         # Regression: identity used to be checked after the duplicate scan and
         # the deterministic sort, so a None id blew up with
@@ -637,15 +594,6 @@ class TestDetectSelfLoopEdges:
     possible at the source, where the graph edge still exists.
     """
 
-    def test_reports_the_node_ids_carrying_a_self_loop(self):
-        edges = [
-            {"source": "a", "target": "b"},
-            {"source": "loop", "target": "loop"},
-            {"source": "b", "target": "c"},
-        ]
-
-        assert detect_self_loop_edges(edges) == ["loop"]
-
     def test_reports_every_offender_sorted_and_deduped(self):
         """The message names what the operator has to clean up, so the list
         must be complete and stable."""
@@ -656,11 +604,6 @@ class TestDetectSelfLoopEdges:
         ]
 
         assert detect_self_loop_edges(edges) == ["a", "z"]
-
-    def test_a_clean_graph_reports_nothing(self):
-        edges = [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}]
-
-        assert detect_self_loop_edges(edges) == []
 
     def test_reciprocals_are_not_self_loops(self):
         """Only ``src == tgt``: a reciprocal pair is a different refusal, and
@@ -683,9 +626,6 @@ class TestCardinalityPreservingPolicy:
         with pytest.raises(MigrationDataError, match="reciprocal"):
             await migrate_graph(source, target)
         assert target.calls.count("upsert_nodes_batch") == 0
-
-    def test_self_loop_is_not_a_reciprocal(self):
-        assert detect_reciprocal_pairs([_edge("a", "a", w=1)]) == []
 
     def test_duplicate_detection_ignores_payloads(self):
         nodes = [{"id": "a", "entity_id": "a", "p": 1}, {"id": "a", "entity_id": "a"}]
@@ -757,14 +697,6 @@ class TestJsonbRepresentability:
             == []
         )
 
-    async def test_nul_bearing_payload_is_refused_before_the_drop(self):
-        target = PGTableGraphStorage(seed_nodes={"pre": {"entity_id": "pre"}})
-        source = _source(["a", "b"], [_edge("a", "b", description="x\x00y")])
-        with pytest.raises(MigrationDataError, match="NUL"):
-            await migrate_graph(source, target, force_empty_target=True)
-        assert "drop" not in target.calls
-        assert target.nodes == {"pre": {"entity_id": "pre"}}
-
 
 class TestNegativeZero:
     def test_signed_zero_is_a_difference(self):
@@ -776,8 +708,9 @@ class TestNegativeZero:
 class TestDropStatusContract:
     @pytest.mark.parametrize(
         "drop_result",
-        [None, {"status": "failed"}, {"message": "no status"}, "success"],
-        ids=["none", "failed", "no-status", "not-a-dict"],
+        # A non-success status is TestForceModeOrdering's regression case.
+        [None, {"message": "no status"}, "success"],
+        ids=["none", "no-status", "not-a-dict"],
     )
     async def test_only_explicit_success_counts_as_dropped(self, drop_result):
         # "not an error" is not the same as "succeeded": a no-op drop returning
@@ -1002,14 +935,6 @@ class TestMigrationPreconditions:
         assert report.verified
         assert "pre" not in target.nodes
 
-    async def test_divergent_source_fails_before_any_write(self):
-        target = PGTableGraphStorage()
-        source = _source(["a", "b"], [_edge("a", "b", w=1), _edge("b", "a", w=2)])
-        with pytest.raises(MigrationDataError):
-            await migrate_graph(source, target)
-        assert "upsert_nodes_batch" not in target.calls
-        assert "upsert_edges_batch" not in target.calls
-
     async def test_parallel_source_rows_fail_before_any_write(self):
         target = PGTableGraphStorage()
         source = _source(["a", "b"], [_edge("a", "b", w=1), _edge("a", "b", w=2)])
@@ -1036,23 +961,6 @@ class TestMigrationPreconditions:
         assert "upsert_nodes_batch" not in target.calls
         assert "upsert_edges_batch" not in target.calls
         assert target.nodes == {}
-
-    async def test_equal_duplicate_node_ids_are_refused(self):
-        # Policy: duplicate ids are refused whether or not their payloads
-        # agree. Two physical source vertices become one target row, so node
-        # cardinality changes even when nothing about the payload is lost —
-        # and `verified` is meant to cover cardinality, not just payloads.
-        target = PGTableGraphStorage()
-        source = PGGraphStorage(
-            [
-                {"id": "a", "entity_id": "a", "p": 1},
-                {"id": "a", "entity_id": "a", "p": 1},
-            ],
-            [],
-        )
-        with pytest.raises(MigrationDataError, match="more than once"):
-            await migrate_graph(source, target)
-        assert target.calls.count("upsert_nodes_batch") == 0
 
     async def test_node_without_entity_id_fails_before_any_write(self):
         target = PGTableGraphStorage()

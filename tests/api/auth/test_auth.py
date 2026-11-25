@@ -10,9 +10,11 @@ from starlette.status import HTTP_403_FORBIDDEN
 from lightrag.api.passwords import BCRYPT_PASSWORD_PREFIX, hash_password
 from lightrag.tools.hash_password import main as hash_password_main
 from lightrag.utils import logger as lightrag_logger
+from tests.api._cheap_bcrypt import CHEAP_DUMMY_SPEC, cheap_bcrypt_salts
 
-
-pytestmark = pytest.mark.offline
+# Every test here checks which verification ran and its result, never its
+# cost, so hashes and the dummy spec use bcrypt's minimum cost.
+pytestmark = [pytest.mark.offline, pytest.mark.usefixtures(cheap_bcrypt_salts.__name__)]
 
 
 def import_real_api_module(module_name: str):
@@ -42,6 +44,7 @@ def auth_module(monkeypatch):
 
     module = import_real_api_module("lightrag.api.auth")
     module = importlib.reload(module)
+    monkeypatch.setattr(module, "_DUMMY_VERIFY_SPEC", CHEAP_DUMMY_SPEC)
     yield module
     sys.modules.pop("lightrag.api.auth", None)
 
@@ -210,7 +213,9 @@ def load_auth_handler(monkeypatch, auth_accounts: str):
     monkeypatch.setattr(config, "global_args", mock_global_args)
 
     try:
-        return import_real_api_module("lightrag.api.auth").auth_handler
+        module = import_real_api_module("lightrag.api.auth")
+        monkeypatch.setattr(module, "_DUMMY_VERIFY_SPEC", CHEAP_DUMMY_SPEC)
+        return module.auth_handler
     finally:
         sys.modules.pop("lightrag.api.auth", None)
 
@@ -434,3 +439,34 @@ def test_hash_password_cli_outputs_auth_accounts_entry(capsys):
     assert hashed.startswith(BCRYPT_PASSWORD_PREFIX)
     raw_hash = hashed[len(BCRYPT_PASSWORD_PREFIX) :]
     assert bcrypt.checkpw("secret".encode("utf-8"), raw_hash.encode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("a" * 73, id="ascii-73-bytes"),
+        # 37 two-byte characters: 37 characters but 74 bytes in UTF-8.
+        pytest.param("é" * 37, id="utf8-74-bytes"),
+    ],
+)
+def test_hash_password_rejects_password_over_bcrypt_limit(password):
+    with pytest.raises(ValueError, match="at most 72"):
+        hash_password(password)
+
+
+def test_hash_password_accepts_password_at_bcrypt_limit():
+    password = "a" * 72
+    hashed = hash_password(password)
+
+    raw_hash = hashed[len(BCRYPT_PASSWORD_PREFIX) :]
+    assert bcrypt.checkpw(password.encode("utf-8"), raw_hash.encode("utf-8"))
+
+
+def test_hash_password_cli_reports_password_over_bcrypt_limit(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        hash_password_main(["--username", "admin", "a" * 73])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "password is 73 bytes in UTF-8; bcrypt accepts at most 72" in captured.err

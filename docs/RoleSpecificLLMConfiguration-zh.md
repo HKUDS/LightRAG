@@ -15,13 +15,15 @@ LightRAG 支持为不同处理阶段配置不同的 LLM 或 VLM。这个机制�
 
 如果某个角色没有专门配置，LightRAG 会使用基础 `LLM_*` 配置。
 
+直接使用 OpenAI API 时，如配置仍固定在 GPT-5、GPT-5 mini 或 GPT-5 nano，请在 [2026 年 12 月 11 日停用](https://developers.openai.com/api/docs/deprecations)前更新模型。后续模型不接受 `minimal`；请仅在支持的模型上使用 `none`，例如 GPT-6.1 Terra 或 GPT-6 Luna。
+
 ## 基础 LLM 配置
 
 基础配置定义默认 LLM provider、模型、服务地址、认证信息和并发控制：
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -40,7 +42,7 @@ MAX_ASYNC_LLM=4
 | `LLM_MODEL` | 基础模型名。对 Azure OpenAI 通常使用 deployment 名称。 |
 | `LLM_BINDING_HOST` | 基础 provider endpoint。对于 SDK 默认 endpoint，可使用对应 sentinel，例如 `DEFAULT_GEMINI_ENDPOINT` 或 `DEFAULT_BEDROCK_ENDPOINT`。 |
 | `LLM_BINDING_API_KEY` | 基础 API key。Bedrock 不使用这个字段。 |
-| `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。 |
+| `LLM_TIMEOUT` | 基础 LLM timeout。角色未设置 timeout 时继承它。`0` 表示使用 provider SDK 的默认超时。 |
 | `MAX_ASYNC_LLM` | 基础 LLM 最大并发。角色未设置 `{ROLE}_MAX_ASYNC_LLM` 时继承它。`MAX_ASYNC` 作为兼容旧名仍可用。 |
 
 ### 与文件处理的关系
@@ -55,7 +57,7 @@ Extract 角色既处理文本块抽取，也在图合并时生成描述摘要。
 
 ```env
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_query_api_key
 QUERY_MAX_ASYNC_LLM=2
@@ -71,7 +73,7 @@ QUERY_LLM_TIMEOUT=240
 | `{ROLE}_LLM_BINDING_HOST` | 覆盖角色 endpoint。 |
 | `{ROLE}_LLM_BINDING_API_KEY` | 覆盖角色 API key。Bedrock 不支持。 |
 | `{ROLE}_MAX_ASYNC_LLM` | 覆盖角色最大并发。未设置时继承 `MAX_ASYNC_LLM`。 |
-| `{ROLE}_LLM_TIMEOUT` | 覆盖角色 timeout。未设置时继承 `LLM_TIMEOUT`。 |
+| `{ROLE}_LLM_TIMEOUT` | 覆盖角色 timeout。未设置时继承 `LLM_TIMEOUT`；`0` 表示该角色使用 provider SDK 的默认超时。 |
 
 ## Provider 参数覆盖
 
@@ -128,13 +130,14 @@ VLM_GEMINI_LLM_TEMPERATURE=0.2
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-# QUERY 继承 host、API key、timeout、并发和 OPENAI_LLM_REASONING_EFFORT
-QUERY_LLM_MODEL=gpt-5
+# QUERY 继承 host、API key、timeout 和并发
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 ```
 
 ### 跨 provider 覆盖
@@ -143,7 +146,7 @@ QUERY_LLM_MODEL=gpt-5
 
 - 必须设置 `{ROLE}_LLM_MODEL`。
 - 非 Bedrock provider 必须设置 `{ROLE}_LLM_BINDING_API_KEY`。
-- 如果没有设置 `{ROLE}_LLM_BINDING_HOST`，LightRAG 会尝试使用该 provider 的默认 host。
+- 如果没有设置 `{ROLE}_LLM_BINDING_HOST`，LightRAG 使用该 provider 的默认 host，不会继承 `LLM_BINDING_HOST`，即使 `openai` 与 `openai_responses` 走同一个网关也是如此；每次回落到该默认值时启动都会记录一条 warning。
 - provider 参数不继承基础 provider options，而是从空配置开始，只叠加角色专属 provider options。
 
 示例：基础使用 Ollama，本地抽取；最终回答改用 OpenAI：
@@ -155,10 +158,10 @@ LLM_BINDING_HOST=http://localhost:11434
 OLLAMA_LLM_NUM_CTX=32768
 
 QUERY_LLM_BINDING=openai
-QUERY_LLM_MODEL=gpt-5-mini
+QUERY_LLM_MODEL=gpt-6.1-terra
 QUERY_LLM_BINDING_HOST=https://api.openai.com/v1
 QUERY_LLM_BINDING_API_KEY=your_openai_api_key
-QUERY_OPENAI_LLM_REASONING_EFFORT=minimal
+QUERY_OPENAI_LLM_REASONING_EFFORT=none
 ```
 
 跨 provider 时建议显式设置 `{ROLE}_LLM_BINDING_HOST`，避免默认 host 与基础 provider 的 endpoint 混淆。
@@ -175,7 +178,7 @@ Bedrock 不使用 `LLM_BINDING_API_KEY`，也不支持 `{ROLE}_LLM_BINDING_API_K
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 
@@ -210,16 +213,17 @@ EXTRACT_BEDROCK_LLM_MAX_TOKENS=2048
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
+QUERY_OPENAI_LLM_REASONING_EFFORT=low
 QUERY_MAX_ASYNC_LLM=2
 ```
 
-`QUERY` 会继承基础 host、API key 和 `OPENAI_LLM_REASONING_EFFORT`。
+`QUERY` 会继承基础 host 和 API key，但将推理强度覆盖为 `low`，因为 GPT-6.1 Sol 不接受 `none`。
 
 ### 2. 同 provider 更换模型并调整参数
 
@@ -227,13 +231,13 @@ QUERY_MAX_ASYNC_LLM=2
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-OPENAI_LLM_REASONING_EFFORT=minimal
+OPENAI_LLM_REASONING_EFFORT=none
 OPENAI_LLM_MAX_COMPLETION_TOKENS=4096
 
-QUERY_LLM_MODEL=gpt-5
+QUERY_LLM_MODEL=gpt-6.1-sol
 QUERY_OPENAI_LLM_REASONING_EFFORT=medium
 QUERY_OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 QUERY_LLM_TIMEOUT=240
@@ -243,7 +247,7 @@ QUERY_LLM_TIMEOUT=240
 
 适合所有角色都走 `openai` binding，但其中一些角色访问 OpenAI 官方接口，另一些角色访问本地 vLLM、SGLang 或 OpenRouter 等 OpenAI-compatible endpoint。下面的例子中：
 
-- `EXTRACT` 使用 OpenAI 官方 `gpt-5-mini`。
+- `EXTRACT` 使用 OpenAI 官方 `gpt-6.1-terra`。
 - `QUERY` 使用 OpenAI 官方 `gpt-5.4`，并使用单独的 OpenAI key。
 - `KEYWORD` 使用本地 vLLM 部署的 `Qwen3.5-35B-A3B`。
 
@@ -253,7 +257,7 @@ QUERY_LLM_TIMEOUT=240
 # have a valid OpenAI configuration.
 ###########################################################################
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_extract_openai_api_key
 LLM_TIMEOUT=240
@@ -268,10 +272,10 @@ MAX_ASYNC_LLM=4
 # OPENAI_LLM_REASONING_EFFORT=none
 
 ###########################################################################
-# EXTRACT: OpenAI official API, gpt-5-mini
+# EXTRACT: OpenAI official API, gpt-6.1-terra
 ###########################################################################
 EXTRACT_LLM_BINDING=openai
-EXTRACT_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
 EXTRACT_LLM_BINDING_HOST=https://api.openai.com/v1
 EXTRACT_LLM_BINDING_API_KEY=your_extract_openai_api_key
 EXTRACT_OPENAI_LLM_REASONING_EFFORT=low
@@ -318,7 +322,7 @@ KEYWORD_LLM_TIMEOUT=60
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 OPENAI_LLM_REASONING_EFFORT=medium
@@ -340,7 +344,7 @@ KEYWORD_OLLAMA_LLM_NUM_CTX=32768
 VLM_PROCESS_ENABLE=true
 
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
@@ -353,7 +357,7 @@ VLM_LLM_TIMEOUT=240
 
 如果 VLM 使用同一个 provider 和 key，可以省略 `VLM_LLM_BINDING_HOST` 与 `VLM_LLM_BINDING_API_KEY`。
 
-`VLM_PROCESS_ENABLE` 是多模态分析的总开关：设为 `false` 时，pipeline 会对每个多模态 item 输出 warning 并跳过，不调用 VLM；设为 `true` 时，生效的 VLM binding（设置了 `VLM_LLM_BINDING` 时取该值，否则取 `LLM_BINDING`）必须支持图片输入。当前支持视觉输入的 provider 包括：`openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama`、`anthropic`。`lollms` 无法接收图片输入，会在启动时直接报错。
+`VLM_PROCESS_ENABLE` 只控制图片/绘图分析；表格和公式无论其取值如何都由 `EXTRACT` role 分析。它不是跳过开关：文档带 `i` 选项且包含通过预过滤的图片时，`VLM_PROCESS_ENABLE=false` 或 VLM role 不可用都会让该文档失败，而不是跳过图片（见[失败与跳过](FileProcessingPipeline-zh.md#43-失败与跳过)）。设为 `true` 时，生效的 VLM binding（设置了 `VLM_LLM_BINDING` 时取该值，否则取 `LLM_BINDING`）必须支持图片输入。当前支持视觉输入的 provider 包括：`openai`、`openai_responses`、`azure_openai`、`gemini`、`bedrock`、`ollama`、`anthropic`。`lollms` 无法接收图片输入，会在启动时直接报错。
 
 ### 6. Bedrock 角色级 SigV4 凭证
 
@@ -361,7 +365,7 @@ VLM_LLM_TIMEOUT=240
 
 ```env
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_openai_api_key
 

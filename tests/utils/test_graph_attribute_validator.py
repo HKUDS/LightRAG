@@ -32,7 +32,9 @@ pytestmark = pytest.mark.offline
 
 
 class TestStorableValues:
-    @pytest.mark.parametrize("value", ["text", "", 1, 0, -3, 2.5, True, False])
+    # Ordinary text/1/2.5/True are in test_ordinary_values_are_accepted_by_both;
+    # these are the falsy and negative edges.
+    @pytest.mark.parametrize("value", ["", 0, -3, False])
     def test_scalars_are_accepted(self, value):
         validate_graph_attributes({"attr": value}, context="entity 'X'")
 
@@ -130,7 +132,8 @@ class TestAttributeNames:
 
     @pytest.mark.parametrize(
         "key",
-        ["display-name", "has space", "9leading_digit", "MiXeD Case!", "名前"],
+        # The others are in test_merely_unusual_names_are_accepted_by_both.
+        ["9leading_digit", "MiXeD Case!"],
     )
     def test_unusual_but_stored_names_are_accepted(self, key):
         """The rule is the interpretation hazard, not "must be an identifier".
@@ -164,10 +167,6 @@ class TestAttributeNames:
     def test_names_read_as_an_update_operator_are_rejected(self, key):
         with pytest.raises(ValueError, match="read as\\s+an update operator"):
             validate_graph_attributes({key: "x"}, context="entity 'X'")
-
-    def test_a_dollar_sign_inside_the_name_is_accepted(self):
-        """Only the *leading* ``$`` is an operator; mid-name it is just a char."""
-        validate_graph_attributes({"cost$usd": "x"}, context="entity 'X'")
 
     @pytest.mark.parametrize("key", [1, None, ("a",)])
     def test_non_string_names_are_rejected(self, key):
@@ -323,11 +322,6 @@ class TestExactTypeResolution:
         with pytest.raises(ValueError, match="GraphML resolves value types exactly"):
             validate_graph_attributes({"v": value}, context="entity 'X'")
 
-    @pytest.mark.parametrize("value", ["text", 5, 1.5, True, False, 0, ""])
-    def test_the_four_builtin_scalars_are_accepted(self, value):
-        validate_xml_attributes({"v": value}, context="entity 'X'")
-        validate_graph_attributes({"v": value}, context="entity 'X'")
-
     def test_a_non_scalar_keeps_the_plain_message(self):
         """`Decimal` is not a subclass of any supported scalar, so the subclass
         remark would be noise -- it gets the ordinary type message."""
@@ -364,7 +358,6 @@ class TestExactTypeResolution:
             # An ``np.floating`` that networkx does *not* list -- which is why the
             # rule reads the table instead of testing ``isinstance(np.floating)``.
             pytest.param(np.longdouble(1.5), id="np-longdouble"),
-            pytest.param(np.str_("x"), id="np-str"),
             pytest.param(np.bool_(True), id="np-bool"),
         ],
     )

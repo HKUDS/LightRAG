@@ -24,6 +24,7 @@ from lightrag.utils import (
     validate_workspace,
     _consume_future_exception,
     _wait_deferring_cancellation,
+    retract_cancellation_deferred,
 )
 import aiofiles
 import traceback
@@ -31,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Annotated,
+    Collection,
     Dict,
     Iterator,
     List,
@@ -63,6 +65,7 @@ from pydantic import (
 from lightrag import LightRAG
 from lightrag.api.utils_api import internal_server_error, new_error_id
 from lightrag.base import (
+    BaseVectorStorage,
     CURSOR_START,
     CursorAfter,
     CursorPosition,
@@ -86,6 +89,7 @@ from lightrag.constants import (
     FULL_DOCS_FORMAT_PENDING_PARSE,
     MAX_R_SEPARATOR_CHARS,
     MAX_R_SEPARATORS,
+    MIN_CHUNK_TOKEN_SIZE,
     PARSED_ARTIFACT_DIR_SUFFIXES,
     PARSED_DIR_NAME,
     PROCESS_OPTION_CHUNK_CUSTOM,
@@ -116,6 +120,7 @@ from lightrag.parser.routing import (
     parse_process_options,
     resolve_chunk_options,
     resolve_parser_directives,
+    validate_new_hint_chunk_sizes,
 )
 from lightrag.utils import (
     generate_track_id,
@@ -165,8 +170,6 @@ def format_datetime(dt: Any) -> Optional[str]:
 # same router each time, accumulating duplicate routes and triggering
 # FastAPI's "Duplicate Operation ID" warnings.
 
-# Temporary file prefix
-temp_prefix = "__tmp__"
 UNKNOWN_FILE_SOURCE = "unknown_source"
 LEGACY_EMPTY_FILE_PATH_SENTINELS = {"", "no-file-path"}
 ARCHIVED_FILE_SUFFIX_RE = re.compile(r"_(?:\d{3}|\d{10,})$")
@@ -643,7 +646,7 @@ class _StrictChunkParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    chunk_token_size: Optional[int] = Field(default=None, ge=1)
+    chunk_token_size: Optional[int] = Field(default=None, ge=MIN_CHUNK_TOKEN_SIZE)
 
 
 class _OverlapChunkParams(_StrictChunkParams):
@@ -1888,8 +1891,9 @@ async def check_pipeline_busy_or_raise(rag: LightRAG) -> None:
     write commits, and refuses with its own 409 when the pipeline is
     already busy or scanning. That gate runs only where the graph storage
     declares ``requires_single_writer`` (``NetworkXStorage``, the one
-    backend whose reload discards uncommitted mutations); server-backed
-    graph stores never take it, so the cost once cited against holding
+    backend whose reload discards uncommitted mutations) or chunk tracking
+    sits on a KV storage that buffers per process (``OpenSearchKVStorage``);
+    other server-backed stores never take it, so the cost once cited against holding
     ``busy`` across a UI edit -- serialising every edit against ingestion --
     does not apply to them, and on the file backend it amounts to deferring
     a pipeline start by one short, LLM-free request. This router check is
@@ -2280,11 +2284,105 @@ def _file_path_for_parsed_artifact_dir(dir_name: str) -> str | None:
     return None
 
 
+def _archived_file_readings(name: str) -> set[str]:
+    """Every canonical source a file under ``__parsed__`` may have been archived from.
+
+    An archived ``scan_001.pdf`` is either a numbered copy of ``scan.pdf`` or
+    the first archive of a document that is itself named ``scan_001.pdf``
+    (``get_unique_filename_in_parsed`` only numbers on a collision); the name
+    alone cannot tell which, so both readings are returned.
+    """
+    return {
+        canonicalize_archived_file_variant_basename(name),
+        canonicalize_archived_file_variant_basename(name, strip_archive_suffix=True),
+    }
+
+
+def find_archived_variants_shared_with_other_sources(
+    input_dir: Path,
+    file_path: str | None,
+) -> dict[str, list[str]]:
+    """Map other canonical sources to the ``__parsed__`` files they may own.
+
+    Lists the files :func:`delete_file_variants_by_file_path` would match for
+    ``file_path`` whose other reading names a different source. Callers must
+    resolve each returned source against doc_status and pass the files of every
+    source that is still referenced, or whose lookup failed, as
+    ``preserve_files``; this function does not read storage.
+    """
+    if not file_path:
+        return {}
+    canonical = normalize_file_path(file_path)
+    if canonical == UNKNOWN_FILE_SOURCE:
+        return {}
+    try:
+        candidates = list((input_dir / PARSED_DIR_NAME).iterdir())
+    except FileNotFoundError:
+        return {}
+
+    shared: dict[str, list[str]] = {}
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        readings = _archived_file_readings(candidate.name)
+        if canonical not in readings:
+            continue
+        for other in sorted(readings - {canonical}):
+            shared.setdefault(other, []).append(candidate.name)
+    return shared
+
+
+async def resolve_archived_variants_to_preserve(
+    rag: LightRAG,
+    input_dir: Path,
+    file_path: str | None,
+) -> dict[str, str]:
+    """Return ``{archived file name: reason}`` for files another source may own.
+
+    Fail closed: a file is preserved when the other source is still referenced
+    by a primary document or when its ownership lookup raises. Keeping a file
+    that could have been deleted is the accepted residue; deleting a live
+    document's archived source is not.
+    """
+    preserve: dict[str, str] = {}
+    shared = find_archived_variants_shared_with_other_sources(input_dir, file_path)
+    for other_source, names in shared.items():
+        try:
+            resolution = await rag.doc_status.resolve_doc_source_strict(other_source)
+        except Exception as e:
+            # Raw error in the log only; the reason reaches pipeline_status.
+            logger.warning(
+                "Ownership check failed for archived variants of %s: %s",
+                other_source,
+                e,
+            )
+            reason = (
+                f"ownership of '{other_source}' could not be checked: "
+                f"{type(e).__name__}"
+            )
+        else:
+            if isinstance(resolution, SourceAbsent):
+                continue
+            reason = f"may belong to document source '{other_source}'"
+        for name in names:
+            preserve[name] = reason
+    return preserve
+
+
 def delete_file_variants_by_file_path(
     input_dir: Path,
     file_path: str | None,
+    *,
+    preserve_files: Collection[str] = (),
 ) -> tuple[list[str], list[str]]:
-    """Delete input/__parsed__ source files matching a canonical ``file_path``."""
+    """Delete input/__parsed__ source files matching a canonical ``file_path``.
+
+    A ``__parsed__`` file is matched under both of its readings (see
+    :func:`_archived_file_readings`), so an archive whose name is shared with
+    another source is matched too. Callers that can reach doc_status must pass
+    the result of :func:`resolve_archived_variants_to_preserve` as
+    ``preserve_files``; those ``__parsed__`` file names are left in place.
+    """
     if not file_path:
         return [], []
     canonical = normalize_file_path(file_path)
@@ -2309,13 +2407,15 @@ def delete_file_variants_by_file_path(
         in_parsed_dir = candidate_dir.name == PARSED_DIR_NAME
         for candidate in candidates:
             if candidate.is_file():
-                if (
-                    canonicalize_archived_file_variant_basename(
-                        candidate.name,
-                        strip_archive_suffix=in_parsed_dir,
-                    )
-                    not in canonical_names
-                ):
+                if in_parsed_dir:
+                    if candidate.name in preserve_files:
+                        continue
+                    variant_names = _archived_file_readings(candidate.name)
+                else:
+                    variant_names = {
+                        canonicalize_archived_file_variant_basename(candidate.name)
+                    }
+                if variant_names.isdisjoint(canonical_names):
                     continue
 
                 safe_candidate = validate_file_path_security(
@@ -2476,6 +2576,7 @@ async def pipeline_enqueue_file(
 
         try:
             directives = resolve_parser_directives(file_path)
+            validate_new_hint_chunk_sizes(file_path, directives.chunk_params)
         except FilenameParserHintError as e:
             error_files = [
                 {
@@ -2604,12 +2705,6 @@ async def pipeline_enqueue_file(
         logger.error(f"Enqueuing file {file_path.name} error: {str(e)}")
         logger.error(traceback.format_exc())
         return False, track_id
-    finally:
-        if file_path.name.startswith(temp_prefix):
-            try:
-                file_path.unlink()
-            except Exception as e:
-                logger.error(f"Error deleting file {file_path}: {str(e)}")
 
 
 async def pipeline_index_file(
@@ -4411,10 +4506,27 @@ async def background_delete_documents(
                         and result.file_path != UNKNOWN_FILE_SOURCE
                     ):
                         try:
+                            # Archived names such as ``X_001.ext`` may belong to
+                            # a live ``X.ext`` or ``X_001.ext``; keep those.
+                            preserve_files = (
+                                await resolve_archived_variants_to_preserve(
+                                    rag, doc_manager.input_dir, result.file_path
+                                )
+                            )
+                            for kept_name, kept_reason in preserve_files.items():
+                                kept_msg = (
+                                    f"Archived file kept: {PARSED_DIR_NAME}/"
+                                    f"{kept_name} ({kept_reason})"
+                                )
+                                logger.info(kept_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = kept_msg
+                                    append_pipeline_history(pipeline_status, kept_msg)
                             deleted_files, file_delete_errors = (
                                 delete_file_variants_by_file_path(
                                     doc_manager.input_dir,
                                     result.file_path,
+                                    preserve_files=preserve_files,
                                 )
                             )
                             for file_delete_error in file_delete_errors:
@@ -4438,7 +4550,7 @@ async def background_delete_documents(
                                     append_pipeline_history(
                                         pipeline_status, file_delete_msg
                                     )
-                            else:
+                            elif not preserve_files:
                                 file_error_msg = (
                                     "File deletion skipped, missing or unsafe file: "
                                     f"{result.file_path}"
@@ -4578,7 +4690,7 @@ async def background_delete_documents(
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
-    # Fresh router per call — see the note above the temp_prefix constant.
+    # Fresh router per call — see the module-level note above.
     router = APIRouter(
         prefix="/documents",
         tags=["documents"],
@@ -5427,6 +5539,9 @@ def create_document_routes(
             # LIGHTRAG_PARSER rule scan.
             try:
                 upload_directives = resolve_parser_directives(safe_filename)
+                validate_new_hint_chunk_sizes(
+                    safe_filename, upload_directives.chunk_params
+                )
             except FilenameParserHintError as hint_error:
                 # Reject malformed hints synchronously with the detailed
                 # message (previously surfaced asynchronously as an error
@@ -5523,9 +5638,47 @@ def create_document_routes(
             out_file_context = aiofiles.open(file_path, "xb", opener=upload_opener)
 
             opened = False
+            out_file = None
+            pending_cancel = None
+
+            def is_name_conflict(error):
+                # The O_EXCL/O_NOFOLLOW refusal this opener exists to enforce:
+                # the name is already taken, or the path is a symlink.
+                return isinstance(error, OSError) and (
+                    isinstance(error, FileExistsError) or error.errno == errno.ELOOP
+                )
+
+            async def settle_file_io(operation):
+                # Cancelling aiofiles does not stop its executor thread. Settle
+                # each operation before closing/unlinking or releasing admission.
+                nonlocal pending_cancel
+                future = asyncio.ensure_future(operation)
+                future.add_done_callback(_consume_future_exception)
+                pending_cancel = await _wait_deferring_cancellation(
+                    future, pending_cancel
+                )
+                if pending_cancel is not None:
+                    io_error = None if future.cancelled() else future.exception()
+                    # A name conflict is the caller's ordinary 409, not a
+                    # server fault: the cancellation simply outranks it.
+                    if io_error is not None and not is_name_conflict(io_error):
+                        logger.error(
+                            f"File IO failed while cancelling upload {safe_filename}: "
+                            f"{io_error}"
+                        )
+                    raise pending_cancel
+                return future.result()
+
+            async def open_output():
+                nonlocal opened, out_file
+                out_file = await out_file_context.__aenter__()
+                # Record ownership inside the protected operation, including
+                # when cancellation arrives before __aenter__ returns to us.
+                opened = True
+
             try:
-                async with out_file_context as out_file:
-                    opened = True
+                try:
+                    await settle_file_io(open_output())
                     while True:
                         # Read chunk from upload stream
                         chunk = await file.read(chunk_size)
@@ -5543,14 +5696,20 @@ def create_document_routes(
                                 break
 
                         # Write chunk to file
-                        await out_file.write(chunk)
+                        await settle_file_io(out_file.write(chunk))
+                except asyncio.CancelledError as exc:
+                    pending_cancel = pending_cancel or exc
+                    raise
+                finally:
+                    if opened:
+                        await settle_file_io(
+                            out_file_context.__aexit__(None, None, None)
+                        )
 
-            except OSError as e:
+            except BaseException as e:
                 if not opened:
-                    if isinstance(e, FileExistsError) or e.errno == errno.ELOOP:
-                        # The O_EXCL/O_NOFOLLOW conflict this opener exists to
-                        # enforce (name already taken, or refused to follow a
-                        # symlink). No file was created.
+                    if is_name_conflict(e):
+                        # No file was created.
                         raise HTTPException(
                             status_code=409,
                             detail=(
@@ -5562,18 +5721,20 @@ def create_document_routes(
                     # ENOSPC/EDQUOT, read-only filesystem, ...) rather than a
                     # name conflict. No file was created, nothing to clean up.
                     raise
-                # Failure after the file was already created (e.g. ENOSPC/EIO
-                # during write or close) is a server-side fault, not a
-                # client-fixable conflict -- clean up the partial file so a
-                # retry isn't permanently blocked by the exclusive-create
-                # check, then let it propagate to the endpoint's
-                # internal_server_error(e) path.
+                # Every failed copy, including cancellation or a broken read
+                # stream, must remove the file this request exclusively created.
+                # Otherwise scan can ingest truncated bytes as a complete source.
                 try:
                     file_path.unlink()
                 except OSError as cleanup_error:
                     logger.error(
                         f"Error cleaning up partially written file {safe_filename}: {cleanup_error}"
                     )
+                else:
+                    # A write that settled after the cancel was requested left
+                    # the cancellation stamped as "durable". The file is gone,
+                    # so the stamp must not travel on with it.
+                    retract_cancellation_deferred(e)
                 raise
 
             # Cleanup after file is closed
@@ -6173,7 +6334,12 @@ def create_document_routes(
 
             for storage in storages:
                 if storage is not None:
-                    drop_tasks.append(storage.drop())
+                    # Vector stores clear every embedding model's container for
+                    # the workspace, not just the active model's.
+                    if isinstance(storage, BaseVectorStorage):
+                        drop_tasks.append(storage.drop_all_models())
+                    else:
+                        drop_tasks.append(storage.drop())
 
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
@@ -6680,6 +6846,14 @@ def create_document_routes(
         The deletion process runs in the background to avoid blocking the client connection.
 
         This operation is irreversible and will interact with the pipeline status.
+
+        Entities and relations another document still supports are rebuilt from
+        the surviving chunks' extraction cache. A surviving chunk whose initial
+        extraction is no longer cached is re-extracted with the LLM, so the
+        deletion can call the LLM and fails, retryably, without it; the pipeline
+        history lists the surviving documents re-extracted this way.
+        ``delete_llm_cache=true`` can remove a cache row another document's
+        chunk shares, which costs that re-extraction later.
 
         **Concurrency Constraint:**
         - Atomically reserves the destructive slot (sets ``busy=True``

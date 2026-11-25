@@ -9,9 +9,22 @@ from pathlib import Path
 
 import pytest
 
+from lightrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
 from lightrag.parser.external.mineru import MinerUIRBuilder
+from lightrag.sidecar.writer import write_sidecar
+from lightrag.utils import Tokenizer, TokenizerInterface
 from lightrag.utils import logger as lightrag_logger
 from tests._log_capture import capture_lightrag_logs
+
+
+class _CharTokenizer(TokenizerInterface):
+    """1:1 character-to-token mapping; no tiktoken download."""
+
+    def encode(self, content: str) -> list[int]:
+        return [ord(ch) for ch in content]
+
+    def decode(self, tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
 
 
 @contextmanager
@@ -42,7 +55,9 @@ def _write_bundle(tmp_path: Path, content_list: list[dict]) -> Path:
     """Build a minimal *.mineru_raw/ directory."""
     raw = tmp_path / "doc.mineru_raw"
     raw.mkdir()
-    (raw / "content_list.json").write_text(json.dumps(content_list, ensure_ascii=False))
+    (raw / "content_list.json").write_text(
+        json.dumps(content_list, ensure_ascii=False), encoding="utf-8"
+    )
     return raw
 
 
@@ -385,6 +400,78 @@ def test_adapter_each_heading_starts_its_own_block(tmp_path: Path) -> None:
         ),
         ("2 Top Again", "# 2 Top Again\nMore body.", 1, []),
     ]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("headings", "expected_parents"),
+    [
+        # No level 1 (no detected doc_title): siblings, not parents.
+        (
+            [("Intro", 2), ("Methods", 2), ("Results", 2)],
+            [[], [], []],
+        ),
+        # Skipped level: C2 is C1's sibling, B pops both level-3 headings.
+        (
+            [("A", 1), ("C1", 3), ("C2", 3), ("B", 2), ("B-sub", 3)],
+            [[], ["A"], ["A"], ["A"], ["A", "B"]],
+        ),
+    ],
+)
+def test_adapter_parent_headings_are_ancestors_when_levels_skip(
+    tmp_path: Path,
+    headings: list[tuple[str, int]],
+    expected_parents: list[list[str]],
+) -> None:
+    """``parent_headings`` lists only strictly shallower headings, even when
+    the document starts below level 1 or skips a level."""
+    content_list = []
+    for title, level in headings:
+        content_list += [
+            {"type": "text", "text": title, "text_level": level},
+            {"type": "text", "text": f"{title} body"},
+        ]
+    raw = _write_bundle(tmp_path, content_list)
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
+
+    assert [b.heading for b in ir.blocks] == [t for t, _ in headings]
+    assert [b.parent_headings for b in ir.blocks] == expected_parents
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("level", [1, 2])
+def test_adapter_sibling_sections_chunk_the_same_at_any_start_level(
+    tmp_path: Path, level: int
+) -> None:
+    """End to end: sidecar → P chunker. Siblings starting at level 2 must
+    share a parent path and merge exactly like siblings starting at level 1."""
+    raw = _write_bundle(
+        tmp_path,
+        [
+            item
+            for title in ("Intro", "Methods", "Results")
+            for item in (
+                {"type": "text", "text": title, "text_level": level},
+                {"type": "text", "text": f"{title} body"},
+            )
+        ],
+    )
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="m.pdf")
+    parsed = write_sidecar(
+        ir,
+        parsed_dir=tmp_path / "doc.parsed",
+        doc_id="doc-" + "0" * 32,
+        engine="mineru",
+    )
+    chunks = chunking_by_paragraph_semantic(
+        Tokenizer("char", _CharTokenizer()),
+        parsed["content"],
+        600,
+        blocks_path=parsed["blocks_path"],
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["heading"]["parent_headings"] == []
 
 
 @pytest.mark.offline
@@ -1137,6 +1224,38 @@ def test_adapter_refuses_path_traversal_img_path(tmp_path: Path) -> None:
     # (and crucially must not point at the original secret file).
     abs_asset = by_ref[str(secret)]
     assert abs_asset.source is None
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "img_path", ["..fig.png", "...fig.png", "..assets/fig.png", "images/..fig.png"]
+)
+def test_adapter_resolves_dot_prefixed_img_path_inside_raw_dir(
+    tmp_path: Path, img_path: str
+) -> None:
+    """A name that merely starts with two dots is not a parent reference: the
+    image inside ``raw_dir`` must be found, not dropped as unsafe."""
+    raw = _write_bundle(tmp_path, [{"type": "image", "img_path": img_path}])
+    image = raw / img_path
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"png")
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
+
+    assert ir.assets[0].source == image.resolve()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("img_path", ["..", "../secret.png", "images/../../secret.png"])
+def test_adapter_refuses_parent_component_img_path(
+    tmp_path: Path, img_path: str
+) -> None:
+    (tmp_path / "secret.png").write_bytes(b"private")
+    raw = _write_bundle(tmp_path, [{"type": "image", "img_path": img_path}])
+
+    ir = MinerUIRBuilder().normalize_from_workdir(raw, document_name="x.pdf")
+
+    assert ir.assets[0].source is None
 
 
 @pytest.mark.offline

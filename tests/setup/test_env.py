@@ -148,63 +148,6 @@ env_base_flow
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:11434"
 
 
-def test_env_base_flow_preserves_existing_vllm_embedding_settings_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """Rerunning env-base should keep saved local vLLM embedding settings."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            "LLM_BINDING=openai",
-            "LLM_MODEL=gpt-4o-mini",
-            "LLM_BINDING_HOST=https://api.openai.com/v1",
-            "LLM_BINDING_API_KEY=sk-existing",
-            "EMBEDDING_BINDING=openai",
-            "EMBEDDING_MODEL=BAAI/custom-embed",
-            "EMBEDDING_DIM=768",
-            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
-            "EMBEDDING_BINDING_API_KEY=embed-key",
-            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
-            "VLLM_EMBED_MODEL=BAAI/custom-embed",
-            "VLLM_EMBED_PORT=9101",
-            "VLLM_EMBED_DEVICE=cpu",
-        ],
-    )
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{ return 1; }}
-confirm_default_yes() {{
-  case "$1" in
-    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-finalize_base_setup() {{
-  printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
-  printf 'EMBEDDING_DIM=%s\\n' "${{ENV_VALUES[EMBEDDING_DIM]}}"
-  printf 'EMBEDDING_BINDING_HOST=%s\\n' "${{ENV_VALUES[EMBEDDING_BINDING_HOST]}}"
-  printf 'VLLM_EMBED_MODEL=%s\\n' "${{ENV_VALUES[VLLM_EMBED_MODEL]}}"
-  printf 'VLLM_EMBED_PORT=%s\\n' "${{ENV_VALUES[VLLM_EMBED_PORT]}}"
-}}
-
-env_base_flow
-""")
-    assert values["EMBEDDING_MODEL"] == "BAAI/custom-embed"
-    assert values["EMBEDDING_DIM"] == "768"
-    assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
-    assert values["VLLM_EMBED_MODEL"] == "BAAI/custom-embed"
-    assert values["VLLM_EMBED_PORT"] == "9101"
-
-
 def test_env_base_flow_resets_remote_embedding_host_when_switching_to_vllm(
     tmp_path: Path,
 ) -> None:
@@ -252,106 +195,6 @@ env_base_flow
 """)
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
     assert values["LIGHTRAG_SETUP_EMBEDDING_PROVIDER"] == "vllm"
-
-
-def test_env_base_flow_preserves_existing_vllm_embedding_device_on_gpu_host(
-    tmp_path: Path,
-) -> None:
-    """Saved vLLM embedding CPU/GPU mode should win over auto-detected GPU defaults."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            "LLM_BINDING=openai",
-            "LLM_MODEL=gpt-4o-mini",
-            "LLM_BINDING_HOST=https://api.openai.com/v1",
-            "LLM_BINDING_API_KEY=sk-existing",
-            "EMBEDDING_BINDING=openai",
-            "EMBEDDING_MODEL=BAAI/custom-embed",
-            "EMBEDDING_DIM=1024",
-            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
-            "EMBEDDING_BINDING_API_KEY=embed-key",
-            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
-            "VLLM_EMBED_MODEL=BAAI/custom-embed",
-            "VLLM_EMBED_PORT=9101",
-            "VLLM_EMBED_DEVICE=cpu",
-        ],
-    )
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-nvidia-smi() {{ return 0; }}
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{ return 1; }}
-confirm_default_yes() {{
-  case "$1" in
-    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-finalize_base_setup() {{
-  printf 'VLLM_EMBED_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_EMBED_DEVICE]}}"
-}}
-
-env_base_flow
-""")
-    assert values["VLLM_EMBED_DEVICE"] == "cpu"
-
-
-def test_env_base_flow_preserves_existing_vllm_embedding_cuda_device_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """Saved vLLM embedding CUDA mode should survive env-base reruns."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            "LLM_BINDING=openai",
-            "LLM_MODEL=gpt-4o-mini",
-            "LLM_BINDING_HOST=https://api.openai.com/v1",
-            "LLM_BINDING_API_KEY=sk-existing",
-            "EMBEDDING_BINDING=openai",
-            "EMBEDDING_MODEL=BAAI/custom-embed",
-            "EMBEDDING_DIM=1024",
-            "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
-            "EMBEDDING_BINDING_API_KEY=embed-key",
-            "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
-            "VLLM_EMBED_MODEL=BAAI/custom-embed",
-            "VLLM_EMBED_PORT=9101",
-            "VLLM_EMBED_DEVICE=cuda",
-        ],
-    )
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-nvidia-smi() {{ return 0; }}
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{ return 1; }}
-confirm_default_yes() {{
-  case "$1" in
-    "Run embedding model locally via Docker (vLLM)?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-
-finalize_base_setup() {{
-  printf 'VLLM_EMBED_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_EMBED_DEVICE]}}"
-}}
-
-env_base_flow
-""")
-    assert values["VLLM_EMBED_DEVICE"] == "cuda"
 
 
 def test_env_base_flow_defaults_new_vllm_embedding_to_cuda_on_gpu_host(
@@ -472,7 +315,7 @@ def test_env_base_flow_vllm_defaults_prefer_original_env_values_on_rerun(
             "LLM_BINDING_API_KEY=sk-existing",
             "EMBEDDING_BINDING=openai",
             "EMBEDDING_MODEL=BAAI/original-embed",
-            "EMBEDDING_DIM=1024",
+            "EMBEDDING_DIM=768",
             "EMBEDDING_BINDING_HOST=http://localhost:9101/v1",
             "EMBEDDING_BINDING_API_KEY=embed-key",
             "LIGHTRAG_SETUP_EMBEDDING_PROVIDER=vllm",
@@ -531,12 +374,16 @@ finalize_base_setup() {{
   printf 'VLLM_RERANK_PORT=%s\\n' "${{ENV_VALUES[VLLM_RERANK_PORT]}}"
   printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
   printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
+  printf 'EMBEDDING_MODEL=%s\\n' "${{ENV_VALUES[EMBEDDING_MODEL]}}"
+  printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
 }}
 
 env_base_flow
 """)
+    assert values["EMBEDDING_MODEL"] == "BAAI/original-embed"
+    assert values["RERANK_MODEL"] == "BAAI/original-rerank"
     assert values["VLLM_EMBED_MODEL"] == "BAAI/original-embed"
-    assert values["EMBEDDING_DIM"] == "1024"
+    assert values["EMBEDDING_DIM"] == "768"
     assert values["VLLM_EMBED_PORT"] == "9101"
     assert values["EMBEDDING_BINDING_HOST"] == "http://localhost:9101/v1"
     assert values["VLLM_EMBED_DEVICE"] == "cpu"
@@ -1095,62 +942,6 @@ env_base_flow
     assert values["HAS_VLLM_SERVICE"] == "yes"
 
 
-def test_env_base_flow_preserves_existing_vllm_rerank_settings_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """Rerunning env-base should keep saved local vLLM rerank model and port."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            "LLM_BINDING=openai",
-            "LLM_MODEL=gpt-4o-mini",
-            "LLM_BINDING_HOST=https://api.openai.com/v1",
-            "LLM_BINDING_API_KEY=sk-existing",
-            "RERANK_BINDING=cohere",
-            "RERANK_MODEL=BAAI/custom-rerank",
-            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
-            "RERANK_BINDING_API_KEY=rerank-key",
-            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
-            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
-            "VLLM_RERANK_PORT=9200",
-            "VLLM_RERANK_DEVICE=cpu",
-        ],
-    )
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{
-  case "$1" in
-    "Enable reranking?") return 0 ;;
-    "Run rerank service locally via Docker?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-confirm_default_yes() {{ return 1; }}
-collect_embedding_config() {{ :; }}
-
-finalize_base_setup() {{
-  printf 'RERANK_MODEL=%s\\n' "${{ENV_VALUES[RERANK_MODEL]}}"
-  printf 'RERANK_BINDING_HOST=%s\\n' "${{ENV_VALUES[RERANK_BINDING_HOST]}}"
-  printf 'VLLM_RERANK_MODEL=%s\\n' "${{ENV_VALUES[VLLM_RERANK_MODEL]}}"
-  printf 'VLLM_RERANK_PORT=%s\\n' "${{ENV_VALUES[VLLM_RERANK_PORT]}}"
-}}
-
-env_base_flow
-""")
-    assert values["RERANK_MODEL"] == "BAAI/custom-rerank"
-    assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
-    assert values["VLLM_RERANK_MODEL"] == "BAAI/custom-rerank"
-    assert values["VLLM_RERANK_PORT"] == "9200"
-
-
 def test_env_base_flow_does_not_repeat_rerank_docker_prompt_when_declined(
     tmp_path: Path,
 ) -> None:
@@ -1380,116 +1171,6 @@ env_base_flow
     assert values["RERANK_BINDING"] == "cohere"
     assert values["RERANK_BINDING_HOST"] == "http://localhost:9200/rerank"
     assert values["LIGHTRAG_SETUP_RERANK_PROVIDER"] == "vllm"
-
-
-def test_env_base_flow_preserves_existing_vllm_rerank_device_on_gpu_host(
-    tmp_path: Path,
-) -> None:
-    """Saved vLLM rerank CPU/GPU mode should win over auto-detected GPU defaults."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            "LLM_BINDING=openai",
-            "LLM_MODEL=gpt-4o-mini",
-            "LLM_BINDING_HOST=https://api.openai.com/v1",
-            "LLM_BINDING_API_KEY=sk-existing",
-            "RERANK_BINDING=cohere",
-            "RERANK_MODEL=BAAI/custom-rerank",
-            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
-            "RERANK_BINDING_API_KEY=rerank-key",
-            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
-            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
-            "VLLM_RERANK_PORT=9200",
-            "VLLM_RERANK_DEVICE=cpu",
-        ],
-    )
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-nvidia-smi() {{ return 0; }}
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{
-  case "$1" in
-    "Enable reranking?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-confirm_default_yes() {{
-  case "$1" in
-    "Run rerank service locally via Docker?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-collect_embedding_config() {{ :; }}
-
-finalize_base_setup() {{
-  printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
-}}
-
-env_base_flow
-""")
-    assert values["VLLM_RERANK_DEVICE"] == "cpu"
-
-
-def test_env_base_flow_preserves_existing_vllm_rerank_cuda_device_on_rerun(
-    tmp_path: Path,
-) -> None:
-    """Saved vLLM rerank CUDA mode should survive env-base reruns."""
-    write_text_lines(
-        tmp_path / ".env",
-        [
-            "LLM_BINDING=openai",
-            "LLM_MODEL=gpt-4o-mini",
-            "LLM_BINDING_HOST=https://api.openai.com/v1",
-            "LLM_BINDING_API_KEY=sk-existing",
-            "RERANK_BINDING=cohere",
-            "RERANK_MODEL=BAAI/custom-rerank",
-            "RERANK_BINDING_HOST=http://localhost:9200/rerank",
-            "RERANK_BINDING_API_KEY=rerank-key",
-            "LIGHTRAG_SETUP_RERANK_PROVIDER=vllm",
-            "VLLM_RERANK_MODEL=BAAI/custom-rerank",
-            "VLLM_RERANK_PORT=9200",
-            "VLLM_RERANK_DEVICE=cuda",
-        ],
-    )
-    values = run_bash_lines(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-nvidia-smi() {{ return 0; }}
-prompt_choice() {{ printf '%s' "$2"; }}
-prompt_with_default() {{ printf '%s' "$2"; }}
-prompt_until_valid() {{ printf '%s' "$2"; }}
-prompt_secret_with_default() {{ printf '%s' "$2"; }}
-prompt_secret_until_valid_with_default() {{ printf '%s' "$2"; }}
-confirm_default_no() {{
-  case "$1" in
-    "Enable reranking?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-confirm_default_yes() {{
-  case "$1" in
-    "Run rerank service locally via Docker?") return 0 ;;
-    *) return 1 ;;
-  esac
-}}
-collect_embedding_config() {{ :; }}
-
-finalize_base_setup() {{
-  printf 'VLLM_RERANK_DEVICE=%s\\n' "${{ENV_VALUES[VLLM_RERANK_DEVICE]}}"
-}}
-
-env_base_flow
-""")
-    assert values["VLLM_RERANK_DEVICE"] == "cuda"
 
 
 def test_env_storage_flow_applies_selected_storage_backends(tmp_path: Path) -> None:
@@ -1940,109 +1621,6 @@ printf 'PROMPT_LOG=%s\\n' "$(paste -sd '|' "$PROMPT_LOG_FILE")\"
     assert 'POSTGRES_DB: "lightrag"' in generated_compose
 
 
-def test_env_storage_flow_preserves_existing_postgres_image_during_rewrite(
-    tmp_path: Path,
-) -> None:
-    """Postgres env rewrites should keep an existing custom image."""
-    write_storage_setup_files(
-        tmp_path,
-        [
-            "LLM_BINDING=openai",
-            "EMBEDDING_BINDING=openai",
-            "POSTGRES_USER=rag",
-            "POSTGRES_PASSWORD=rag",
-            "POSTGRES_DATABASE=rag",
-        ],
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-            "  postgres:",
-            "    image: registry.example.com/postgres-for-rag:patched",
-        ],
-    )
-    run_bash(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-select_storage_backends() {{
-  REQUIRED_DB_TYPES[postgresql]=1
-  ENV_VALUES[LIGHTRAG_KV_STORAGE]="PGKVStorage"
-  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="PGVectorStorage"
-  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="PGGraphStorage"
-  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="PGDocStatusStorage"
-}}
-collect_database_config() {{
-  if [[ "$1" == "postgresql" ]]; then
-    add_docker_service "postgres"
-    ENV_VALUES[POSTGRES_USER]="updated-user"
-  fi
-}}
-validate_required_variables() {{ return 0; }}
-validate_mongo_vector_storage_config() {{ return 0; }}
-validate_sensitive_env_literals() {{ return 0; }}
-confirm_required_yes_no() {{ return 0; }}
-
-env_storage_flow
-""")
-    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: registry.example.com/postgres-for-rag:patched" in result
-    assert 'POSTGRES_USER: "updated-user"' in result
-    assert 'POSTGRES_DB: "rag"' in result
-
-
-def test_env_storage_flow_preserves_existing_neo4j_image_during_rewrite(
-    tmp_path: Path,
-) -> None:
-    """Neo4j database rewrites should keep an existing custom image."""
-    write_storage_setup_files(
-        tmp_path,
-        [
-            "LLM_BINDING=openai",
-            "EMBEDDING_BINDING=openai",
-            "NEO4J_USERNAME=neo4j",
-            "NEO4J_PASSWORD=neo4j-password",
-            "NEO4J_DATABASE=neo4j",
-        ],
-        [
-            "services:",
-            "  lightrag:",
-            "    image: example/lightrag:test",
-            "  neo4j:",
-            "    image: registry.example.com/neo4j:custom",
-        ],
-    )
-    run_bash(f"""
-set -euo pipefail
-source "{REPO_ROOT}/scripts/setup/setup.sh"
-REPO_ROOT="{tmp_path}"
-
-select_storage_backends() {{
-  REQUIRED_DB_TYPES[neo4j]=1
-  ENV_VALUES[LIGHTRAG_KV_STORAGE]="JsonKVStorage"
-  ENV_VALUES[LIGHTRAG_VECTOR_STORAGE]="NanoVectorDBStorage"
-  ENV_VALUES[LIGHTRAG_GRAPH_STORAGE]="Neo4JStorage"
-  ENV_VALUES[LIGHTRAG_DOC_STATUS_STORAGE]="JsonDocStatusStorage"
-}}
-collect_database_config() {{
-  if [[ "$1" == "neo4j" ]]; then
-    add_docker_service "neo4j"
-    ENV_VALUES[NEO4J_DATABASE]="updated-database"
-  fi
-}}
-validate_required_variables() {{ return 0; }}
-validate_mongo_vector_storage_config() {{ return 0; }}
-validate_sensitive_env_literals() {{ return 0; }}
-confirm_required_yes_no() {{ return 0; }}
-
-env_storage_flow
-""")
-    result = (tmp_path / "docker-compose.final.yml").read_text(encoding="utf-8")
-    assert "image: registry.example.com/neo4j:custom" in result
-    assert 'NEO4J_dbms_default__database: "updated-database"' in result
-
-
 def test_env_storage_flow_preserves_existing_postgres_and_neo4j_images_on_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -2106,6 +1684,7 @@ env_storage_flow
     assert "image: registry.example.com/neo4j:custom" in result
     assert 'POSTGRES_USER: "updated-user"' in result
     assert 'NEO4J_dbms_default__database: "updated-database"' in result
+    assert 'POSTGRES_DB: "rag"' in result
 
 
 def test_env_storage_flow_uses_template_image_when_existing_service_has_no_image(

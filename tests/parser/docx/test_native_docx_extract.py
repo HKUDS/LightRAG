@@ -15,6 +15,7 @@ run-level white-list); regressions now fail loudly.
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from docx import Document
@@ -28,6 +29,7 @@ from lightrag.parser.docx.parse_document import (
     extract_docx_blocks,
     extract_paragraph_content,
 )
+from lightrag.parser.docx.smart_heading.features import StyleAttributes
 from lightrag.parser.docx.table_extractor import (
     TableExtractor,
     extract_paragraph_content_table,
@@ -177,6 +179,35 @@ def test_paragraph_drops_comment_markers_but_keeps_surrounding_text() -> None:
     assert extract_paragraph_content(para, PARAGRAPH_NS) == "visible"
 
 
+# Run elements that stand for a character: a carriage return, an absolute
+# position tab and a non-breaking hyphen. Each one used to vanish and join the
+# text around it ("line oneline two", "ReportPage 1", "COVID19").
+_CHARACTER_RUN_ELEMENTS = [
+    pytest.param(
+        "<w:t>line one</w:t><w:cr/><w:t>line two</w:t>", "line one\nline two", id="cr"
+    ),
+    pytest.param(
+        '<w:t>Report</w:t><w:ptab w:relativeTo="margin" w:alignment="right"'
+        ' w:leader="none"/><w:t>Page 1</w:t>',
+        "Report\tPage 1",
+        id="ptab",
+    ),
+    pytest.param(
+        "<w:t>COVID</w:t><w:noBreakHyphen/><w:t>19</w:t>",
+        "COVID-19",
+        id="noBreakHyphen",
+    ),
+]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(("run_xml", "expected"), _CHARACTER_RUN_ELEMENTS)
+def test_paragraph_keeps_character_run_elements(run_xml: str, expected: str) -> None:
+    para = _p(f"<w:r>{run_xml}</w:r>")
+
+    assert extract_paragraph_content(para, PARAGRAPH_NS) == expected
+
+
 # --- table-cell walker (table_extractor.extract_paragraph_content_table) ---
 
 
@@ -192,6 +223,14 @@ def test_table_cell_drops_w_del_content() -> None:
     para = _p("<w:del><w:r><w:t>removed</w:t></w:r></w:del>")
 
     assert extract_paragraph_content_table(para, qn) == ""
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(("run_xml", "expected"), _CHARACTER_RUN_ELEMENTS)
+def test_table_cell_keeps_character_run_elements(run_xml: str, expected: str) -> None:
+    para = _p(f"<w:r>{run_xml}</w:r>")
+
+    assert extract_paragraph_content_table(para, qn) == expected
 
 
 @pytest.mark.offline
@@ -309,6 +348,244 @@ def test_empty_table_cell_ends_vertical_merge(continuation: str | None) -> None:
         para_ids[2],
     ]
     assert [row[0] for row in result["para_ids_end"]] == list(para_ids)
+
+
+def _filled_table(document, rows: int, cols: int):
+    table = document.add_table(rows=rows, cols=cols)
+    for row in range(rows):
+        for column in range(cols):
+            _populate_cell(table.cell(row, column), f"r{row}c{column}")
+    return table
+
+
+def _skip_grid_columns(row, *, before: int = 0, after: int = 0) -> None:
+    """Drop cells from a row's ends and record them as gridBefore/gridAfter."""
+    tr = row._tr
+    for _ in range(before):
+        tr.remove(tr.tc_lst[0])
+    for _ in range(after):
+        tr.remove(tr.tc_lst[-1])
+    tr_pr = tr.get_or_add_trPr()
+    for tag, count in (("w:gridBefore", before), ("w:gridAfter", after)):
+        if count:
+            node = OxmlElement(tag)
+            node.set(qn("w:val"), str(count))
+            tr_pr.append(node)
+
+
+def _saved_table_metadata(document, **kwargs) -> dict:
+    source = BytesIO()
+    document.save(source)
+    source.seek(0)
+    return TableExtractor.extract_with_metadata(Document(source).tables[0], **kwargs)
+
+
+@pytest.mark.offline
+def test_grid_before_row_keeps_cells_in_their_columns() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 3)
+    _skip_grid_columns(table.rows[1], before=1)
+    _skip_grid_columns(table.rows[2], after=2)
+    skipped_row = table.rows[1]._tr
+    for tc, para_id in zip(skipped_row.tc_lst, ("00000011", "00000012")):
+        tc.find(qn("w:p")).set(qn("w14:paraId"), para_id)
+
+    result = _saved_table_metadata(document)
+
+    assert result["rows"] == [
+        ["r0c0", "r0c1", "r0c2"],
+        ["", "r1c1", "r1c2"],
+        ["r2c0", "", ""],
+    ]
+    assert result["para_ids"][1] == [None, "00000011", "00000012"]
+
+
+@pytest.mark.offline
+def test_vertical_merge_below_grid_before_row() -> None:
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    table.cell(0, 2).merge(table.cell(1, 2)).text = "Total"
+    _skip_grid_columns(table.rows[0], before=1)
+
+    # The continuation in row 2 sits under grid column 2, which row 1
+    # reaches only after its skipped first column.
+    assert _saved_table_metadata(document)["rows"] == [
+        ["", "r0c1", "Total"],
+        ["r1c0", "r1c1", "Total"],
+    ]
+
+
+@pytest.mark.offline
+def test_column_without_cell_ends_vertical_merge() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, 0).merge(table.cell(2, 0)).text = "Total"
+    # Row 2 loses its continuation cell: grid column 0 has no cell there.
+    _skip_grid_columns(table.rows[1], before=1)
+
+    # Row 3's continuation has no merge directly above it to repeat.
+    assert _saved_table_metadata(document)["rows"] == [
+        ["Total", "r0c1"],
+        ["", "r1c1"],
+        ["", "r2c1"],
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("breaker", ["gridAfter", "normal cell"])
+def test_orphaned_continuation_keeps_its_own_para_ids(breaker: str) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, 1).merge(table.cell(2, 1)).text = "Total"
+    if breaker == "gridAfter":
+        _skip_grid_columns(table.rows[1], after=1)
+    else:
+        tc_pr = table.rows[1]._tr.tc_lst[1].tcPr
+        tc_pr.remove(tc_pr.find(qn("w:vMerge")))
+    orphan = table.rows[2]._tr.tc_lst[1]
+    paragraphs = orphan.findall(qn("w:p"))
+    if len(paragraphs) == 1:
+        orphan.append(OxmlElement("w:p"))
+        paragraphs = orphan.findall(qn("w:p"))
+    paragraphs[0].set(qn("w14:paraId"), "0000000A")
+    paragraphs[-1].set(qn("w14:paraId"), "0000000B")
+
+    result = _saved_table_metadata(document)
+
+    # No merge reaches row 3: no text, but its paraIds still bound the range.
+    assert [row[1] for row in result["rows"]] == ["Total", "", ""]
+    assert result["para_ids"][2][1] == "0000000A"
+    assert result["para_ids_end"][2][1] == "0000000B"
+
+
+def _wrap(element, wrapper: str) -> None:
+    """Move ``element`` into a content control or custom XML element."""
+    parent = element.getparent()
+    index = parent.index(element)
+    if wrapper == "sdt":
+        outer = OxmlElement("w:sdt")
+        outer.append(OxmlElement("w:sdtPr"))
+        inner = OxmlElement("w:sdtContent")
+        outer.append(inner)
+    else:
+        outer = inner = OxmlElement("w:customXml")
+        outer.set(qn("w:element"), "item")
+    parent.remove(element)
+    inner.append(element)
+    parent.insert(index, outer)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("wrapper", ["sdt", "customXml"])
+@pytest.mark.parametrize("merged_col", [0, 1])
+def test_wrapped_continuation_cell_keeps_vertical_merge(
+    wrapper: str, merged_col: int
+) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    table.cell(0, merged_col).merge(table.cell(2, merged_col)).text = "Total"
+    _wrap(table.rows[1]._tr.tc_lst[merged_col], wrapper)
+
+    rows = _saved_table_metadata(document)["rows"]
+
+    other = 1 - merged_col
+    assert [row[merged_col] for row in rows] == ["Total"] * 3
+    assert [row[other] for row in rows] == [f"r{i}c{other}" for i in range(3)]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("wrapper", ["sdt", "customXml"])
+def test_wrapped_row_counts_like_a_direct_row(wrapper: str) -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    for row in table.rows:
+        row._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    _wrap(table.rows[1]._tr, wrapper)
+
+    result = _saved_table_metadata(document)
+
+    assert result["rows"] == [
+        ["r0c0", "r0c1"],
+        ["r1c0", "r1c1"],
+        ["r2c0", "r2c1"],
+    ]
+    # Skipping the wrapped row would give [0, 1].
+    assert result["header_indices"] == [0, 1, 2]
+
+
+def _wrap_in_placeholder(element) -> None:
+    """Wrap ``element`` in a content control still showing its placeholder."""
+    _wrap(element, "sdt")
+    element.getparent().getparent().find(qn("w:sdtPr")).append(
+        OxmlElement("w:showingPlcHdr")
+    )
+
+
+@pytest.mark.offline
+def test_placeholder_cell_keeps_its_column_without_text() -> None:
+    document = Document()
+    table = _filled_table(document, 2, 3)
+    _wrap_in_placeholder(table.rows[0]._tr.tc_lst[1])
+
+    result = _saved_table_metadata(document, style_attributes=StyleAttributes())
+
+    assert result["rows"] == [["r0c0", "", "r0c2"], ["r1c0", "r1c1", "r1c2"]]
+    assert result["cell_features"][0][1] == ("", None, False)
+
+
+@pytest.mark.offline
+def test_placeholder_row_is_left_out() -> None:
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    _wrap_in_placeholder(table.rows[1]._tr)
+
+    assert _saved_table_metadata(document)["rows"] == [
+        ["r0c0", "r0c1"],
+        ["r2c0", "r2c1"],
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("with_numbering", [False, True])
+def test_placeholder_cell_content_is_not_extracted(
+    monkeypatch, with_numbering: bool
+) -> None:
+    """Nothing in a hidden cell is extracted: no image export, no list count."""
+    import lightrag.parser.docx.table_extractor as table_extractor
+
+    document = Document()
+    table = _filled_table(document, 1, 2)
+    hidden_tc = table.rows[0]._tr.tc_lst[1]
+    hidden_tc.find(qn("w:p")).set(qn("w14:paraId"), "0000000C")
+    _wrap_in_placeholder(hidden_tc)
+
+    touched: list[str] = []
+    real_extract = table_extractor.extract_paragraph_content_table
+
+    def recording_extract(para_elem, *args, **kwargs):
+        text = real_extract(para_elem, *args, **kwargs)
+        touched.append(text)
+        return text
+
+    class RecordingResolver:
+        def reset_tracking_state(self) -> None:
+            pass
+
+        def get_label(self, para_elem) -> str:
+            touched.append("label:" + real_extract(para_elem, qn))
+            return ""
+
+    monkeypatch.setattr(
+        table_extractor, "extract_paragraph_content_table", recording_extract
+    )
+    result = _saved_table_metadata(
+        document, numbering_resolver=RecordingResolver() if with_numbering else None
+    )
+
+    assert result["rows"] == [["r0c0", ""]]
+    assert result["para_ids"][0][1] == "0000000C"
+    assert all("r0c1" not in entry for entry in touched)
+    assert any("r0c0" in entry for entry in touched)
 
 
 # --- end-to-end: every heading becomes its own block ----------------------
@@ -520,6 +797,146 @@ def test_empty_tables_are_skipped(tmp_path) -> None:
         "must be dropped before the placeholder is emitted"
     )
     assert any('"A"' in b["content"] and '"B"' in b["content"] for b in blocks)
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("value", "repeats"),
+    [
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("1", True),
+    ],
+)
+def test_docx_table_header_respects_explicit_value(
+    tmp_path: Path, value: str, repeats: bool
+) -> None:
+    doc = Document()
+    table = doc.add_table(rows=3, cols=2)
+    rows = [["Department", "Amount"], ["Operations", "100"], ["Inventory", "200"]]
+    for row, values in zip(table.rows, rows):
+        for cell, text in zip(row.cells, values):
+            _populate_cell(cell, text)
+
+    table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    flag = OxmlElement("w:tblHeader")
+    flag.set(qn("w:val"), value)
+    table.rows[1]._tr.get_or_add_trPr().append(flag)
+    path = tmp_path / "headers.docx"
+    doc.save(path)
+
+    (block,) = extract_docx_blocks(str(path))
+
+    assert block["table_headers"] == [rows[:2] if repeats else rows[:1]]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("marked", "expected"),
+    [
+        ((0, 1), [0, 1]),
+        ((0, 2), [0]),
+        ((1,), []),
+    ],
+)
+def test_docx_table_header_rows_start_at_the_first_row(
+    marked: tuple[int, ...], expected: list[int]
+) -> None:
+    # Word repeats only the marked rows contiguous with the first row; a
+    # marked row below an unmarked one is ignored (ISO/IEC 29500-1 tblHeader).
+    document = Document()
+    table = _filled_table(document, 3, 2)
+    for idx in marked:
+        table.rows[idx]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+
+    assert _saved_table_metadata(document)["header_indices"] == expected
+
+
+@pytest.mark.offline
+def test_docx_table_without_leading_header_row_has_no_table_headers(
+    tmp_path: Path,
+) -> None:
+    doc = Document()
+    table = doc.add_table(rows=3, cols=2)
+    rows = [["Department", "Amount"], ["Operations", "100"], ["Inventory", "200"]]
+    for row, values in zip(table.rows, rows):
+        for cell, text in zip(row.cells, values):
+            _populate_cell(cell, text)
+    table.rows[2]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    path = tmp_path / "late-header.docx"
+    doc.save(path)
+
+    (block,) = extract_docx_blocks(str(path))
+
+    assert block.get("table_headers", [None]) == [None]
+
+
+def _one_row_table_with_first_cell_span(span_val: str | None):
+    """A 1x3 table (A, B, C) whose first cell carries ``w:gridSpan``.
+
+    ``span_val=None`` emits the element without ``w:val``.
+    """
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    for cell, text in zip(table.rows[0].cells, "ABC"):
+        _populate_cell(cell, text)
+    grid_span = OxmlElement("w:gridSpan")
+    if span_val is not None:
+        grid_span.set(qn("w:val"), span_val)
+    table.rows[0].cells[0]._tc.get_or_add_tcPr().append(grid_span)
+    return table
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize("span_val", ["1", "0", None, "abc"])
+def test_table_grid_span_below_one_or_malformed_is_one_column(span_val) -> None:
+    """A ``w:gridSpan`` below 1, missing its value, or non-integer must not
+    shift, overwrite, or drop cells, nor fail the document."""
+    table = _one_row_table_with_first_cell_span(span_val)
+
+    assert TableExtractor.extract(table) == [["A", "B", "C"]]
+
+
+@pytest.mark.offline
+def test_table_grid_span_valid_merge_still_advances() -> None:
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    merged = table.rows[0].cells[0].merge(table.rows[0].cells[1])
+    _populate_cell(merged, "AB")
+    _populate_cell(table.rows[0].cells[2], "C")
+
+    assert TableExtractor.extract(table) == [["AB", "", "C"]]
+
+
+@pytest.mark.offline
+def test_table_grid_span_past_the_grid_keeps_first_cell() -> None:
+    """An oversized span only pushes the remaining cells off the grid."""
+    table = _one_row_table_with_first_cell_span("999999999")
+
+    assert TableExtractor.extract(table) == [["A", "", ""]]
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "before_val",
+    [
+        "0",
+        "-2",
+    ],
+)
+def test_table_grid_before_below_zero_or_malformed_skips_nothing(
+    before_val,
+) -> None:
+    """``w:gridBefore`` shares the gridSpan parsing with a floor of 0."""
+    document = Document()
+    table = _filled_table(document, 1, 3)
+    node = OxmlElement("w:gridBefore")
+    if before_val is not None:
+        node.set(qn("w:val"), before_val)
+    table.rows[0]._tr.get_or_add_trPr().append(node)
+
+    assert _saved_table_metadata(document)["rows"] == [["r0c0", "r0c1", "r0c2"]]
 
 
 # --- invalid (non-ZIP) .docx files surface an accurate error ---------------

@@ -4,6 +4,9 @@ Partial content is returned for salvage (flagged uncacheable); content that is
 EMPTY because generation never got past the reasoning trace is a different
 animal and raises, so the document ends FAILED and retryable instead of being
 indexed as an empty knowledge graph (issue #3601 gap 4).
+
+The raw-dict response shape mirrors ollama<0.4; ollama>=0.4 returns a
+ChatResponse whose .get behaves identically (SubscriptableBaseModel).
 """
 
 import logging
@@ -13,7 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lightrag.llm.ollama import InvalidResponseError, _ollama_model_if_cache
-from lightrag.utils import is_truncated_response
+from lightrag.utils import TokenTracker, is_truncated_response
 
 pytestmark = pytest.mark.offline
 
@@ -25,48 +28,49 @@ def _make_fake_client(response: dict):
     )
 
 
-@pytest.mark.asyncio
-async def test_ollama_length_done_reason_marks_result_truncated():
-    """done_reason == "length" (num_predict exhausted) flags the response.
+async def _complete(response: dict, **kwargs):
+    fake_client = _make_fake_client(response)
+    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
+        result = await _ollama_model_if_cache(
+            model="test-model", prompt="Extract", **kwargs
+        )
+    return result, fake_client
 
-    The raw-dict response shape mirrors ollama<0.4; ollama>=0.4 returns a
-    ChatResponse whose .get behaves identically (SubscriptableBaseModel).
-    """
-    raw_json = '{"entities":[{"name":"Ali'
-    fake_client = _make_fake_client(
+
+async def test_ollama_length_done_reason_marks_partial_content_truncated():
+    """done_reason == "length" (num_predict exhausted) flags the response,
+    and non-empty content is still returned for salvage, never raised --
+    unstripped, so the padding must survive."""
+    raw_json = ' {"entities":[{"name":"Ali '
+
+    result, _ = await _complete(
         {"message": {"content": raw_json}, "done_reason": "length"}
     )
-
-    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        result = await _ollama_model_if_cache(model="test-model", prompt="Extract")
 
     assert result == raw_json
     assert is_truncated_response(result) is True
 
 
-@pytest.mark.asyncio
-async def test_ollama_stop_done_reason_is_not_marked_truncated():
-    raw_json = '{"entities":[]}'
-    fake_client = _make_fake_client(
-        {"message": {"content": raw_json}, "done_reason": "stop"}
-    )
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            {"message": {"content": '{"entities":[]}'}, "done_reason": "stop"},
+            id="stop",
+        ),
+        # Older servers may omit done_reason; degrade to cache-everything.
+        pytest.param({"message": {"content": "answer"}}, id="missing-done-reason"),
+        # Only the token-limit case escalates: an empty response that ended
+        # normally is the model's answer, and its callers keep tolerating it.
+        pytest.param(
+            {"message": {"content": ""}, "done_reason": "stop"}, id="empty-stop"
+        ),
+    ],
+)
+async def test_ollama_non_length_response_is_returned_unmarked(response):
+    result, _ = await _complete(response)
 
-    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        result = await _ollama_model_if_cache(model="test-model", prompt="Extract")
-
-    assert result == raw_json
-    assert is_truncated_response(result) is False
-
-
-@pytest.mark.asyncio
-async def test_ollama_missing_done_reason_is_not_marked_truncated():
-    """Older servers may omit done_reason; degrade to cache-everything."""
-    fake_client = _make_fake_client({"message": {"content": "answer"}})
-
-    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        result = await _ollama_model_if_cache(model="test-model", prompt="Q")
-
-    assert result == "answer"
+    assert result == response["message"]["content"]
     assert is_truncated_response(result) is False
 
 
@@ -105,49 +109,25 @@ async def test_ollama_empty_length_truncated_response_raises(
     fake_client._client.aclose.assert_awaited()
 
 
-async def test_ollama_empty_length_response_names_reasoning_as_the_consumer():
-    """``message.thinking`` present ⇒ say the budget went to reasoning."""
-    fake_client = _make_fake_client(
-        {
-            "message": {"content": "", "thinking": "let me carefully consider..."},
-            "done_reason": "length",
-            "eval_count": 64,
-        }
-    )
+async def test_ollama_empty_length_response_names_reasoning_and_is_billed():
+    """``message.thinking`` present ⇒ say the budget went to reasoning.
 
-    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        with pytest.raises(InvalidResponseError) as excinfo:
-            await _ollama_model_if_cache(model="test-model", prompt="Extract")
+    Usage is counted before the raise: the budget was spent whether or not
+    the output was usable, and this is exactly the case that spent it."""
+    tracker = TokenTracker()
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await _complete(
+            {
+                "message": {"content": "", "thinking": "let me carefully consider..."},
+                "done_reason": "length",
+                "prompt_eval_count": 12,
+                "eval_count": 400,
+            },
+            token_tracker=tracker,
+        )
 
     message = str(excinfo.value)
     assert "budget consumed by reasoning" in message
     assert "thinking_len=28" in message
-
-
-async def test_ollama_empty_response_without_length_reason_is_unchanged():
-    """Scope: only the token-limit case escalates.
-
-    An empty response that ended normally is the model's answer, not a broken
-    generation, and the callers that tolerate it today keep doing so.
-    """
-    fake_client = _make_fake_client({"message": {"content": ""}, "done_reason": "stop"})
-
-    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        result = await _ollama_model_if_cache(model="test-model", prompt="Q")
-
-    assert result == ""
-    assert is_truncated_response(result) is False
-
-
-async def test_ollama_partial_length_response_is_still_salvaged():
-    """The escalation must not swallow the salvage path: non-empty truncated
-    content is still returned (flagged), never raised."""
-    fake_client = _make_fake_client(
-        {"message": {"content": " x "}, "done_reason": "length"}
-    )
-
-    with patch("lightrag.llm.ollama.ollama.AsyncClient", return_value=fake_client):
-        result = await _ollama_model_if_cache(model="test-model", prompt="Extract")
-
-    assert result == " x "
-    assert is_truncated_response(result) is True
+    assert tracker.get_usage()["total_tokens"] == 412

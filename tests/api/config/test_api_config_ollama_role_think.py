@@ -48,15 +48,6 @@ def test_think_is_absent_when_unset(monkeypatch):
     assert "think" not in OllamaLLMOptions.options_dict(args)
 
 
-def test_think_is_configurable_globally_like_any_other_ollama_option(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-    monkeypatch.setenv("OLLAMA_LLM_THINK", "false")
-
-    args = parse_args()
-
-    assert OllamaLLMOptions.options_dict(args)["think"] is False
-
-
 def test_think_is_configurable_per_role(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.delenv("OLLAMA_LLM_THINK", raising=False)
@@ -97,7 +88,8 @@ def test_think_accepts_ollama_reasoning_levels(monkeypatch, level):
 
 def test_booleans_still_parse_as_booleans_alongside_the_levels(monkeypatch):
     """Regression guard for the widening: `false` must stay a real bool, not
-    become the string "false" (which Ollama's client would reject)."""
+    become the string "false" (which Ollama's client would reject). Also the
+    pin that OLLAMA_LLM_THINK is configurable globally like any other option."""
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("OLLAMA_LLM_THINK", "false")
     monkeypatch.setenv("EXTRACT_OLLAMA_LLM_THINK", "on")
@@ -111,8 +103,8 @@ def test_booleans_still_parse_as_booleans_alongside_the_levels(monkeypatch):
 def test_an_unrecognized_think_value_is_refused_rather_than_read_as_off(monkeypatch):
     """A misspelled level must not silently degrade to False -- that would turn
     "dial reasoning up" into "turn reasoning off" with nothing in the logs.
-    Deliberately stricter than plain bool options, which treat anything
-    non-true as false."""
+    Deliberately stricter than plain bool options, whose typos warn and leave
+    the option unset."""
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("OLLAMA_LLM_THINK", "hgih")
 
@@ -121,9 +113,9 @@ def test_an_unrecognized_think_value_is_refused_rather_than_read_as_off(monkeypa
 
 
 def test_an_unrecognized_role_think_value_is_refused_too(monkeypatch):
-    """The role path resolves env vars itself, and its conversion `try` block
-    falls back to storing the raw string -- which would smuggle "hgih" all the
-    way into the provider payload. The check has to sit outside that block."""
+    """The role path resolves env vars itself, with its own parser call: the
+    role override must refuse "hgih" exactly as the base option does, rather
+    than let it reach the provider payload."""
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.delenv("OLLAMA_LLM_THINK", raising=False)
     monkeypatch.setenv("EXTRACT_OLLAMA_LLM_THINK", "hgih")

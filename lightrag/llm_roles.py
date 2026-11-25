@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
@@ -59,6 +60,45 @@ ROLE_NAMES: frozenset[str] = frozenset(spec.name for spec in ROLES)
 ROLES_BY_NAME: dict[str, RoleSpec] = {spec.name: spec for spec in ROLES}
 
 
+# The effective LLM timeout of the role call running in this context (its
+# RoleLLMConfig(timeout=...), else default_llm_timeout): the value the role's
+# queue is sized from. The role wrapper sets it around each call it executes;
+# apply_llm_timeout reads it so a bundled provider wrapper sizes its client
+# the same way, even when it is reached through a partial or a custom
+# function.
+_ROLE_LLM_TIMEOUT: ContextVar[Any] = ContextVar("lightrag_role_llm_timeout")
+_UNSET = object()
+
+
+def apply_llm_timeout(
+    kwargs: dict[str, Any], *, client_config_keys: tuple[str, ...] = ()
+) -> None:
+    """Fill ``kwargs["timeout"]`` with LightRAG's LLM timeout unless one is set.
+
+    Call it first in a provider wrapper whose ``timeout`` kwarg becomes its
+    client's request timeout. Inside a role call the value is that role's
+    effective timeout; outside one it is ``default_llm_timeout`` from
+    ``kwargs["hashing_kv"].global_config``, and nothing when neither exists.
+
+    A ``timeout`` already in ``kwargs``, or a ``"timeout"`` key in any
+    ``kwargs[key]`` mapping named by ``client_config_keys`` (a client
+    configuration the wrapper forwards), is an explicit choice and wins.
+    """
+    if "timeout" in kwargs:
+        return
+    for key in client_config_keys:
+        config = kwargs.get(key)
+        if isinstance(config, Mapping) and "timeout" in config:
+            return
+    timeout = _ROLE_LLM_TIMEOUT.get(_UNSET)
+    if timeout is _UNSET:
+        global_config = getattr(kwargs.get("hashing_kv"), "global_config", None)
+        if not isinstance(global_config, Mapping):
+            return
+        timeout = global_config.get("default_llm_timeout")
+    kwargs["timeout"] = timeout
+
+
 @dataclass
 class RoleLLMConfig:
     """Per-role LLM override accepted at :class:`LightRAG` init time.
@@ -69,6 +109,13 @@ class RoleLLMConfig:
     user did not pass a ``role_llm_configs`` entry for the role, the value is
     additionally seeded from ``{ROLE_PREFIX}_MAX_ASYNC_LLM``. ``metadata`` seeds
     runtime observability and role-builder context.
+
+    The effective ``timeout`` (this field, else ``default_llm_timeout``) sizes
+    the role's queue, and the bundled ``*_complete`` provider wrappers use it
+    as their client's request timeout through :func:`apply_llm_timeout`, also
+    when reached through a ``partial`` or a custom function. It is never
+    passed to the model function as an argument; a ``timeout`` in the role's
+    ``kwargs`` (or a provider client configuration) is an explicit override.
     """
 
     func: Callable[..., object] | None = None
@@ -225,18 +272,23 @@ class _RoleLLMMixin:
                 f"through this role would never run); got {max_async}"
             )
         spec = ROLES_BY_NAME[role_name]
+        bound = partial(raw_func, hashing_kv=self.llm_response_cache, **model_kwargs)
+
+        async def call_with_role_timeout(*args: Any, **kwargs: Any) -> object:
+            # Set inside the executing task, so apply_llm_timeout sees this
+            # role's timeout however deep the provider wrapper sits.
+            token = _ROLE_LLM_TIMEOUT.set(timeout)
+            try:
+                return await bound(*args, **kwargs)
+            finally:
+                _ROLE_LLM_TIMEOUT.reset(token)
+
         return priority_limit_async_func_call(
             max_async,
             llm_timeout=timeout,
             queue_name=spec.queue_name,
             concurrency_group=f"llm:{role_name}",
-        )(
-            partial(
-                raw_func,
-                hashing_kv=self.llm_response_cache,
-                **model_kwargs,
-            )
-        )
+        )(call_with_role_timeout)
 
     def _rebuild_role_llm_funcs(self) -> None:
         """Wrap each role's raw_func with its own priority queue.

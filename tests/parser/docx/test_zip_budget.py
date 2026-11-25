@@ -78,14 +78,28 @@ def _bomb_bytes(uncompressed_mib: int) -> bytes:
     unbounded expansion this guard exists to stop. Many ordinary-sized nodes
     is both the realistic worst case and the one that actually expands.
 
-    Cached because deflating a ~200 MiB body at level 9 costs ~1s and six
+    Cached because deflating a ~200 MiB body at level 9 costs ~0.5s and six
     tests build the byte-identical fixture — the cache turns six builds into
-    one with no loss of coverage.
+    one with no loss of coverage. The body is streamed into the member, so
+    the build never holds the whole body in memory.
     """
-    para = "<w:p><w:r><w:t>" + ("A" * 900) + "</w:t></w:r></w:p>"
-    body_xml = para * ((uncompressed_mib * 1024 * 1024) // len(para))
+    para = ("<w:p><w:r><w:t>" + ("A" * 900) + "</w:t></w:r></w:p>").encode()
+    count = (uncompressed_mib * 1024 * 1024) // len(para)
     buf = io.BytesIO()
-    _write_docx(buf, body_xml=body_xml)
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        zf.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        zf.writestr("_rels/.rels", _ROOT_RELS)
+        with zf.open("word/document.xml", "w") as member:
+            member.write(
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                b'wordprocessingml/2006/main"><w:body>'
+            )
+            batch = para * 1024
+            for _ in range(count // 1024):
+                member.write(batch)
+            member.write(para * (count % 1024))
+            member.write(b"</w:body></w:document>")
     return buf.getvalue()
 
 
@@ -371,9 +385,11 @@ def test_limits_are_read_live_and_can_be_disabled(tmp_path, monkeypatch):
 
 def test_ordinary_docx_passes_untouched(tmp_path):
     src = _benign(tmp_path / "ok.docx")
+    original = src.read_bytes()
     parser = NativeDocxParser()
     parser.validate_source(src, "ok.docx")
     parser.validate_source_blocking(src, "ok.docx")
+    assert src.read_bytes() == original
 
 
 def test_non_zip_named_docx_is_passed_through_not_rejected_here(tmp_path):
@@ -512,11 +528,17 @@ def test_budget_accepts_bytes_and_path_equivalently(tmp_path):
 def test_validate_source_does_not_open_the_archive(tmp_path, monkeypatch):
     src = _benign(tmp_path / "ok.docx")
 
+    opened: list[tuple] = []
+
     def _explode(*args, **kwargs):  # pragma: no cover - only on regression
-        raise AssertionError("validate_source opened the zip on the event loop")
+        opened.append(args)
+        raise RuntimeError("validate_source opened the zip on the event loop")
 
     monkeypatch.setattr(zipfile, "ZipFile", _explode)
     NativeDocxParser().validate_source(src, "ok.docx")
+    # Recorded as well as raised, so a broad except in validate_source cannot
+    # swallow the regression.
+    assert opened == []
 
 
 def test_budget_runs_in_the_executor_before_artifact_cleanup():
@@ -708,11 +730,12 @@ def test_cancel_during_validation_does_not_destroy_a_prior_sidecar(
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            # Let the abandoned worker run on past validation.
+            # Let the abandoned worker run on past validation, then wait for
+            # it to finish: the debug rag has no parser executor, so the
+            # worker runs in the loop's default executor. Pre-fix it proceeds
+            # into extract; post-fix it stops at the checkpoint.
             release.set()
-            # Pre-fix it proceeds into extract; post-fix it stops at the
-            # checkpoint and this simply times out.
-            await asyncio.to_thread(reached_extract.wait, 2)
+            await asyncio.get_running_loop().shutdown_default_executor()
 
     asyncio.run(_run())
 

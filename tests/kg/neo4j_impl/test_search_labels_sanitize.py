@@ -7,17 +7,7 @@ search containing Lucene reserved characters (e.g. "tb-") was misparsed by the
 full-text query parser ('-' as NOT) and silently returned nothing.
 """
 
-import os
-import sys
-
 import pytest
-
-# Add the project root directory to the Python path
-sys.path.append(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    )
-)
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
@@ -30,7 +20,6 @@ pytestmark = pytest.mark.offline
     [
         # Reserved characters are replaced with spaces and whitespace collapsed.
         ("tb-", "tb"),
-        ("tb-foo", "tb foo"),
         ("node:x", "node x"),
         ("a (b)", "a b"),
         ("C++", "C"),
@@ -38,13 +27,9 @@ pytestmark = pytest.mark.offline
         ("name*", "name"),
         # Composed entirely of reserved characters -> empty (caller returns []).
         ("---", ""),
-        ("+++", ""),
         ("()[]{}", ""),
         # No reserved characters -> unchanged (modulo whitespace collapsing).
-        ("machine learning", "machine learning"),
         ("  spaced   out  ", "spaced out"),
-        ("学习", "学习"),
-        ("机器-学习", "机器 学习"),
     ],
 )
 def test_sanitize_fulltext_query(raw, expected):

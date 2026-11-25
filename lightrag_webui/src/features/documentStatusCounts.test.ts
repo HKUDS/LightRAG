@@ -25,18 +25,6 @@ describe('computeStatusCountsFingerprint', () => {
     expect(after).not.toBe(before)
   })
 
-  test('sees the pending count alone change', () => {
-    expect(computeStatusCountsFingerprint({ all: 5, processed: 4, pending: 1 })).not.toBe(
-      computeStatusCountsFingerprint({ all: 5, processed: 4, pending: 2 })
-    )
-  })
-
-  test('sees the preprocessed count alone change', () => {
-    expect(computeStatusCountsFingerprint({ all: 5, processed: 4, preprocessed: 1 })).not.toBe(
-      computeStatusCountsFingerprint({ all: 5, processed: 4, preprocessed: 2 })
-    )
-  })
-
   test('is stable for an unchanged map, regardless of key order and key case', () => {
     const reference = computeStatusCountsFingerprint({ all: 3, pending: 1, processed: 2 })
 

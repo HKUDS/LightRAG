@@ -58,6 +58,8 @@ from openai import (
     InternalServerError,
     RateLimitError,
 )
+
+
 from tenacity import (
     retry,
     retry_if_exception,
@@ -67,7 +69,9 @@ from tenacity import (
 )
 
 from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
+    provider_timeout,
     VERBOSE_DEBUG,
     TruncatedResponse,
     empty_length_truncated_hint,
@@ -434,7 +438,9 @@ async def openai_responses_complete_if_cache(
         system_prompt: Sent as the Responses ``instructions`` parameter rather
             than as a system message.
         history_messages: Prior conversation turns.
-        enable_cot: Wrap reasoning-summary text in ``<think>`` tags.
+        enable_cot: Wrap reasoning-summary text in ``<think>`` tags on the
+            streaming path. A non-streaming result never carries reasoning;
+            one with no body text raises like any empty response.
         base_url: API base URL. Defaults to ``OPENAI_API_BASE`` or the public
             OpenAI endpoint.
         api_key: API key. Defaults to ``OPENAI_API_KEY``.
@@ -483,6 +489,8 @@ async def openai_responses_complete_if_cache(
 
     client_configs = kwargs.pop("openai_client_configs", {})
     kwargs.pop("hashing_kv", None)
+    # <= 0 means the SDK default: None is not passed on below.
+    timeout = provider_timeout(timeout)
     # Accepted for signature parity with the Chat Completions driver, which
     # uses it only to pick a default response_format.
     entity_extraction = kwargs.pop("entity_extraction", False)
@@ -944,13 +952,13 @@ async def _handle_non_streaming(
             raise InvalidResponseError(error_message)
 
         content = _extract_text(response)
+        # Read for the diagnostics only. Non-streaming never returns reasoning:
+        # it is dropped once body text exists, and a response with NO body
+        # text is empty whatever enable_cot says, so it raises (and retries)
+        # below instead of returning a <think> trace as the answer.
         reasoning = _extract_reasoning(response) if enable_cot else ""
 
         final_content = content or ""
-        if enable_cot and reasoning.strip() and not final_content.strip():
-            if r"\u" in reasoning:
-                reasoning = safe_unicode_decode(reasoning.encode("utf-8"))
-            final_content = f"<think>{reasoning}</think>{final_content}"
 
         if not final_content or not final_content.strip():
             status = getattr(response, "status", None)
@@ -1017,6 +1025,7 @@ async def openai_responses_complete(
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """LightRAG ``llm_model_func`` entry point for the Responses binding."""
+    apply_llm_timeout(kwargs, client_config_keys=("openai_client_configs",))
     if history_messages is None:
         history_messages = []
     entity_extraction = kwargs.pop("entity_extraction", entity_extraction)

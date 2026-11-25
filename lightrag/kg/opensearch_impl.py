@@ -46,14 +46,17 @@ from ..base import (
 from ..exceptions import (
     ReferencesIntactFlushError,
     SourceConflictRepairCASError,
+    StorageCapabilityError,
     StorageControlPlaneError,
     StorageNotInitializedError,
     StorageRecordNotFoundError,
 )
 from ..utils import (
     logger,
+    parse_bool_setting,
     compute_mdhash_id,
     _cooperative_yield,
+    get_env_value,
     merge_source_ids,
     parse_cache_key,
     validate_workspace,
@@ -95,6 +98,15 @@ config.read("config.ini", "utf-8")
 def _get_opensearch_env(key, fallback):
     cfg_key = key.replace("OPENSEARCH_", "").lower()
     return os.environ.get(key, config.get("opensearch", cfg_key, fallback=fallback))
+
+
+def _get_opensearch_bool(key, fallback):
+    return parse_bool_setting(
+        key,
+        _get_opensearch_env(key, str(fallback).lower()),
+        fallback,
+        source="OpenSearch setting",
+    )
 
 
 def _get_index_number_of_shards() -> int:
@@ -245,6 +257,24 @@ def _extract_bulk_failed_ids(
                     )
                 )
     return retryable, non_retryable
+
+
+def _raise_bulk_delete_failures(failed: list[Any], *, context: str) -> None:
+    """Reject incomplete deletes while treating already-absent rows as success."""
+    errors = [
+        payload
+        for entry in failed
+        for op, payload in entry.items()
+        if not 200 <= payload["status"] < 300
+        and not (op == "delete" and payload["status"] == 404)
+    ]
+    if errors:
+        sample = ", ".join(
+            f"{item['_id']}/status={item['status']}/"
+            f"{_summarize_bulk_error(item.get('error'))}"
+            for item in errors[:5]
+        )
+        raise OpenSearchException(f"{context}: bulk deletion failed: {sample}")
 
 
 # Flush-time bulk batching limits. opensearch-py's helpers.async_bulk already
@@ -804,14 +834,8 @@ class ClientManager:
                 hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
                 username = _get_opensearch_env("OPENSEARCH_USER", "admin")
                 password = _get_opensearch_env("OPENSEARCH_PASSWORD", "admin")
-                use_ssl = _get_opensearch_env("OPENSEARCH_USE_SSL", "true").lower() in (
-                    "true",
-                    "1",
-                    "yes",
-                )
-                verify_certs = _get_opensearch_env(
-                    "OPENSEARCH_VERIFY_CERTS", "false"
-                ).lower() in ("true", "1", "yes")
+                use_ssl = _get_opensearch_bool("OPENSEARCH_USE_SSL", True)
+                verify_certs = _get_opensearch_bool("OPENSEARCH_VERIFY_CERTS", False)
                 timeout = int(_get_opensearch_env("OPENSEARCH_TIMEOUT", "30"))
                 max_retries = int(_get_opensearch_env("OPENSEARCH_MAX_RETRIES", "3"))
 
@@ -1025,6 +1049,9 @@ class OpenSearchKVStorage(BaseKVStorage):
     """Key-Value storage using OpenSearch. Uses dynamic mapping to support varied schemas."""
 
     supports_strict_point_reads: ClassVar[bool] = True
+    # Upserts wait in ``_pending_upserts``, visible to this process only, until
+    # ``index_done_callback``: admin graph writes must not overlap the pipeline.
+    buffers_writes_per_process: ClassVar[bool] = True
 
     client: AsyncOpenSearch = field(default=None)
     _index_name: str = field(default="", init=False)
@@ -1057,6 +1084,10 @@ class OpenSearchKVStorage(BaseKVStorage):
         # mirrors what was introduced for OpenSearchVectorDBStorage.
         self._pending_upserts: dict[str, dict[str, Any]] = {}
         self._pending_kv_deletes: set[str] = set()
+        # Ids the latest flush ATTEMPTED and kept after a retryable per-item
+        # failure. Distinguishes those from operations buffered after that
+        # flush, which no commit has tried yet; see ``has_retained_writes``.
+        self._retained_ids: set[str] = set()
         # Namespace-keyed lock (multi-process aware) is assigned in
         # initialize(). All buffer reads / writes and the flush itself
         # acquire this lock so an in-flight flush cannot interleave with
@@ -1723,6 +1754,10 @@ class OpenSearchKVStorage(BaseKVStorage):
             }
             pending_deletes.clear()
             pending_deletes.update(new_deletes)
+            # Every buffered operation was part of this bulk (the flush holds
+            # ``_flush_lock`` throughout), so what is left now is exactly what
+            # the server refused for a retryable reason.
+            self._retained_ids = set(pending_upserts) | new_deletes
 
             if retryable_ids:
                 logger.warning(
@@ -1758,10 +1793,27 @@ class OpenSearchKVStorage(BaseKVStorage):
         if self._flush_lock is None:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
+            self._retained_ids.clear()
             return
         async with self._flush_lock:
             self._pending_upserts.clear()
             self._pending_kv_deletes.clear()
+            self._retained_ids.clear()
+
+    def discard_buffered_writes(self) -> int:
+        """Synchronously drop every buffered upsert and delete; return how many.
+
+        Without the flush lock, on purpose: the admin-write gate calls this
+        while a cancellation is propagating and holds the pipeline ``busy``
+        reservation and the admin lock, so no flush of this buffer is running.
+        Clearing between two awaits is atomic on the event loop, and a flush
+        suspended mid-way only ever ``pop``s ids it may no longer find.
+        """
+        dropped = len(self._pending_upserts) + len(self._pending_kv_deletes)
+        self._pending_upserts.clear()
+        self._pending_kv_deletes.clear()
+        self._retained_ids.clear()
+        return dropped
 
     async def drop_pending_upserts(self, *, cache_types: set[str] | None = None) -> int:
         """Discard buffered upserts, KEEPING the buffered deletes.
@@ -1809,6 +1861,27 @@ class OpenSearchKVStorage(BaseKVStorage):
             if self._pending_upserts:
                 return True
             return include_deletes and bool(self._pending_kv_deletes)
+
+        if self._flush_lock is None:  # see drop_pending_index_ops
+            return _answer()
+        async with self._flush_lock:
+            return _answer()
+
+    async def has_retained_writes(self) -> bool:
+        """Whether the latest flush kept an operation after a retryable failure.
+
+        Unlike ``has_pending_index_ops`` this ignores operations buffered after
+        that flush: no commit has tried them yet, so they are not evidence that
+        a commit failed. Waits for an in-flight flush, so the answer covers
+        every operation buffered before the call. Upserts and deletes both
+        count -- a retained tombstone lands as late as a retained row.
+        """
+
+        def _answer() -> bool:
+            return any(
+                doc_id in self._pending_upserts or doc_id in self._pending_kv_deletes
+                for doc_id in self._retained_ids
+            )
 
         if self._flush_lock is None:  # see drop_pending_index_ops
             return _answer()
@@ -3751,7 +3824,7 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 {"_op_type": "delete", "_index": self._index_name, "_id": doc_id}
                 for doc_id in ids
             ]
-            await _run_chunked_async_bulk(
+            _, failed = await _run_chunked_async_bulk(
                 self.client,
                 actions,
                 max_payload_bytes=self._max_upsert_payload_bytes,
@@ -3761,11 +3834,15 @@ class OpenSearchDocStatusStorage(DocStatusStorage):
                 raise_on_error=False,
                 refresh="wait_for",
             )
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] doc-status delete"
+            )
         except OpenSearchException as e:
             if _is_missing_index_error(e):
                 self._mark_index_missing()
                 return
             logger.error(f"[{self.workspace}] Error deleting doc statuses: {e}")
+            raise
 
     async def drop(self) -> dict[str, str]:
         """Delete the entire doc status index."""
@@ -3803,7 +3880,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     - Application-level batched BFS (fallback, works on any OpenSearch 3.x+)
 
     The strategy is auto-detected during initialize() and can be overridden via
-    the OPENSEARCH_USE_PPL_GRAPHLOOKUP environment variable (true/false).
+    the OPENSEARCH_USE_PPL_GRAPHLOOKUP environment variable (any boolean spelling
+    get_env_value accepts, e.g. true/false or 1/0); an unset, blank or
+    unrecognized value keeps auto-detection.
     """
 
     client: AsyncOpenSearch = field(default=None)
@@ -3914,13 +3993,12 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
     async def _detect_ppl_graphlookup(self):
         """Detect whether PPL graphlookup command is available on this cluster."""
-        env_override = os.environ.get("OPENSEARCH_USE_PPL_GRAPHLOOKUP", "").lower()
-        if env_override == "true":
-            self._ppl_graphlookup_available = True
-            return
-        if env_override == "false":
-            self._ppl_graphlookup_available = False
-            return
+        raw_env_override = os.environ.get("OPENSEARCH_USE_PPL_GRAPHLOOKUP")
+        if raw_env_override is not None and raw_env_override.strip():
+            env_override = get_env_value("OPENSEARCH_USE_PPL_GRAPHLOOKUP", None, bool)
+            if env_override is not None:
+                self._ppl_graphlookup_available = env_override
+                return
         # Auto-detect by sending a minimal PPL query
         try:
             await self.client.transport.perform_request(
@@ -4599,19 +4677,34 @@ class OpenSearchGraphStorage(BaseGraphStorage):
     # --- Batch operations ---
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
-        """Batch-fetch multiple nodes by ID."""
-        if not self._indices_ready:
+        """Batch-fetch multiple nodes by ID.
+
+        An id is left out only when its mget item says ``found: false``. An
+        item-level error or a short/malformed ``docs`` array raises (see
+        ``_interpret_mget_item``), as in :meth:`has_nodes_batch`: callers read
+        a missing key as "this node does not exist" and act on it.
+        """
+        if not node_ids or not self._indices_ready:
             return {}
+        requested = list(dict.fromkeys(node_ids))
         try:
             response = await self.client.mget(
-                index=self._nodes_index, body={"ids": node_ids}
+                index=self._nodes_index, body={"ids": requested}
             )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(requested):
+                raise RuntimeError(
+                    f"OpenSearch mget for {len(requested)} node ids returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items, "
+                    f"expected exactly {len(requested)}"
+                )
             result = {}
-            for doc in response["docs"]:
-                if doc.get("found"):
-                    data = doc["_source"]
-                    data["_id"] = doc["_id"]
-                    result[doc["_id"]] = data
+            for node_id, item in zip(requested, docs):
+                interpreted = _interpret_mget_item(item, node_id)
+                if interpreted is not None:
+                    data = interpreted["_source"]
+                    data["_id"] = interpreted["_id"]
+                    result[node_id] = data
             return result
         except OpenSearchException as e:
             if _is_missing_index_error(e):
@@ -4619,6 +4712,53 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                 return {}
             logger.error(f"[{self.workspace}] Error batch-getting nodes: {e}")
             raise
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Batch-fetch edges with one mget of their canonical ``_id``.
+
+        Same contract as :meth:`get_edge` for every pair: keyed by the pair as
+        requested, a direction-independent lookup, and an absent edge left out.
+        A per-item error or a short/malformed ``docs`` array raises (see
+        ``_interpret_mget_item``) rather than reading as absent.
+        """
+        if not pairs or not self._indices_ready:
+            return {}
+        edge_ids = list(
+            dict.fromkeys(_canonical_edge_id(p["src"], p["tgt"]) for p in pairs)
+        )
+        try:
+            response = await self.client.mget(
+                index=self._edges_index, body={"ids": edge_ids}
+            )
+            docs = response.get("docs")
+            if not isinstance(docs, list) or len(docs) != len(edge_ids):
+                raise RuntimeError(
+                    f"OpenSearch mget for {len(edge_ids)} edge ids returned "
+                    f"{len(docs) if isinstance(docs, list) else 'no'} items, "
+                    f"expected exactly {len(edge_ids)}"
+                )
+            found: dict[str, dict] = {}
+            for edge_id, item in zip(edge_ids, docs):
+                interpreted = _interpret_mget_item(item, edge_id)
+                if interpreted is not None:
+                    found[edge_id] = {
+                        **interpreted["_source"],
+                        "_id": interpreted["_id"],
+                    }
+        except OpenSearchException as e:
+            if _is_missing_index_error(e):
+                self._mark_indices_missing()
+                return {}
+            logger.error(f"[{self.workspace}] Error batch-getting edges: {e}")
+            raise
+        result: dict[tuple[str, str], dict] = {}
+        for pair in pairs:
+            edge = found.get(_canonical_edge_id(pair["src"], pair["tgt"]))
+            if edge is not None:
+                result[(pair["src"], pair["tgt"])] = dict(edge)
+        return result
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Batch-fetch edge counts for multiple nodes using aggregations."""
@@ -5114,18 +5254,24 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete the node
             try:
-                await self.client.delete(index=self._nodes_index, id=node_id)
-            except NotFoundError:
-                pass
-            self._nodes_dirty = True
-            self._edges_dirty = True
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete the node
+                try:
+                    await self.client.delete(index=self._nodes_index, id=node_id)
+                except NotFoundError:
+                    pass
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error deleting node {node_id}: {e}")
             raise
@@ -5135,7 +5281,9 @@ class OpenSearchGraphStorage(BaseGraphStorage):
 
         Marks node and edge search views dirty so refresh happens lazily on the
         next search/count-based graph read. Uses conflicts="proceed" to
-        tolerate already-deleted matches.
+        tolerate already-deleted matches. Raises when any node delete is
+        rejected (a 404 counts as deleted); ``delete_by_query`` needs no item
+        check because the server answers non-2xx when it records a failure.
         """
         if not nodes:
             return
@@ -5154,27 +5302,36 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     }
                 }
             }
-            await self.client.delete_by_query(
-                index=self._edges_index,
-                body=body,
-                params={"conflicts": "proceed"},
-            )
-            # Delete nodes
             actions = [
                 {"_op_type": "delete", "_index": self._nodes_index, "_id": nid}
                 for nid in nodes
             ]
-            await _run_chunked_async_bulk(
-                self.client,
-                actions,
-                max_payload_bytes=self._max_upsert_payload_bytes,
-                max_records_per_batch=self._max_delete_records_per_batch,
-                log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
-                what="node delete",
-                raise_on_error=False,
+            try:
+                await self.client.delete_by_query(
+                    index=self._edges_index,
+                    body=body,
+                    params={"conflicts": "proceed"},
+                )
+                # Delete nodes
+                _, failed = await _run_chunked_async_bulk(
+                    self.client,
+                    actions,
+                    max_payload_bytes=self._max_upsert_payload_bytes,
+                    max_records_per_batch=self._max_delete_records_per_batch,
+                    log_prefix=f"[{self.workspace}] {self.namespace} nodes:",
+                    what="node delete",
+                    raise_on_error=False,
+                )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._nodes_dirty = True
+                self._edges_dirty = True
+            _raise_bulk_delete_failures(
+                failed, context=f"[{self.workspace}] node delete"
             )
-            self._nodes_dirty = True
-            self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing nodes: {e}")
             raise
@@ -5185,7 +5342,8 @@ class OpenSearchGraphStorage(BaseGraphStorage):
         Startup migration is fail-fast, so every edge is keyed by its canonical
         (sorted-pair) ``_id``. Delete that single id per edge — dedup via a set so
         reciprocal inputs ``(A,B)`` and ``(B,A)`` collapse to one delete op. The
-        raw bulk API does not raise on a 404 delete.
+        raw bulk API answers 200 even when items fail, so every item is checked:
+        a 404 counts as deleted, any other failure raises.
 
         Marks edge search views dirty so refresh happens lazily on the next
         search/count-based graph read.
@@ -5217,9 +5375,19 @@ class OpenSearchGraphStorage(BaseGraphStorage):
                     f"[{self.workspace}] {self.namespace} edges: edge delete "
                     f"{len(operations)} ops split into bulk chunks (chunk={chunk})"
                 )
-            for i in range(0, len(operations), chunk):
-                await self.client.bulk(body=operations[i : i + chunk])
-            self._edges_dirty = True
+            try:
+                for i in range(0, len(operations), chunk):
+                    response = await self.client.bulk(body=operations[i : i + chunk])
+                    _raise_bulk_delete_failures(
+                        response["items"],
+                        context=f"[{self.workspace}] edge delete",
+                    )
+            finally:
+                # Marked once the write attempts are over, whatever their
+                # outcome: a failure can follow writes that already landed,
+                # and a mark set before them could be cleared by a concurrent
+                # read's refresh while they are still in flight.
+                self._edges_dirty = True
         except OpenSearchException as e:
             logger.error(f"[{self.workspace}] Error removing edges: {e}")
             raise
@@ -7307,6 +7475,37 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
         response = await self.client.count(index=self._index_name)
         return response["count"] == 0
 
+    async def get_exact_count(self) -> int:
+        """Exact document count of this index. See ``BaseVectorStorage``.
+
+        Refreshes first, as ``is_empty`` does, because ``count`` is
+        search-based. An index that does not exist holds no vectors and
+        counts ``0``. No ``except``: a failed read propagates.
+        """
+        await self._recheck_index_presence()
+        async with self._flush_lock:
+            if self._pending_vector_docs or self._pending_vector_deletes:
+                raise StorageCapabilityError("pending_writes_not_flushed")
+            index_ready = self._index_ready
+        if not index_ready:
+            return 0
+        refreshed = await self.client.indices.refresh(index=self._index_name)
+        # A refresh that failed on a shard leaves durable writes unsearchable
+        # there, so the count below would read an older state. Its `total`
+        # also counts replica copies, which an unassigned replica (any
+        # single-node cluster) leaves short of `successful` without failing:
+        # only `failed` is evidence.
+        refresh_shards = (refreshed or {}).get("_shards") or {}
+        if refresh_shards.get("failed") != 0:
+            raise StorageCapabilityError(f"partial_refresh: {refresh_shards}")
+        response = await self.client.count(index=self._index_name)
+        # `_count` answers 200 with the shards that did respond; a count over
+        # part of the index is not exact.
+        shards = response.get("_shards") or {}
+        if shards.get("failed") != 0 or shards.get("successful") != shards.get("total"):
+            raise StorageCapabilityError(f"partial_shard_count: {shards}")
+        return int(response["count"])
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get a vector document by ID, with read-your-writes against the buffer.
 
@@ -7364,16 +7563,30 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
 
         The ``vector`` field is stripped from each result; see ``get_by_id``.
         """
+        return await self._read_by_ids(ids, strict=False)
+
+    async def get_by_ids_strict(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """``get_by_ids`` that raises instead of reporting a failed read as a
+        miss. See ``BaseVectorStorage.get_by_ids_strict``."""
+        return await self._read_by_ids(ids, strict=True)
+
+    async def _read_by_ids(
+        self, ids: list[str], *, strict: bool
+    ) -> list[dict[str, Any] | None]:
         if not ids:
             return []
-        # These reads answer a transport failure with a miss rather than an
-        # error (see the except blocks below), so the readiness probe follows
-        # the same convention. A WorkspaceIndexCollisionError is NOT swallowed
-        # -- it is a ValueError, and a misconfigured index must stay loud.
+        # Non-strict reads answer a transport failure with a miss rather than
+        # an error (see the except blocks below), so the readiness probe
+        # follows the same convention; strict reads raise at every one of
+        # them. A WorkspaceIndexCollisionError is never swallowed -- it is a
+        # ValueError, and a misconfigured index must stay loud. An index that
+        # is still absent after a probe that did not fail holds nothing, so a
+        # strict read answers None for every id, as get_exact_count answers 0.
         try:
             await self._recheck_index_presence()
         except OpenSearchException:
-            pass
+            if strict:
+                raise
         buffered: dict[str, dict[str, Any] | None] = {}
         remaining: list[str] = []
         async with self._flush_lock:
@@ -7399,7 +7612,20 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
                     body={"ids": remaining},
                     _source_excludes=["vector"],
                 )
-                for doc in response["docs"]:
+                docs = response["docs"]
+                if strict:
+                    # An item can fail on its own (a shard down) and come back
+                    # as {"error": ...} without "found": not an absence.
+                    # _interpret_mget_item raises on that and on any id or
+                    # shape mismatch; positional, so a short answer raises too.
+                    if len(docs) != len(remaining):
+                        raise RuntimeError(
+                            f"OpenSearch mget answered {len(docs)} of "
+                            f"{len(remaining)} requested ids"
+                        )
+                    for item, requested_id in zip(docs, remaining):
+                        _interpret_mget_item(item, requested_id)
+                for doc in docs:
                     if doc.get("found"):
                         data = doc["_source"]
                         data.pop("vector", None)
@@ -7408,7 +7634,11 @@ class OpenSearchVectorDBStorage(BaseVectorStorage):
             except OpenSearchException as e:
                 if _is_missing_index_error(e):
                     self._mark_index_missing()
+                    if strict:
+                        raise
                 else:
+                    if strict:
+                        raise
                     logger.error(
                         f"[{self.workspace}] Error getting vectors by ids: {e}"
                     )

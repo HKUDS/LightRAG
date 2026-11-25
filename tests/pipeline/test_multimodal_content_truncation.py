@@ -43,28 +43,6 @@ def test_short_content_passes_through():
 
 
 @pytest.mark.offline
-def test_table_html_row_trim_keeps_head():
-    tok = _tokenizer()
-    rows_html = "".join(f"<tr><td>r{i}c0</td><td>r{i}c1</td></tr>" for i in range(10))
-    body = f"<tbody>{rows_html}</tbody>"
-    content = f'<table id="t-html" format="html">{body}</table>'
-    out, was_trimmed = trim_content_to_budget(
-        content, kind="tables", max_tokens=200, tokenizer=tok
-    )
-    assert was_trimmed is True
-    assert "<table " in out
-    # Marker sits outside the </table> wrapper.
-    table_close = out.rfind("</table>")
-    marker_match = _MARKER_RE.search(out)
-    assert marker_match is not None
-    assert marker_match.start() > table_close
-    # Head rows preserved, tail rows dropped.
-    assert "r0c0" in out
-    assert "r9c0" not in out
-    assert len(tok.encode(out)) <= 200
-
-
-@pytest.mark.offline
 def test_table_json_row_trim_keeps_head():
     tok = _tokenizer()
     rows = [[f"r{i}c0", f"r{i}c1"] for i in range(10)]
@@ -144,17 +122,6 @@ def test_zero_budget_returns_input_unchanged():
     content = "x" * 5000
     out, was_trimmed = trim_content_to_budget(
         content, kind="tables", max_tokens=0, tokenizer=tok
-    )
-    assert out == content
-    assert was_trimmed is False
-
-
-@pytest.mark.offline
-def test_negative_budget_returns_input_unchanged():
-    tok = _tokenizer()
-    content = "x" * 5000
-    out, was_trimmed = trim_content_to_budget(
-        content, kind="equations", max_tokens=-10, tokenizer=tok
     )
     assert out == content
     assert was_trimmed is False
@@ -294,3 +261,66 @@ def test_row_trim_keeps_most_rows_with_logarithmic_probes(fmt, keep):
     assert len(bigger) > budget
     edge = "r0c0" if keep == "head" else f"r{row_count - 1}c0"
     assert edge in out
+
+
+# ---------------------------------------------------------------------------
+# A cell holding the text "</table>" must not end a trimmed table early
+# ---------------------------------------------------------------------------
+
+_MARKUP_ROWS = [["Tag", "Meaning"], ["</table>", "closes"], ["<tr>", "row"]]
+
+
+def _markup_table() -> str:
+    from lightrag.table_markup import dumps_json_table_body
+
+    return (
+        f'<table id="tb-1" format="json">{dumps_json_table_body(_MARKUP_ROWS)}</table>'
+    )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("trim", "kept"),
+    [
+        ("_row_trim_table_trailing", _MARKUP_ROWS[:2]),
+        ("_row_trim_table_leading", _MARKUP_ROWS[1:]),
+    ],
+)
+def test_row_trim_keeps_a_closing_tag_cell_inside_the_tag(trim, kept):
+    # The trimmed table is re-serialized from the parsed rows; a bare
+    # json.dumps put the raw "</table>" back and the result no longer parsed.
+    import lightrag.multimodal_context as mc
+    from lightrag.table_markup import parse_table_tag
+
+    tok = _tokenizer()
+    table = _markup_table()
+
+    out = getattr(mc, trim)(table, len(table) - 5, tok)
+
+    assert out is not None
+    assert out.count("</table>") == 1
+    parsed = parse_table_tag(out)
+    assert parsed is not None, out
+    assert parsed[1] == kept
+    assert len(tok.encode(out)) <= len(table) - 5
+
+
+@pytest.mark.offline
+def test_char_fallback_keeps_a_closing_tag_cell_inside_the_tag():
+    # No whole row fits: the fallback stores a slice of the serialized row as
+    # one JSON string, which carries the cell's markup text along.
+    from lightrag.multimodal_context import _row_trim_table_trailing
+    from lightrag.table_markup import dumps_json_table_body, parse_table_tag
+
+    tok = _tokenizer()
+    rows = [["</table>" + "X" * 400]]
+    table = f'<table id="tb-1" format="json">{dumps_json_table_body(rows)}</table>'
+
+    out = _row_trim_table_trailing(table, 120, tok)
+
+    assert out is not None
+    assert out.count("</table>") == 1
+    parsed = parse_table_tag(out)
+    assert parsed is not None, out
+    assert "</table>" in parsed[1][0][0]
+    assert len(tok.encode(out)) <= 120

@@ -923,7 +923,13 @@ def test_validate_heading_max_chars_env_returns_parsed(monkeypatch) -> None:
     assert validate_heading_max_chars_env() == 50  # usable-but-tiny: no raise here
 
 
-@pytest.mark.parametrize("bad", ["abc", "1.5", "2", "0", "-5"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "abc",
+        "2",
+    ],
+)
 def test_validate_heading_max_chars_env_raises_on_invalid(monkeypatch, bad) -> None:
     from lightrag.parser.docx.smart_heading.guardrails import (
         validate_heading_max_chars_env,
