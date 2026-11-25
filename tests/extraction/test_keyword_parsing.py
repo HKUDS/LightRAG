@@ -588,3 +588,31 @@ def test_parse_keywords_payload_rejects_text_without_an_object(result):
 
     assert (is_valid, hl_keywords, ll_keywords) == (False, [], [])
     mocked_error.assert_called_once()
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(
+            '````json\n{"high_level_keywords":["AI","Agents"],'
+            '"low_level_keywords":["RAG","LightRAG"]}\n````',
+            id="4bt-fence",
+        ),
+        pytest.param(
+            '~~~json\n{"high_level_keywords":["AI","Agents"],'
+            '"low_level_keywords":["RAG","LightRAG"]}\n~~~',
+            id="tilde-fence",
+        ),
+    ],
+)
+def test_parse_keywords_payload_strips_4bt_and_tilde_fences_without_repair_warning(
+    result,
+):
+    with patch("lightrag.operate.logger.warning") as mocked_warning:
+        is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+
+    assert is_valid is True
+    assert hl_keywords == ["AI", "Agents"]
+    assert ll_keywords == ["RAG", "LightRAG"]
+    mocked_warning.assert_not_called()

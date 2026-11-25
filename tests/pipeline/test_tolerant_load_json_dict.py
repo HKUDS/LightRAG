@@ -245,3 +245,66 @@ def test_malformed_object_with_trailing_citation_recovers() -> None:
         "type": "Chart",
         "description": "ok",
     }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(
+            '````json\n{"code": "```py\\nx\\n```"}\n````',
+            '{"code": "```py\\nx\\n```"}',
+            id="4bt-nested-triple-backtick",
+        ),
+        pytest.param(
+            '````json {"a":1}````',
+            '{"a":1}',
+            id="4bt-single-line",
+        ),
+        pytest.param(
+            '~~~json\n{"a": 1}\n~~~',
+            '{"a": 1}',
+            id="tilde-multiline",
+        ),
+        pytest.param(
+            '~~~~JSON\n{"a": 1}\n~~~~',
+            '{"a": 1}',
+            id="4tilde-uppercase-json",
+        ),
+        pytest.param(
+            '~~~json {"a":1}~~~',
+            '{"a":1}',
+            id="tilde-single-line",
+        ),
+        pytest.param(
+            '```json\n{"a": 1}\n````',
+            '{"a": 1}',
+            id="commonmark-longer-backtick-closer",
+        ),
+        pytest.param(
+            '~~~json\n{"a": 1}\n~~~~',
+            '{"a": 1}',
+            id="commonmark-longer-tilde-closer",
+        ),
+        pytest.param(
+            '```json\r\n{"a": 1}\r\n```',
+            '{"a": 1}',
+            id="crlf-line-endings",
+        ),
+    ],
+)
+def test_strip_markdown_code_fence_commonmark_variants(raw: str, expected: str) -> None:
+    assert strip_markdown_code_fence(raw).strip() == expected
+    assert tolerant_load_json_dict(raw) == tolerant_load_json_dict(expected)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param('````json\n{"a":1}\n```', id="4-open-3-close-mismatch"),
+        pytest.param('```json\n{"a":1}\n~~~', id="backtick-tilde-mismatch"),
+    ],
+)
+def test_strip_markdown_code_fence_rejects_mismatched_fences_by_identity(
+    raw: str,
+) -> None:
+    assert strip_markdown_code_fence(raw) is raw

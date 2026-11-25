@@ -6980,22 +6980,36 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
 
 
 _CODE_FENCE_PATTERN = re.compile(
-    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL
+    r"^\s*(?:"
+    r"(?P<bfence>`{3,})(?!`)(?:[jJ][sS][oO][nN](?![A-Za-z0-9_]))?[ \t]*\r?\n?"
+    r"(?P<bbody>.*?)"
+    r"\r?\n?[ \t]*(?<!`)(?P=bfence)`*"
+    r"|"
+    r"(?P<tfence>~{3,})(?!~)(?:[jJ][sS][oO][nN](?![A-Za-z0-9_]))?[ \t]*\r?\n?"
+    r"(?P<tbody_>.*?)"
+    r"\r?\n?[ \t]*(?<!~)(?P=tfence)~*"
+    r")\s*$",
+    re.DOTALL,
 )
 
 
 def strip_markdown_code_fence(text: str) -> str:
-    """Strip a surrounding markdown code fence (```json ... ``` or ``` ... ```).
+    """Strip a surrounding markdown code fence (``` / ```` / ~~~, optional json tag).
 
     Why: LLM training priors strongly associate "JSON output" with fenced code
     blocks, so providers routinely wrap responses despite explicit instructions
-    to the contrary. Stripping here avoids relying on ``json_repair`` and the
-    noisy warning it emits. The ``\\n?`` make the interior newlines optional so
-    single-line fences (```` ```json {...}``` ````) are handled too.
+    to the contrary (including 4+ backtick fences when values embed triple
+    backticks, or CommonMark tilde fences). Stripping here avoids relying on
+    ``json_repair`` and the noisy warning it emits. The ``\\r?\\n?`` make the
+    interior newlines optional so single-line fences (```` ```json {...}``` ````)
+    are handled too.
     """
 
     match = _CODE_FENCE_PATTERN.match(text)
-    return match.group(1) if match else text
+    if not match:
+        return text
+    bbody = match.group("bbody")
+    return bbody if bbody is not None else match.group("tbody_")
 
 
 def _first_structural_opener(text: str) -> tuple[str | None, int]:
