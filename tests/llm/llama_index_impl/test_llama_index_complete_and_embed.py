@@ -40,8 +40,10 @@ class _FakeLLM:
     def __init__(self, content: str = "answer") -> None:
         self.content = content
         self.received_kwargs = None
+        self.received_messages = None
 
     async def achat(self, messages, **kwargs):
+        self.received_messages = messages
         self.received_kwargs = kwargs
         return _FakeChatResponse(self.content)
 
@@ -60,6 +62,34 @@ async def test_llama_index_complete_accepts_llm_instance_kwarg():
     result = await llama_index_complete("hi", llm_instance=llm)
 
     assert result == "hello back"
+
+
+@pytest.mark.asyncio
+async def test_llama_index_complete_preserves_history_roles():
+    llm = _FakeLLM(content="continued answer")
+    history = [
+        {"role": "system", "content": "Conversation-specific instructions"},
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+    result = await llama_index_complete(
+        "Follow-up question",
+        system_prompt="Base instructions",
+        history_messages=history,
+        llm_instance=llm,
+    )
+
+    assert result == "continued answer"
+    assert [
+        (message.role.value, message.content) for message in llm.received_messages
+    ] == [
+        ("system", "Base instructions"),
+        ("system", "Conversation-specific instructions"),
+        ("user", "Earlier question"),
+        ("assistant", "Earlier answer"),
+        ("user", "Follow-up question"),
+    ]
 
 
 @pytest.mark.asyncio
