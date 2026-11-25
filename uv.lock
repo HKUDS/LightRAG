@@ -2525,7 +2525,7 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'api'", specifier = ">=0.7.0" },
     { name = "uvicorn", marker = "extra == 'api'" },
     { name = "uvicorn-worker", marker = "extra == 'api'" },
-    { name = "voyageai", marker = "extra == 'offline-llm'", specifier = ">=0.2.0,<1.0.0" },
+    { name = "voyageai", marker = "extra == 'offline-llm'", specifier = ">=0.3.7,<1.0.0" },
     { name = "xlsxwriter", specifier = ">=3.2.0" },
     { name = "xlsxwriter", marker = "extra == 'api'", specifier = ">=3.2.0" },
     { name = "zai-sdk", marker = "extra == 'offline-llm'", specifier = ">=0.2.3,<1.0.0" },
