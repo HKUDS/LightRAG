@@ -198,7 +198,7 @@ evaluation = [
     # ragas (<=0.4.3) imports langchain_community.chat_models.vertexai at
     # import time; langchain-community 0.4.2 deleted that module, which
     # makes `import ragas` fail. Lift this cap once ragas stops importing it.
-    "langchain-community<0.4.2",
+    "langchain-community<0.4.3",
     "datasets>=4.3.0",
 ]
 
