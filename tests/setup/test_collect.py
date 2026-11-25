@@ -570,9 +570,8 @@ confirm_default_yes() { return 1; }
             "prompt_secret_until_valid_with_default() { printf 'voyage-secret-key'; }",
             "voyageai",
             "voyage-3",
-            # The binding ignores EMBEDDING_BINDING_HOST, so none is prompted
-            # for or written (not the generic branch's OpenAI URL).
-            "",
+            # The SDK-default sentinel, not the generic branch's OpenAI URL.
+            "DEFAULT_VOYAGEAI_ENDPOINT",
             "1024",
             "set",
         ),
@@ -584,7 +583,7 @@ confirm_default_yes() { return 1; }
         "llm-bedrock-sentinel-default",
         "embedding-gemini-sentinel-default",
         "embedding-bedrock-sentinel-default",
-        "embedding-voyageai-no-host",
+        "embedding-voyageai-sentinel-default",
     ],
 )
 def test_collect_provider_config_uses_provider_specific_defaults(

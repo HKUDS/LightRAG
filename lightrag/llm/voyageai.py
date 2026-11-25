@@ -32,6 +32,16 @@ class VoyageAIError(Exception):
     pass
 
 
+def _normalize_voyageai_base_url(base_url: str | None) -> str | None:
+    """Map an unset, blank or sentinel endpoint to None (the SDK default)."""
+    if not base_url:
+        return None
+    normalized = base_url.strip()
+    if not normalized or normalized == "DEFAULT_VOYAGEAI_ENDPOINT":
+        return None
+    return normalized
+
+
 @wrap_embedding_func_with_attrs(
     embedding_dim=1024,
     max_token_size=32000,
@@ -65,6 +75,7 @@ async def voyageai_embed(
     truncation: bool | None = True,
     context: str | None = None,
     timeout: float | None = None,
+    base_url: str | None = None,
 ) -> np.ndarray:
     """Generate embeddings for a list of texts using VoyageAI's API.
 
@@ -97,6 +108,11 @@ async def voyageai_embed(
         timeout: Request timeout in seconds. None (the default) uses LightRAG's
             ``default_embedding_timeout`` inside a LightRAG embedding call; 0 or
             a negative value, or None outside one, keeps the SDK default.
+        base_url: Optional API endpoint, e.g. a gateway or proxy in front of
+            VoyageAI. None, blank, or the sentinel ``DEFAULT_VOYAGEAI_ENDPOINT``
+            keeps the SDK default, which the SDK picks from the API key (a
+            MongoDB Atlas ``al-`` key and a VoyageAI key use different hosts),
+            so do not pass VoyageAI's own URL to mean "the default".
 
     Returns:
         A numpy array of embeddings, one per input text.
@@ -125,6 +141,9 @@ async def voyageai_embed(
         timeout = embedding_timeout(timeout)
         if timeout is not None:
             client_kwargs["timeout"] = timeout
+        base_url = _normalize_voyageai_base_url(base_url)
+        if base_url is not None:
+            client_kwargs["base_url"] = base_url
         client = voyageai.AsyncClient(**client_kwargs)
 
         total_chars = sum(len(t) for t in texts)
