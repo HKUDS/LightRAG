@@ -405,6 +405,57 @@ def _make_nonstreaming_client(fake_response):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("cached_tokens", [2304, 0, None])
+async def test_gemini_tracks_cached_prompt_tokens(
+    monkeypatch, request, stream, cached_tokens
+):
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    from lightrag.utils import TokenTracker
+
+    response = _make_fake_gemini_response(regular_text="answer", finish_reason="STOP")
+    response.usage_metadata = SimpleNamespace(
+        prompt_token_count=3000,
+        candidates_token_count=2,
+        total_token_count=3002,
+        cached_content_token_count=cached_tokens,
+    )
+
+    async def generate_content_stream(**kwargs):
+        async def chunks():
+            yield response
+
+        return chunks()
+
+    client = _make_nonstreaming_client(response)
+    client.aio.models.generate_content_stream = generate_content_stream
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: client)
+    tracker = TokenTracker()
+
+    result = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="Question",
+        api_key="test-key",
+        stream=stream,
+        token_tracker=tracker,
+    )
+    if stream:
+        result = "".join([chunk async for chunk in result])
+    assert result == "answer"
+
+    expected_usage = {
+        "prompt_tokens": 3000,
+        "completion_tokens": 2,
+        "total_tokens": 3002,
+        "call_count": 1,
+    }
+    if cached_tokens is not None:
+        expected_usage["cached_prompt_tokens"] = cached_tokens
+    assert tracker.get_usage() == expected_usage
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("reported_total", "expected_total"), [(None, 1), (0, 0)])
 async def test_gemini_returns_text_with_partial_token_counts(
     monkeypatch, request, reported_total, expected_total
