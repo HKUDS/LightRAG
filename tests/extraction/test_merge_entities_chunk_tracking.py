@@ -171,6 +171,16 @@ async def _run_merge(
             id="all-curated-empty-stays-present-and-empty",
         ),
         pytest.param(
+            {
+                "A": {"chunk_ids": ["c-a"], "count": 1},
+                "B": {"chunk_ids": ["c-b"], "count": 1},
+            },
+            ["A", "B"],
+            "AB",
+            {"AB": {"chunk_ids": ["c-a", "c-b"], "count": 2}},
+            id="every-present-row-joins-the-union",
+        ),
+        pytest.param(
             {},
             ["A", "B"],
             "AB",
@@ -210,6 +220,24 @@ async def test_merge_decides_entity_row_presence_per_input(
     await _run_merge(ecs, source_entities=sources, target_entity=target)
 
     assert ecs.data == expected
+
+
+async def test_merge_unions_relation_rows_that_land_on_one_key():
+    """Merging A into the existing B maps (A,C) onto B's own key (B,C): the
+    row under that key must carry both relations' chunks, and only the
+    replaced key (A,C) is retired."""
+    rcs = _KV(
+        {
+            make_relation_chunk_key("A", "C"): {"chunk_ids": ["c-ac"], "count": 1},
+            make_relation_chunk_key("B", "C"): {"chunk_ids": ["c-bc"], "count": 1},
+        }
+    )
+
+    await _run_merge(_KV(), source_entities=["A"], target_entity="B", rcs=rcs)
+
+    assert rcs.data == {
+        make_relation_chunk_key("B", "C"): {"chunk_ids": ["c-ac", "c-bc"], "count": 2}
+    }
 
 
 async def test_merge_redirects_relations_stored_towards_the_source():
