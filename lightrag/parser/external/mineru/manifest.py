@@ -138,7 +138,7 @@ def load_manifest(raw_dir: Path) -> Manifest | None:
         return None
     try:
         return Manifest.from_dict(payload)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError):
         return None
 
 

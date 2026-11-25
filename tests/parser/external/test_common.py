@@ -264,6 +264,48 @@ def test_manifest_load_treats_undecodable_file_as_missing(
     assert load_manifest(raw, expected_engine="docling") is None
 
 
+@pytest.mark.parametrize(
+    "bad_critical_file",
+    ["oops", ["a"], 42, True],
+)
+def test_manifest_load_treats_non_dict_critical_file_as_missing(
+    tmp_path: Path, bad_critical_file: object
+) -> None:
+    from lightrag.parser.external.mineru.manifest import (
+        load_manifest as load_mineru_manifest,
+    )
+
+    raw_docling = tmp_path / "docling_raw"
+    raw_docling.mkdir()
+    (raw_docling / "_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "engine": "docling",
+                "critical_file": bad_critical_file,
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_manifest(raw_docling, expected_engine="docling") is None
+
+    raw_mineru = tmp_path / "mineru_raw"
+    raw_mineru.mkdir()
+    (raw_mineru / "_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.0",
+                "engine": "mineru",
+                "critical_file": bad_critical_file,
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_mineru_manifest(raw_mineru) is None
+
+
 # ---------------------------------------------------------------------------
 # download_timeout
 # ---------------------------------------------------------------------------
