@@ -1,6 +1,5 @@
 """Regression tests (#3609 follow-up): entity merge must keep chunk-tracking
-row PRESENCE intact, decide it PER INPUT ENTITY, and never open a window
-where merged attribution is lost.
+row PRESENCE intact and decide it PER INPUT ENTITY.
 
 Pinned defects, all in ``_merge_entities_impl`` (``lightrag/utils_graph.py``):
 
@@ -21,13 +20,14 @@ Pinned defects, all in ``_merge_entities_impl`` (``lightrag/utils_graph.py``):
 3. **Unknown stays unknown.** With no input row present at all, the target
    row stays absent; fabricating one would promote UNKNOWN to authoritative.
 
-4. **Upserts commit before deletes**, for the entity row (target before
-   source-row deletes) and the relation rows (migrated rows before old-key
-   deletes). On RPC-backed KV storages each call commits independently, so
-   the reverse order opened crash windows in which attribution existed under
-   no key. A relation key can be both old and new (relations already attached
-   to an existing target keep their key), so only keys outside the new key
-   set may be deleted.
+4. **Every incident relation is redirected**, whichever endpoint
+   ``get_node_edges`` lists first. MongoDB, Memgraph and OpenSearch return
+   each edge in its stored direction, so a relation stored *towards* a source
+   entity must still move to the target, with its tracking row migrated.
+
+The write ordering of the migrated rows (upsert before delete, old keys
+retired only after the graph commit, a key that is both old and new never
+deleted) is pinned by ``tests/pipeline/test_graph_merge_rename_tracking_order.py``.
 """
 
 import pytest
@@ -119,22 +119,17 @@ class _DummyVectorStorage:
         return True
 
 
-class _RecordingKV:
-    """KV double that records the order of upsert/delete calls."""
-
+class _KV:
     def __init__(self, data: dict | None = None):
         self.data = dict(data or {})
-        self.ops: list[tuple[str, tuple[str, ...]]] = []
 
     async def get_by_id(self, key):
         return self.data.get(key)
 
     async def upsert(self, data):
-        self.ops.append(("upsert", tuple(data.keys())))
         self.data.update(data)
 
     async def delete(self, keys):
-        self.ops.append(("delete", tuple(keys)))
         for key in keys:
             self.data.pop(key, None)
 
@@ -143,142 +138,127 @@ class _RecordingKV:
 
 
 async def _run_merge(
-    ecs: _RecordingKV,
+    ecs: _KV,
     *,
-    source_entities: list[str] | None = None,
-    target_entity: str = "AB",
-    rcs: _RecordingKV | None = None,
-) -> None:
+    source_entities: list[str],
+    target_entity: str,
+    rcs: _KV | None = None,
+) -> _MergeGraphStorage:
+    graph = _MergeGraphStorage()
     await utils_graph._merge_entities_impl(
-        chunk_entity_relation_graph=_MergeGraphStorage(),
+        chunk_entity_relation_graph=graph,
         entities_vdb=_DummyVectorStorage(),
         relationships_vdb=_DummyVectorStorage(),
-        source_entities=source_entities if source_entities is not None else ["A", "B"],
+        source_entities=source_entities,
         target_entity=target_entity,
         entity_chunks_storage=ecs,
         relation_chunks_storage=rcs,
     )
+    return graph
 
 
-async def test_merge_preserves_curated_empty_entity_rows():
-    """All inputs curated-empty: the target must end with a PRESENT empty row
-    — presence is what blocks the next edit from reseeding tracking from the
-    merged node's stale graph source_id. The graph nodes DO carry source_ids
-    (chunk-a-node / chunk-b-node), so this also pins that present rows are
-    never overridden by the per-entity graph fallback."""
-    ecs = _RecordingKV(
+# The graph nodes carry source_ids chunk-a-node / chunk-b-node, so every case
+# also tells a present row (used as stored) from the graph fallback. The whole
+# store is compared, so each case also pins that the source rows are retired.
+@pytest.mark.parametrize(
+    ("rows", "sources", "target", "expected"),
+    [
+        pytest.param(
+            {"A": {"chunk_ids": [], "count": 0}, "B": {"chunk_ids": [], "count": 0}},
+            ["A", "B"],
+            "AB",
+            {"AB": {"chunk_ids": [], "count": 0}},
+            id="all-curated-empty-stays-present-and-empty",
+        ),
+        pytest.param(
+            {
+                "A": {"chunk_ids": ["c-a"], "count": 1},
+                "B": {"chunk_ids": ["c-b"], "count": 1},
+            },
+            ["A", "B"],
+            "AB",
+            {"AB": {"chunk_ids": ["c-a", "c-b"], "count": 2}},
+            id="every-present-row-joins-the-union",
+        ),
+        pytest.param(
+            {},
+            ["A", "B"],
+            "AB",
+            {},
+            id="no-row-present-stays-absent",
+        ),
+        pytest.param(
+            {"A": {"chunk_ids": [], "count": 0}},
+            ["A", "B"],
+            "AB",
+            {"AB": {"chunk_ids": ["chunk-b-node"], "count": 1}},
+            id="empty-row-does-not-silence-an-absent-row",
+        ),
+        pytest.param(
+            {"A": {"chunk_ids": ["c-a"], "count": 1}, "B": {"chunk_ids": None}},
+            ["A", "B"],
+            "AB",
+            {"AB": {"chunk_ids": ["c-a", "chunk-b-node"], "count": 2}},
+            id="malformed-row-falls-back-like-an-absent-one",
+        ),
+        # The existing target's fallback is its PRE-merge source_id, not the
+        # merged node's, which already unions every input's chunks.
+        pytest.param(
+            {"A": {"chunk_ids": ["c-a"], "count": 1}},
+            ["A"],
+            "B",
+            {"B": {"chunk_ids": ["c-a", "chunk-b-node"], "count": 2}},
+            id="existing-target-falls-back-to-its-pre-merge-source-id",
+        ),
+    ],
+)
+async def test_merge_decides_entity_row_presence_per_input(
+    rows, sources, target, expected
+):
+    ecs = _KV(rows)
+
+    await _run_merge(ecs, source_entities=sources, target_entity=target)
+
+    assert ecs.data == expected
+
+
+async def test_merge_unions_relation_rows_that_land_on_one_key():
+    """Merging A into the existing B maps (A,C) onto B's own key (B,C): the
+    row under that key must carry both relations' chunks, and only the
+    replaced key (A,C) is retired."""
+    rcs = _KV(
         {
-            "A": {"chunk_ids": [], "count": 0},
-            "B": {"chunk_ids": [], "count": 0},
+            make_relation_chunk_key("A", "C"): {"chunk_ids": ["c-ac"], "count": 1},
+            make_relation_chunk_key("B", "C"): {"chunk_ids": ["c-bc"], "count": 1},
         }
     )
 
-    await _run_merge(ecs)
+    await _run_merge(_KV(), source_entities=["A"], target_entity="B", rcs=rcs)
 
-    assert ecs.data["AB"] == {"chunk_ids": [], "count": 0}
-    assert "A" not in ecs.data
-    assert "B" not in ecs.data
-
-
-async def test_merge_leaves_target_row_absent_when_no_source_has_one():
-    """Unknown stays unknown: with no input row present there is nothing to
-    assert authority over, so the target row is not fabricated — even though
-    the graph fallback could name chunks."""
-    ecs = _RecordingKV()
-
-    await _run_merge(ecs)
-
-    assert "AB" not in ecs.data
+    assert rcs.data == {
+        make_relation_chunk_key("B", "C"): {"chunk_ids": ["c-ac", "c-bc"], "count": 2}
+    }
 
 
-async def test_merge_mixed_empty_row_and_absent_row_falls_back_per_entity():
-    """A's authoritative empty row proves only that A owns nothing; B's row is
-    absent, so B's attribution must be recovered from B's own pre-merge graph
-    source_id. Promoting 'partially known' to 'all empty' would discard
-    chunk-b-node forever (the written empty row is authoritative)."""
-    ecs = _RecordingKV({"A": {"chunk_ids": [], "count": 0}})
-
-    await _run_merge(ecs)
-
-    assert ecs.data["AB"] == {"chunk_ids": ["chunk-b-node"], "count": 1}
-
-
-async def test_merge_mixed_valid_row_and_malformed_row_falls_back_per_entity():
-    """A has a valid tracking row (authoritative); B's row is malformed (no
-    usable chunk_ids list), so only B falls back to its graph source_id. The
-    target gets the ordered union of both contributions."""
-    ecs = _RecordingKV(
+async def test_merge_redirects_relations_stored_towards_the_source():
+    """The stub lists edges in stored direction, like MongoDB, Memgraph and
+    OpenSearch. C is the TARGET of both (A,C) and (B,C); a merge that kept
+    only tuples whose first element is the source dropped both relations
+    together with C and left their tracking rows behind."""
+    rcs = _KV(
         {
-            "A": {"chunk_ids": ["c-a"], "count": 1},
-            "B": {"chunk_ids": None},
+            make_relation_chunk_key("A", "C"): {"chunk_ids": ["c-ac"], "count": 1},
+            make_relation_chunk_key("B", "C"): {"chunk_ids": ["c-bc"], "count": 1},
         }
     )
 
-    await _run_merge(ecs)
+    graph = await _run_merge(_KV(), source_entities=["C"], target_entity="D", rcs=rcs)
 
-    assert ecs.data["AB"] == {"chunk_ids": ["c-a", "chunk-b-node"], "count": 2}
-
-
-async def test_merge_into_existing_target_with_absent_row_uses_its_pre_merge_source_id():
-    """Existing-target mixed merge: the target node exists in the graph but
-    has no tracking row. Its contribution comes from its own PRE-MERGE graph
-    source_id — not from the merged node's source_id, which by step 5 already
-    unions every input's chunks and would double-attribute them."""
-    ecs = _RecordingKV({"A": {"chunk_ids": ["c-a"], "count": 1}})
-
-    await _run_merge(ecs, source_entities=["A"], target_entity="B")
-
-    assert ecs.data["B"] == {"chunk_ids": ["c-a", "chunk-b-node"], "count": 2}
-    assert "A" not in ecs.data
-
-
-async def test_merge_upserts_target_row_before_deleting_source_rows():
-    """Crash-ordering pin: the merged row must be durable under the target key
-    before the source keys are deleted."""
-    ecs = _RecordingKV(
-        {
-            "A": {"chunk_ids": ["c-a"], "count": 1},
-            "B": {"chunk_ids": ["c-b"], "count": 1},
-        }
-    )
-
-    await _run_merge(ecs)
-
-    assert ecs.data["AB"]["chunk_ids"] == ["c-a", "c-b"]
-    upsert_idx = ecs.ops.index(("upsert", ("AB",)))
-    delete_idx = next(
-        i for i, (op, keys) in enumerate(ecs.ops) if op == "delete" and "A" in keys
-    )
-    assert upsert_idx < delete_idx
-
-
-async def test_merge_upserts_relation_rows_before_deleting_only_stale_keys():
-    """Relation-row migration ordering: merging A into existing B maps A's
-    relation (A,C) onto B's existing key (B,C). The migrated union must be
-    upserted BEFORE any delete, and (B,C) — old key and new key at once —
-    must never be deleted, or the just-written union would be dropped. Only
-    the genuinely stale key (A,C) dies."""
-    old_key = make_relation_chunk_key("A", "C")
-    shared_key = make_relation_chunk_key("B", "C")
-    ecs = _RecordingKV({"A": {"chunk_ids": ["c-a"], "count": 1}})
-    rcs = _RecordingKV(
-        {
-            old_key: {"chunk_ids": ["c-ac"], "count": 1},
-            shared_key: {"chunk_ids": ["c-bc"], "count": 1},
-        }
-    )
-
-    await _run_merge(ecs, source_entities=["A"], target_entity="B", rcs=rcs)
-
-    assert rcs.data[shared_key]["chunk_ids"] == ["c-ac", "c-bc"]
-    assert old_key not in rcs.data
-    upsert_idx = next(
-        i
-        for i, (op, keys) in enumerate(rcs.ops)
-        if op == "upsert" and shared_key in keys
-    )
-    delete_idx = next(
-        i for i, (op, keys) in enumerate(rcs.ops) if op == "delete" and old_key in keys
-    )
-    assert upsert_idx < delete_idx
-    assert all(shared_key not in keys for op, keys in rcs.ops if op == "delete")
+    assert {pair: data["description"] for pair, data in graph.edges.items()} == {
+        ("A", "D"): "A relates to C",
+        ("B", "D"): "B relates to C",
+    }
+    assert rcs.data == {
+        make_relation_chunk_key("A", "D"): {"chunk_ids": ["c-ac"], "count": 1},
+        make_relation_chunk_key("B", "D"): {"chunk_ids": ["c-bc"], "count": 1},
+    }
