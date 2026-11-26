@@ -109,7 +109,7 @@
       "generalError": "Upload Failed\n{{error}}",
       "fileTypes": "Supported types: {{types}}",
       "fileUploader": {
-        "uploadProgress": "Upload progress",
+        "uploadProgress": "Upload progress for {{name}}",
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
         "fileRejected": "File {{name}} was rejected",

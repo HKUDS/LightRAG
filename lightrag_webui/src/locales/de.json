@@ -109,7 +109,7 @@
       "generalError": "Upload fehlgeschlagen\n{{error}}",
       "fileTypes": "Unterstützte Typen: {{types}}",
       "fileUploader": {
-        "uploadProgress": "Upload progress",
+        "uploadProgress": "Upload-Fortschritt für {{name}}",
         "singleFileLimit": "Es kann nicht mehr als 1 Datei gleichzeitig hochgeladen werden",
         "maxFilesLimit": "Es können nicht mehr als {{count}} Dateien hochgeladen werden",
         "fileRejected": "Datei {{name}} wurde abgelehnt",
@@ -123,7 +123,7 @@
       }
     },
     "documentManager": {
-      "selectDocument": "Select document {{name}}",
+      "selectDocument": "Dokument {{name}} auswählen",
       "title": "Dokumentenverwaltung",
       "scanButton": "Scannen/Wiederholen",
       "scanTooltip": "Dokumente im Eingabeordner scannen und verarbeiten sowie alle fehlgeschlagenen Dokumente erneut verarbeiten",
@@ -190,9 +190,9 @@
       }
     },
     "pipelineStatus": {
-      "positionLeft": "Align left",
-      "positionCenter": "Align center",
-      "positionRight": "Align right",
+      "positionLeft": "Linksbündig ausrichten",
+      "positionCenter": "Zentriert ausrichten",
+      "positionRight": "Rechtsbündig ausrichten",
       "title": "Pipeline-Status",
       "busy": "Pipeline beschäftigt",
       "cancellationRequested": "Stornierung angefordert",

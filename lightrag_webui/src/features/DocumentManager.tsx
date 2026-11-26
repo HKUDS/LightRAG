@@ -415,13 +415,31 @@ const readDocumentUrlState = (): DocumentUrlState => {
   }
 }
 
-const writeDocumentUrlState = (state: {
-  page: number
-  statusFilter: StatusFilter
-  sortField: SortField
-  sortDirection: SortDirection
-}): void => {
+const writeDocumentUrlState = (
+  state: {
+    page: number
+    statusFilter: StatusFilter
+    sortField: SortField
+    sortDirection: SortDirection
+  },
+  replace = false
+): void => {
   const hash = window.location.hash
+
+  // URLSearchParams.toString() re-encodes foreign params (space -> '+'),
+  // so a rebuild can differ byte-wise with no panel change at all. When
+  // the owned params already name this state, leave the hash untouched;
+  // writing anyway would push a spurious history entry on mount.
+  const current = readDocumentUrlState()
+  if (
+    (current.page ?? 1) === state.page &&
+    (current.statusFilter ?? 'all') === state.statusFilter &&
+    (current.sortField ?? 'updated_at') === state.sortField &&
+    (current.sortDirection ?? 'desc') === state.sortDirection
+  ) {
+    return
+  }
+
   const queryIndex = hash.indexOf('?')
   const path = queryIndex >= 0 ? hash.slice(0, queryIndex) : hash
   const existing = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '')
@@ -443,7 +461,12 @@ const writeDocumentUrlState = (state: {
 
   const query = params.toString()
   const nextHash = query ? `${path || '#/'}?${query}` : path
-  if (nextHash !== hash) {
+  if (replace) {
+    // A boundary correction rewrites the current entry instead of pushing:
+    // a push would let Back return to the stale page, re-correct and push
+    // again, trapping the user.
+    window.history.replaceState(null, '', nextHash)
+  } else {
     window.location.hash = nextHash
   }
 }
@@ -516,8 +539,15 @@ export default function DocumentManager() {
   const [initialLoadError, setInitialLoadError] = useState<string | null>(null)
   const hasLoadedDocumentsRef = useRef(false)
 
-  // Sort state
-  const [sortField, setSortField] = useState<SortField>(initialUrlState.sortField ?? 'updated_at')
+  // Sort state. The URL's id/file_path choice is normalized against
+  // showFileName exactly like handleSort maps a header click, so a deep
+  // link always seeds the field the first column actually displays.
+  const [sortField, setSortField] = useState<SortField>(() => {
+    const urlField = initialUrlState.sortField
+    if (urlField === 'file_path' && !showFileName) return 'id'
+    if (urlField === 'id' && showFileName) return 'file_path'
+    return urlField ?? 'updated_at'
+  })
   const [sortDirection, setSortDirection] = useState<SortDirection>(initialUrlState.sortDirection ?? 'desc')
 
   // State for document status filter
@@ -544,6 +574,9 @@ export default function DocumentManager() {
   const prevPipelineActiveRef = useRef<boolean | undefined>(undefined);
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestRefreshRequestVersionRef = useRef(0);
+  // Set when a boundary correction moves pagination.page, so the URL write
+  // effect replaces the current history entry instead of pushing one.
+  const pageCorrectionRef = useRef(false);
   // Throttle gate: every /documents/paginated entrance that is not a direct
   // page/filter/sort change funnels through refreshDocumentsThrottled() to
   // enforce a minimum 2s wall-clock interval.
@@ -928,6 +961,7 @@ export default function DocumentManager() {
             // Explicit: pageByStatus is only read when the status filter
             // changes, so this call is the only thing moving pagination.page
             // to the corrected page.
+            pageCorrectionRef.current = true;
             updateComponentState(lastPageResponse, lastPage);
             markDocumentsLoaded()
             return;
@@ -1367,12 +1401,14 @@ export default function DocumentManager() {
   // back/forward steps through it. Runs after boundary corrections too, so
   // the URL always names the page actually on screen.
   useEffect(() => {
+    const replace = pageCorrectionRef.current;
+    pageCorrectionRef.current = false;
     writeDocumentUrlState({
       page: pagination.page,
       statusFilter,
       sortField,
       sortDirection
-    })
+    }, replace)
   }, [pagination.page, statusFilter, sortField, sortDirection])
 
   // Back/forward (or a hand-edited hash) lands here. Absent keys mean the
@@ -1922,12 +1958,7 @@ export default function DocumentManager() {
                       </TableHeader>
                       <TableBody className="text-sm overflow-auto">
                         {filteredAndSortedDocs.map((doc) => (
-                          <TableRow
-                            key={doc.id}
-                            // Offscreen rows skip render/layout; the 'auto' prefix
-                            // lets the browser remember each row's last height.
-                            className="[content-visibility:auto] [contain-intrinsic-size:auto_3.25rem]"
-                          >
+                          <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                               {showFileName ? (
                                 <>

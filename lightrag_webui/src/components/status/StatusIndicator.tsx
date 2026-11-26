@@ -29,7 +29,7 @@ const StatusIndicator = () => {
         className="flex cursor-pointer items-center gap-2 appearance-none rounded-sm border-0 bg-transparent p-0 focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
         onClick={() => setDialogOpen(true)}
       >
-        <div
+        <span
           className={cn(
             'h-3 w-3 rounded-full transition-all duration-300',
             'shadow-[0_0_8px_rgba(0,0,0,0.2)]',

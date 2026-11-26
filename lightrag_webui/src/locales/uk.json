@@ -109,7 +109,7 @@
       "generalError": "Завантаження не вдалося\n{{error}}",
       "fileTypes": "Підтримувані типи: {{types}}",
       "fileUploader": {
-        "uploadProgress": "Upload progress",
+        "uploadProgress": "Хід завантаження {{name}}",
         "singleFileLimit": "Не можна завантажити більше 1 файлу одночасно",
         "maxFilesLimit": "Не можна завантажити більше {{count}} файлів",
         "fileRejected": "Файл {{name}} було відхилено",
@@ -123,7 +123,7 @@
       }
     },
     "documentManager": {
-      "selectDocument": "Select document {{name}}",
+      "selectDocument": "Вибрати документ {{name}}",
       "title": "Управління документами",
       "scanButton": "Сканувати/Повторити",
       "scanTooltip": "Сканувати та обробити документи в папці введення, а також повторно обробити всі невдалі документи",
@@ -190,9 +190,9 @@
       }
     },
     "pipelineStatus": {
-      "positionLeft": "Align left",
-      "positionCenter": "Align center",
-      "positionRight": "Align right",
+      "positionLeft": "Вирівняти за лівим краєм",
+      "positionCenter": "Вирівняти по центру",
+      "positionRight": "Вирівняти за правим краєм",
       "title": "Статус пайплайну",
       "busy": "Пайплайн зайнятий",
       "cancellationRequested": "Запит на скасування",

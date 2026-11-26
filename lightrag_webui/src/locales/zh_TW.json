@@ -109,7 +109,7 @@
       "generalError": "上傳失敗\n{{error}}",
       "fileTypes": "支援的檔案類型：{{types}}",
       "fileUploader": {
-        "uploadProgress": "上傳進度",
+        "uploadProgress": "{{name}} 的上傳進度",
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
         "fileRejected": "檔案 {{name}} 被拒絕",

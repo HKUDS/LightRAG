@@ -109,7 +109,7 @@
       "generalError": "上传失败\n{{error}}",
       "fileTypes": "支持的文件类型：{{types}}",
       "fileUploader": {
-        "uploadProgress": "上传进度",
+        "uploadProgress": "{{name}} 的上传进度",
         "singleFileLimit": "一次只能上传一个文件",
         "maxFilesLimit": "最多只能上传 {{count}} 个文件",
         "fileRejected": "文件 {{name}} 被拒绝",

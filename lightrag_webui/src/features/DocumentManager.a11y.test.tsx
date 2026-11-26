@@ -1,7 +1,7 @@
 /**
  * Accessibility regressions for the document panel: keyboard-operable sort
- * headers with aria-sort, named row checkboxes, deferred row rendering, and
- * page/filter/sort state synced to the URL (deep-link in, hashchange back).
+ * headers with aria-sort, named row checkboxes, and page/filter/sort state
+ * synced to the URL (deep-link in, hashchange back).
  *
  * Driven through the api module's axios adapter seam (same pattern as
  * DocumentManager.test.tsx): the fake backend honours page/filter/sort so a
@@ -197,20 +197,6 @@ describe('DocumentManager row selection labels', () => {
   })
 })
 
-describe('DocumentManager deferred row rendering', () => {
-  test('every body row carries content-visibility with an intrinsic size', async () => {
-    renderWithProviders(<DocumentManager />)
-    await waitForRows()
-
-    const bodyRows = screen.getAllByRole('row').slice(1)
-    expect(bodyRows).toHaveLength(10)
-    for (const row of bodyRows) {
-      expect(row.className).toContain('[content-visibility:auto]')
-      expect(row.className).toContain('[contain-intrinsic-size:auto_3.25rem]')
-    }
-  })
-})
-
 describe('DocumentManager URL state', () => {
   test('a deep link initializes page, filter and sort (URL wins)', async () => {
     window.location.hash = '#/?page=2&status=failed&sort=created_at&order=asc'
@@ -235,6 +221,28 @@ describe('DocumentManager URL state', () => {
     expect(backend.requests[0].status_filter).toBe(null)
     expect(backend.requests[0].sort_field).toBe('updated_at')
     expect(backend.requests[0].sort_direction).toBe('desc')
+  })
+
+  test('a deep-linked file_path sort seeds id when file names are hidden', async () => {
+    // Given showFileName=false (beforeEach), the first column displays ID.
+    window.location.hash = '#/?sort=file_path&order=asc'
+    renderWithProviders(<DocumentManager />)
+    await waitForRows()
+
+    expect(backend.requests[0].sort_field).toBe('id')
+    expect(backend.requests[0].sort_direction).toBe('asc')
+    expect(columnheader('ID').getAttribute('aria-sort')).toBe('ascending')
+  })
+
+  test('a deep-linked id sort seeds file_path when file names are shown', async () => {
+    useSettingsStore.getState().setShowFileName(true)
+    window.location.hash = '#/?sort=id&order=asc'
+    renderWithProviders(<DocumentManager />)
+    await waitForRows()
+
+    expect(backend.requests[0].sort_field).toBe('file_path')
+    expect(backend.requests[0].sort_direction).toBe('asc')
+    expect(columnheader('File Name').getAttribute('aria-sort')).toBe('ascending')
   })
 
   test('filter, sort and page changes are written to the URL', async () => {
@@ -285,5 +293,46 @@ describe('DocumentManager URL state', () => {
     expect(firstBodyRowText()).toContain('doc-p15')
     // The panel's own write must not re-add params the URL just dropped.
     expect(window.location.hash).toBe('#/')
+  })
+
+  test('mounting with unchanged owned params leaves a foreign-encoded hash alone', async () => {
+    // Given a foreign param whose %20 encoding URLSearchParams would
+    // rewrite to '+', no owned param differs from the panel defaults.
+    window.location.hash = '#/?tab=hello%20world'
+    const entriesBefore = window.history.length
+    renderWithProviders(<DocumentManager />)
+    await waitForRows()
+
+    expect(window.location.hash).toBe('#/?tab=hello%20world')
+    expect(window.history.length).toBe(entriesBefore)
+  })
+
+  test('an out-of-range deep-linked page is corrected with replace, and Back does not trap', async () => {
+    // Given a known previous entry and a deep link beyond total_pages (3).
+    window.location.hash = '#/'
+    window.location.hash = '#/?page=999'
+    const entriesBefore = window.history.length
+    renderWithProviders(<DocumentManager />)
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#/?page=3')
+    })
+    // The correction rewrote the entry instead of pushing a new one.
+    expect(window.history.length).toBe(entriesBefore)
+    expect(backend.requests[0].page).toBe(999)
+    expect(lastRequest().page).toBe(3)
+    expect(firstBodyRowText()).toContain('doc-f07')
+
+    // When Back lands on the entry before the deep link, the panel resets
+    // to page 1 and must not push a corrected entry on top of it.
+    window.history.back()
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#/')
+    })
+    await waitFor(() => {
+      expect(lastRequest().page).toBe(1)
+    })
+    expect(window.location.hash).toBe('#/')
+    expect(window.history.length).toBe(entriesBefore)
   })
 })

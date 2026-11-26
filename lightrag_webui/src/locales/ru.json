@@ -109,7 +109,7 @@
       "generalError": "Ошибка загрузки\n{{error}}",
       "fileTypes": "Поддерживаемые типы: {{types}}",
       "fileUploader": {
-        "uploadProgress": "Upload progress",
+        "uploadProgress": "Ход загрузки {{name}}",
         "singleFileLimit": "Нельзя загрузить более 1 файла за раз",
         "maxFilesLimit": "Нельзя загрузить более {{count}} файлов",
         "fileRejected": "Файл {{name}} был отклонён",
@@ -123,7 +123,7 @@
       }
     },
     "documentManager": {
-      "selectDocument": "Select document {{name}}",
+      "selectDocument": "Выбрать документ {{name}}",
       "title": "Управление документами",
       "scanButton": "Сканировать/Повторить",
       "scanTooltip": "Сканировать и обработать документы во входной папке, а также повторно обработать все неудачные документы",
@@ -190,9 +190,9 @@
       }
     },
     "pipelineStatus": {
-      "positionLeft": "Align left",
-      "positionCenter": "Align center",
-      "positionRight": "Align right",
+      "positionLeft": "Выровнять по левому краю",
+      "positionCenter": "Выровнять по центру",
+      "positionRight": "Выровнять по правому краю",
       "title": "Статус конвейера",
       "busy": "Конвейер занят",
       "cancellationRequested": "Запрошена отмена",
