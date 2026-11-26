@@ -75,6 +75,12 @@ initialization. Each instance then uses its startup configuration. The first
 publication is version `1`. Timestamps and PIDs are diagnostic fields only and
 never participate in ordering.
 
+Plain dictionaries stored as Manager namespace values are copied on retrieval.
+Every `applied:<instance_id>` update must assign a complete replacement report
+to its namespace entry; mutating a retrieved nested dictionary in place does
+not persist across workers. Payloads remain write-once complete values for each
+published version.
+
 ### Addon payload
 
 The addon payload is a full normalized snapshot, not a patch:
@@ -113,6 +119,13 @@ profile as part of the same local batch as
 language, chunker normalization, and entity-extraction prompt cache either all
 advance to the new version or all remain on the previous version.
 
+The installed published content remains the source for subsequent
+`_refresh_addon_params_cache()` calls, including refreshes triggered by unrelated
+local addon mutations or `entity_extraction_use_json` changes. Those refreshes
+must not reopen `entity_type_prompt_file` or `path_hint`. Replacing a published
+profile requires another explicit publication; editing the file alone cannot
+change the installed profile.
+
 ### Role LLM payload
 
 The role payload is also a complete snapshot. It contains every registered role
@@ -149,13 +162,23 @@ the complete candidate recursively before the first shared write:
 
 Secret-looking fields are rejected rather than scrubbed. Silent scrubbing could
 publish a configuration different from the one the caller requested. Tests
-walk every published key recursively with the production secret predicate,
-mirroring `test_get_llm_role_config_has_no_secret_escape_hatch`.
+walk every published key recursively with `_RoleLLMMixin._is_secret_key`,
+following the nested-key coverage in
+`test_get_llm_role_config_strips_bedrock_and_password_fields`
+(`tests/llm/test_llm_role_runtime.py`). That existing test covers getter-side
+scrubbing; publication tests must separately prove rejection before any shared
+write. The production predicate's `_SAFE_OPTION_KEYS` must explicitly include
+the documented chunk-size keys before addon publication uses it. These exact
+exceptions do not permit arbitrary token-bearing keys or unsupported fields.
 
 ## Publication protocol
 
 Publication is serialized with `get_namespace_lock()` for the corresponding
-namespace and scope. The commit protocol is:
+namespace and scope. Before the first commit, the publishing instance must have
+registered its own update flag for the namespace through the worker-refresh
+initialization path. `set_all_update_flags()` raises when no flags have been
+registered; committing into an unregistered namespace must not be the normal
+publication path. The commit protocol is:
 
 1. normalize and validate the complete candidate locally;
 2. acquire the namespace lock;
@@ -256,21 +279,33 @@ the swap.
 
 Retired role wrappers drain through the existing cleanup path. Failure to clean
 up a retired wrapper does not roll back a successfully installed version: no
-new call can acquire that wrapper, the failure is logged, and finalization or a
-later cleanup attempt retires it.
+new call can acquire that wrapper and the failure is logged. The existing
+cleanup callback discards the completed cleanup task; finalization waits for
+pending tasks but does not retry a cleanup that has already failed. Normal
+wrapper shutdown has a graceful-drain timeout with forced cancellation, and
+expired leases are reclaimed by the existing reaper. Neither mechanism promises
+to finish a failed cleanup: residual wrapper resources may remain until process
+exit. No additional cleanup retry is required by this contract.
 
 After initialization, assigning `rag.role_llm_configs = ...` directly must
 raise a clear error directing the caller to the supported update method. It
 must not remain a silent mutation of a dataclass field that leaves live wrappers
-unchanged. Constructor-time `role_llm_configs` behavior is unchanged.
+unchanged. The assignment guard must preserve constructor-time
+`role_llm_configs` behavior and the existing public dataclass field order.
 
 ## Dynamic `max_async` and the global gate
 
 The shared role payload carries `max_async`, but the concurrency hot path never
 reads it from a Manager proxy. Applying a role version updates a worker-local
 cached limit and generation. `get_global_concurrency_limit()`,
-`is_global_concurrency_limited()`, and `_acquire_global_slot()` continue to read
-only worker-local memory.
+`is_global_concurrency_limited()`, and the limit read inside
+`_acquire_global_slot()` continue to read only worker-local memory. Existing
+Manager IPC for lease-table coordination remains part of slot acquisition;
+the zero-IPC requirement applies to reading the configured limit, not the
+entire acquisition operation. Implementation must update the
+`_global_concurrency_limits` comments that describe the cache as read-only after
+initialization: applying a role version becomes another writer of that local
+cache.
 
 Role wrappers check the local generation before admission. A wrapper created
 while its group was unlimited must begin using the gate after an unlimited to
@@ -342,7 +377,7 @@ single-worker server for a capability that only multiple workers need.
 | The publisher's `addon_params` was changed locally but validation or publication failed before commit | Direct SDK mutation is intentionally local and predates propagation; claiming peers changed would be false. | The caller corrects the value and republishes, or restores the local mapping. |
 | A reader targeted a payload pruned after it read an older head | It has not modified live state and retains a complete older version. | It re-reads the current head and retries, skipping superseded versions. |
 | A dead instance leaves an update-flag handle or applied report | The handle carries no configuration and cannot make another worker move backward. | Reports expire by TTL; handles disappear when the Manager is finalized/restarted. |
-| A retired role wrapper fails cleanup after the new wrapper is installed | New calls use only the new wrapper; the old queue is no longer reachable for admission. | Existing cleanup/finalization retries or terminates it, with a warning. |
+| A retired role wrapper fails cleanup after the new wrapper is installed | New calls use only the new wrapper; the old queue is no longer reachable for admission. The installed configuration and applied version are retained. | The failure is logged and the completed cleanup task is discarded without retry. Normal shutdown has a forced-cancellation fallback; expired leases are reclaimed by the reaper. Remaining wrapper resources may persist until process exit. |
 | Global usage temporarily exceeds a newly lowered limit | Already-admitted work is not cancelled, and workers converge within the documented bound. | Completions and lease expiry drain usage; new admissions use the lower local cache after apply. |
 | An old document uses pre-publication `chunk_options` | This is the required enqueue-time reproducibility guarantee, not divergence. | No repair: only documents enqueued after publication use new defaults. |
 | Old LLM cache identities remain after a model change | Identity partitioning prevents reuse under the new configuration. | No propagation action and no GC report; normal cache lifecycle applies. |
@@ -363,18 +398,30 @@ The phased test matrix is:
 
 - shared-storage tests: concurrent publishers, monotonic ordering, flag
   isolation, missed-notification audit, stale report handling, and the
-  `workers == 1` no-new-IPC path;
+  `workers == 1` no-new-IPC path. Verify flag registration before the first
+  commit and whole-value report replacement, including independent reports
+  for two instances sharing a PID;
 - addon tests: publish/apply for every governed field, content-addressed prompt
   identity, invalid-profile rollback, and `_replace_addon_params(...,
-  mark_dirty=True)` cache refresh;
+  mark_dirty=True)` cache refresh. After apply, change or remove the source
+  file and trigger unrelated local dirty marks and
+  `entity_extraction_use_json` changes; verify that refresh continues using the
+  installed published content without reopening the path;
 - chunker tests: documents enqueued before publication retain frozen
   `chunk_options`, while later documents use the new defaults;
 - role tests: real production resolution, complete batch swap, builder-failure
   rollback, direct-assignment rejection, secret exclusion, cache identity, and
-  queue/health version agreement;
-- gate tests: no Manager read on acquisition, increased and decreased achieved
-  concurrency, transient over-cap drain, and wrappers created before an
-  unlimited to limited transition.
+  queue/health version agreement. Verify constructor-time role configuration
+  and public dataclass field order remain compatible, and failed retired-wrapper
+  cleanup logs a warning without rolling back the installed configuration or
+  changing its applied version;
+- secret-exclusion tests for both families: recursively reject secret-bearing
+  keys before any shared write, accept supported chunk-size keys through the
+  explicit safe-key exceptions, and reject other token-bearing keys;
+- gate tests: zero Manager IPC for the limit read while preserving real shared
+  lease coordination, increased and decreased achieved concurrency, transient
+  over-cap drain, and wrappers created before an unlimited to limited
+  transition.
 
 Fault injection is allowed only at an explicit production failure seam and may
 not replace the Manager, `LightRAG` instances, payload schema, or constructor

@@ -92,7 +92,7 @@ LightRAG writes to independent stores — graph, KV, vector, doc-status — with
 - Runtime configuration uses independent versioned namespaces: `runtime_addon_params` is scoped to `rag.workspace`, while `runtime_llm_config` uses `workspace=""` for process-wide role LLM configuration and `max_async`.
 - Publishing is explicit. Concurrent publishers serialize under the namespace lock, and workers apply only monotonically newer committed versions.
 - Update flags accelerate convergence, while bounded version audits recover missed notifications. Apply failures retain the complete previous configuration and retry without advancing the applied version.
-- `get_global_concurrency_limit()` and slot acquisition remain worker-local and IPC-free. Wrappers created while unlimited must observe a later limited configuration.
+- `get_global_concurrency_limit()` and the limit read inside slot acquisition remain worker-local and IPC-free; existing shared lease coordination still uses Manager IPC. Wrappers created while unlimited must observe a later limited configuration.
 - Entity prompt content is published with its SHA-256 identity; applying workers never treat the path hint as authoritative.
 - Secret-marked fields are rejected before any shared write. Propagation tests use a real Manager through `initialize_share_data(2)` and two real `LightRAG` instances.
 
