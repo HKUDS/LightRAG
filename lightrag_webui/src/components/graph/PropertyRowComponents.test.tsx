@@ -10,7 +10,8 @@ import { EditIcon } from './PropertyRowComponents'
  * EditIcon is the SOLE entry into property editing/merging. It must be a real
  * button: a clickable svg is invisible to the keyboard, so Tab can never reach
  * it and Enter/Space can never fire it. The accessible name comes from the
- * shared editProperty key so a screen reader announces which property opens.
+ * shared editProperty key with the TRANSLATED property name, so a screen
+ * reader announces the same name the visible PropertyName label shows.
  */
 describe('EditIcon', () => {
   afterEach(() => {
@@ -22,7 +23,9 @@ describe('EditIcon', () => {
     const onClick = mock(() => {})
     renderWithProviders(<EditIcon onClick={onClick} propertyName="entity_id" />)
 
-    const button = screen.getByRole('button', { name: 'Edit entity_id' })
+    // entity_id is displayed as "Name" (propertyNames.entity_id), so the
+    // button must announce "Edit Name", not the raw key.
+    const button = screen.getByRole('button', { name: 'Edit Name' })
     expect(button.getAttribute('type')).toBe('button')
     // happy-dom computes no layout, so the visible focus ring is pinned as a class.
     expect(button.className.split(/\s+/)).toContain('focus-visible:ring-2')
@@ -37,5 +40,12 @@ describe('EditIcon', () => {
     expect(onClick).toHaveBeenCalledTimes(2)
     await user.click(button)
     expect(onClick).toHaveBeenCalledTimes(3)
+  })
+
+  test('a property without a translation keeps its raw name in the accessible name', () => {
+    renderWithProviders(<EditIcon onClick={mock(() => {})} propertyName="custom_field" />)
+
+    const button = screen.getByRole('button', { name: 'Edit custom_field' })
+    expect(button.getAttribute('aria-label')).toBe('Edit custom_field')
   })
 })

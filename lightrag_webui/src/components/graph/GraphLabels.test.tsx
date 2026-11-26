@@ -91,4 +91,21 @@ describe('GraphLabels URL sync', () => {
       expect(window.location.hash).toContain('label=Beta')
     })
   })
+
+  test('a label change preserves foreign query params in the hash', async () => {
+    window.location.hash = '#/?foo=bar&label=X'
+
+    renderGraphLabels()
+
+    act(() => {
+      useSettingsStore.getState().setQueryLabel('Beta')
+    })
+
+    // Only the functional setSearchParams updater keeps params GraphLabels
+    // does not own; a plain {label} object would silently drop them.
+    await waitFor(() => {
+      expect(window.location.hash).toContain('label=Beta')
+      expect(window.location.hash).toContain('foo=bar')
+    })
+  })
 })
