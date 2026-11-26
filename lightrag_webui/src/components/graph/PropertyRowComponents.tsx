@@ -24,16 +24,25 @@ export const PropertyName = ({ name }: PropertyNameProps) => {
 
 interface EditIconProps {
   onClick: () => void
+  propertyName: string
 }
 
-export const EditIcon = ({ onClick }: EditIconProps) => (
-  <div>
-    <PencilIcon
-      className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+export const EditIcon = ({ onClick, propertyName }: EditIconProps) => {
+  const { t } = useTranslation()
+
+  // A native button is the keyboard path into property editing: Enter/Space
+  // activate it and Tab reaches it, none of which a clickable svg offers.
+  return (
+    <button
+      type="button"
       onClick={onClick}
-    />
-  </div>
-)
+      aria-label={t('graphPanel.propertiesView.editProperty', { property: propertyName })}
+      className="inline-flex appearance-none rounded-sm border-0 bg-transparent p-0 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <PencilIcon className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer" />
+    </button>
+  )
+}
 
 interface PropertyValueProps {
   value: any

@@ -50,6 +50,12 @@ const PropertyEditDialog = ({
     return translation === translationKey ? name : translation
   }
 
+  // Names the dialog AND its textarea: the input is the dialog's primary
+  // control, so a screen reader must announce which property it edits.
+  const editPropertyLabel = t('graphPanel.propertiesView.editProperty', {
+    property: getPropertyNameTranslation(propertyName)
+  })
+
   // Get textarea configuration based on property name
   const getTextareaConfig = (propertyName: string) => {
     switch (propertyName) {
@@ -88,11 +94,7 @@ const PropertyEditDialog = ({
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            {t('graphPanel.propertiesView.editProperty', {
-              property: getPropertyNameTranslation(propertyName)
-            })}
-          </DialogTitle>
+          <DialogTitle>{editPropertyLabel}</DialogTitle>
           <DialogDescription>
             {t('graphPanel.propertiesView.editPropertyDescription')}
           </DialogDescription>
@@ -118,6 +120,7 @@ const PropertyEditDialog = ({
             const config = getTextareaConfig(propertyName);
             return propertyName === 'description' ? (
               <textarea
+                aria-label={editPropertyLabel}
                 value={value}
                 onChange={(e) => onValueChange(e.target.value)}
                 className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
@@ -126,9 +129,12 @@ const PropertyEditDialog = ({
               />
             ) : (
               <textarea
+                aria-label={editPropertyLabel}
                 value={value}
                 onChange={(e) => onValueChange(e.target.value)}
                 rows={config.rows}
+                spellCheck={propertyName === 'entity_id' ? false : undefined}
+                autoComplete={propertyName === 'entity_id' ? 'off' : undefined}
                 className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
                 disabled={isSubmitting}
               />
