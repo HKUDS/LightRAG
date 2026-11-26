@@ -285,12 +285,48 @@ The interactive setup defaults PostgreSQL to the official pgvector image, `pgvec
 
 On first start the image creates the user, password, and database from the `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` environment variables. The setup wizard prompts for these values (defaulting to `rag` / `rag` / `lightrag`) and injects them into the generated `docker-compose.final.yml`, so you can choose any user, password, and database name.
 
-**Deployments on `PGGraphStorage`.** `PGGraphStorage` is deprecated and will be removed in a future release. It needs Apache AGE, which the pgvector image does not have. The wizard offers `PGGraphStorage` only to a deployment whose `.env` already selects it. Such a deployment can keep it: the wizard then generates the PostgreSQL service with `gzdaniel/postgres-for-rag:pg18-age-pgvector`, the image earlier versions used for everyone, and a rerun keeps the image of a PostgreSQL service it already manages. To leave AGE behind:
-
-- Move the graph to `PGTableGraphStorage` first, while the AGE image is still running: stop LightRAG and run `python -m lightrag.tools.migrate_graph_storage --apply` (see [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)). The graph is copied without re-indexing the documents. Without AGE, `PGGraphStorage` cannot start and the tool cannot read the old graph.
-- Then choose `PGTableGraphStorage` with `make env-storage` and set `postgres.image` to `pgvector/pgvector:pg18-trixie`. That tag has the same Debian base as the AGE image, so the existing data volume opens as it is. The plain `pgvector/pgvector:pg18` tag is built on an older Debian, and PostgreSQL then warns about a collation version mismatch on every connection to a database the AGE image created.
+**Deployments on `PGGraphStorage`.** `PGGraphStorage` is deprecated and will be removed in a future release. It needs Apache AGE, which the pgvector image does not have. The wizard offers `PGGraphStorage` only to a deployment whose `.env` already selects it. Such a deployment can keep it: the wizard then generates the PostgreSQL service with `gzdaniel/postgres-for-rag:pg18-age-pgvector`, the image earlier versions used for everyone, and a rerun keeps the image of a PostgreSQL service it already manages. To leave AGE behind, follow [Migrate from PGGraphStorage to PGTableGraphStorage](#migrate-from-pggraphstorage-to-pgtablegraphstorage) below.
 
 Please note that data file formats are incompatible across different PostgreSQL major versions; once this Docker image is deployed, it cannot be rolled back to a previous version.
+
+#### Migrate from PGGraphStorage to PGTableGraphStorage
+
+The graph is copied without re-indexing the documents, and every step that reads or removes the AGE graph needs the AGE image, so the image is switched last. Run the steps in order from the directory that holds `docker-compose.final.yml`. The commands use the wizard's default user `rag` and database `lightrag`; substitute the `POSTGRES_USER` and `POSTGRES_DB` of your `postgres` service.
+
+1. **Back up the database.** `pg_dump` needs AGE to read the graph tables, so take the backup now, on the AGE image:
+
+   ```bash
+   docker compose -f docker-compose.final.yml exec -T postgres \
+     pg_dump -U rag -d lightrag -Fc > lightrag-before-graph-migration.dump
+   ```
+
+2. **Copy the graph.** The tool ships with LightRAG 1.5.7 and later, so update the LightRAG image first (`pull`, or `build` for an image you build locally). Stop the server, then run the tool in a one-off container of the `lightrag` service. That container reads the mounted `.env` and the service's `environment:` block, so it reaches the `postgres` service and the workspace the server uses. Run it without `--apply` first: the dry run reports what the real run will do.
+
+   ```bash
+   docker compose -f docker-compose.final.yml pull lightrag
+   docker compose -f docker-compose.final.yml stop lightrag
+   docker compose -f docker-compose.final.yml run --rm --no-deps lightrag \
+     python -m lightrag.tools.migrate_graph_storage
+   docker compose -f docker-compose.final.yml run --rm --no-deps lightrag \
+     python -m lightrag.tools.migrate_graph_storage --apply
+   ```
+
+   Go on only when the apply run exits 0 and reports `'verified': True`. If other servers keep their graphs in the same database under other workspaces, migrate each of them the same way (`--workspace <name>`) before step 4. [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md) has the preconditions, the refusals and the report fields.
+
+3. **Switch the server.** Choose `PGTableGraphStorage` with `make env-storage`, start the stack with `docker compose -f docker-compose.final.yml up -d`, and check the graph, for example in the WebUI graph view. The wizard keeps the image of the PostgreSQL service it already manages, so the database still runs the AGE image and the old graph is untouched. To roll back, do it before the server ingests new documents, because anything written after the switch exists only in the new tables. The wizard no longer offers `PGGraphStorage` once `.env` selects another graph storage, so set `LIGHTRAG_GRAPH_STORAGE=PGGraphStorage` in `.env` by hand and restart the server with `docker compose -f docker-compose.final.yml up -d --force-recreate lightrag`.
+
+4. **Remove the AGE graph** once you no longer need to roll back, still on the AGE image. This drops the AGE graph of every workspace in the database, so every workspace must have been migrated:
+
+   ```bash
+   docker compose -f docker-compose.final.yml exec -T postgres \
+     psql -U rag -d lightrag -v ON_ERROR_STOP=1 \
+     -c "SELECT ag_catalog.drop_graph(name::text, true) FROM ag_catalog.ag_graph" \
+     -c "DROP EXTENSION age"
+   ```
+
+   Do not skip this step. PostgreSQL and LightRAG both start on the pgvector image with the AGE graph still in the database, but the graph tables use AGE's column type, so every later `pg_dump` fails with `could not access file "age"`. If the image was already switched, remove the graph without AGE instead: each AGE graph is a schema of the same name, listed by `SELECT name FROM ag_catalog.ag_graph`; run `DROP SCHEMA <name> CASCADE` for each one, then `DROP EXTENSION age`.
+
+5. **Switch the image.** The wizard never replaces the image of a PostgreSQL service it already manages, so edit the `image:` line of the `postgres` service in `docker-compose.final.yml` to `pgvector/pgvector:pg18-trixie` by hand, then recreate the container with `docker compose -f docker-compose.final.yml up -d postgres`. (`make env-storage-rewrite` also writes the template image, but it regenerates every wizard-managed service and drops your other edits to them.) That tag has the same Debian base as the AGE image, so the existing data volume opens as it is. The plain `pgvector/pgvector:pg18` tag is built on an older Debian, and PostgreSQL then warns about a collation version mismatch on every connection to a database the AGE image created.
 
 #### Build the AGE-enabled PostgreSQL image
 

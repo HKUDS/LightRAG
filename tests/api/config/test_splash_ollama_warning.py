@@ -88,10 +88,12 @@ def _splash(
 
 
 def test_warns_on_a_network_bind(monkeypatch):
-    """The original trigger, unchanged."""
+    """The original trigger, unchanged. With a key configured, the remedy is to
+    drop the explicit /api entry."""
     output = _splash(monkeypatch, host="0.0.0.0", api_prefix=None)
 
     assert _WARNING_MARKER in output
+    assert "remove /api from WHITELIST_PATHS" in output
 
 
 def test_warns_behind_a_reverse_proxy_prefix_on_loopback(monkeypatch):
@@ -128,13 +130,6 @@ def test_silent_with_a_key_and_the_default_whitelist(monkeypatch):
     output = _splash(monkeypatch, host="0.0.0.0", api_prefix=None, whitelist=None)
 
     assert _WARNING_MARKER not in output
-
-
-def test_with_a_key_the_remedy_is_to_drop_the_explicit_api_entry(monkeypatch):
-    output = _splash(monkeypatch, host="0.0.0.0", api_prefix=None)
-
-    assert _WARNING_MARKER in output
-    assert "remove /api from WHITELIST_PATHS" in output
 
 
 def test_accounts_only_warns_and_points_at_the_api_key(monkeypatch):

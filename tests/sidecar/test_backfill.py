@@ -190,9 +190,14 @@ def test_source_span_disambiguates_cross_block_from_later_duplicate(
 
 
 @pytest.mark.offline
-def test_missing_span_fails_document(tmp_path: Path) -> None:
-    blocks_path = _write_blocks(tmp_path, [("b1", "Present content.")])
-    chunks = [_chunk("Present content.", 4)]
+@pytest.mark.parametrize(
+    "content",
+    # A U+FFFD in the body (here the source's own) exempts nothing.
+    ["Present content.", "Present \ufffd content."],
+)
+def test_missing_span_fails_document(tmp_path: Path, content: str) -> None:
+    blocks_path = _write_blocks(tmp_path, [("b1", content)])
+    chunks = [_chunk(content, 4)]
 
     with pytest.raises(ChunkBlockMatchError) as exc:
         backfill_chunk_sidecars(chunks, blocks_path)
@@ -212,11 +217,25 @@ def test_out_of_range_span_fails_document(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
-def test_mismatched_span_text_fails_document(tmp_path: Path) -> None:
-    # The span points at "Alpha." but the chunk content is "Beta." — neither a
-    # byte-exact nor a whitespace-stripped match, so the span is treated as absent.
-    blocks_path = _write_blocks(tmp_path, [("b1", "Alpha."), ("b2", "Beta.")])
-    chunks = [_span_chunk("Beta.", 6, 0, 6)]
+@pytest.mark.parametrize(
+    ("blocks", "body", "start", "end"),
+    [
+        # The span points at "Alpha." but the chunk content is "Beta.".
+        ([("b1", "Alpha."), ("b2", "Beta.")], "Beta.", 0, 6),
+        # Edge U+FFFD the span does not cover: not stripped to make it match.
+        ([("b1", "garbled \ufffd text.")], "\ufffd garbled \ufffd text.", 0, 15),
+        # Interior U+FFFD the source does not hold.
+        ([("b1", "abcd efgh")], "abcd \ufffdefgh", 0, 9),
+    ],
+    ids=["other-text", "edge-replacement", "interior-replacement"],
+)
+def test_mismatched_span_text_fails_document(
+    tmp_path: Path, blocks: list[tuple[str, str]], body: str, start: int, end: int
+) -> None:
+    # Neither a byte-exact nor a whitespace-stripped match, so the span is
+    # treated as absent.
+    blocks_path = _write_blocks(tmp_path, blocks)
+    chunks = [_span_chunk(body, 6, start, end)]
 
     with pytest.raises(ChunkBlockMatchError) as exc:
         backfill_chunk_sidecars(chunks, blocks_path)
@@ -302,61 +321,3 @@ def test_empty_chunk_skipped_then_following_matches(tmp_path: Path) -> None:
 
     assert "sidecar" not in chunks[0]
     assert _refs(chunks[1]) == ["b1"]
-
-
-@pytest.mark.offline
-def test_replacement_char_chunk_skipped_not_failed(tmp_path: Path) -> None:
-    # A multi-byte UTF-8 char split at a token-window boundary decodes to U+FFFD in
-    # the chunk content; when the chunker could not locate the window it carries no
-    # span. It must be SKIPPED (no sidecar), not raise and FAIL the whole document;
-    # the following clean chunk (with a valid span) still maps correctly.
-    b1, b2 = "Status update 🎉 done.", "Clean tail block."
-    blocks_path = _write_blocks(tmp_path, [("b1", b1), ("b2", b2)])
-    merged = _BLOCK_SEPARATOR.join([b1, b2])
-    b2_start = merged.index(b2)
-    chunks = [
-        # First chunk lost a byte at the emoji boundary -> U+FFFD, no usable span.
-        _chunk("Status update � done.", 0),
-        _span_chunk(b2, 1, b2_start, b2_start + len(b2)),
-    ]
-
-    backfill_chunk_sidecars(chunks, blocks_path)
-
-    assert "sidecar" not in chunks[0]  # provenance degraded for the corrupt chunk
-    assert _refs(chunks[1]) == ["b2"]  # clean chunk still resolves
-
-
-@pytest.mark.offline
-def test_boundary_replacement_span_attached_with_literal_interior_fffd(
-    tmp_path: Path,
-) -> None:
-    # The chunker located this window with its boundary U+FFFD stripped. The
-    # source itself contains a literal U+FFFD; only the edge one is an artifact,
-    # so stripping the edges (not removing every U+FFFD) must reconcile them.
-    lead = "Status 🎉 "
-    b1 = lead + "garbled \ufffd text."
-    blocks_path = _write_blocks(tmp_path, [("b1", b1)])
-    start = len(lead)
-    # The window began inside the emoji: its tail bytes decoded to U+FFFD.
-    body = "\ufffd " + b1[start:]
-    chunks = [_span_chunk(body, 0, start, len(b1))]
-
-    backfill_chunk_sidecars(chunks, blocks_path)
-
-    assert _refs(chunks[0]) == ["b1"]
-
-
-@pytest.mark.offline
-def test_interior_replacement_absent_from_source_is_not_accepted(
-    tmp_path: Path,
-) -> None:
-    # An interior U+FFFD is not a boundary artifact. A span whose text matches
-    # the body only after deleting it does not prove the chunk sits there; the
-    # chunk degrades through the span-less replacement path instead.
-    b1 = "abcd efgh"
-    blocks_path = _write_blocks(tmp_path, [("b1", b1)])
-    chunks = [_span_chunk("abcd \ufffdefgh", 0, 0, len(b1))]
-
-    backfill_chunk_sidecars(chunks, blocks_path)
-
-    assert "sidecar" not in chunks[0]

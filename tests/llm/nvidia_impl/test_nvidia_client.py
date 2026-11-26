@@ -2,7 +2,7 @@
 
 The client is held in an ``async with`` so its httpx pool is released on
 every exit path. The success path is pinned by
-``test_nvidia_base64_embeddings.py`` (``client.is_closed()`` on a real SDK
+``test_nvidia_embedding.py`` (``client.is_closed()`` on a real SDK
 client); the error path is pinned here, on every retry attempt.
 """
 

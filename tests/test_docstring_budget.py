@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import inspect
 import pathlib
 import re
 from dataclasses import dataclass
@@ -94,19 +95,45 @@ _ISSUE_REF = re.compile(r"(?<![\w/])#\d{4,5}\b")
 
 
 @dataclass(frozen=True)
+class _Docstring:
+    name: str
+    text: str
+    line_limit: int
+
+
+@dataclass(frozen=True)
 class _Source:
     path: pathlib.Path
     rel: str
     text: str
-    tree: ast.Module
+    docstrings: tuple[_Docstring, ...]
+
+
+def _docstrings(tree: ast.Module) -> tuple[_Docstring, ...]:
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        text = ast.get_docstring(node, clean=False)
+        if not text:
+            continue
+        line_limit = (
+            _MAX_CLASS_DOCSTRING_LINES
+            if isinstance(node, ast.ClassDef)
+            else _MAX_DOCSTRING_LINES
+        )
+        found.append(_Docstring(getattr(node, "name", "<module>"), text, line_limit))
+    return tuple(found)
 
 
 @functools.cache
 def _sources() -> tuple[_Source, ...]:
-    """Every package file, read and parsed once per test process.
+    """Every package file, read, parsed and walked once per test process.
 
-    Each check below walks the whole package; parsing it again per test made
-    this the slowest scan in the suite for no difference in what it sees.
+    The length and prose checks share the extracted docstrings without
+    retaining or revisiting the syntax trees.
     """
     sources = []
     for path in sorted(_PACKAGE.rglob("*.py")):
@@ -116,41 +143,22 @@ def _sources() -> tuple[_Source, ...]:
                 path=path,
                 rel=path.relative_to(_REPO_ROOT).as_posix(),
                 text=text,
-                tree=ast.parse(text),
+                docstrings=_docstrings(ast.parse(text)),
             )
         )
     return tuple(sources)
 
 
-def _oversized(tree: ast.Module) -> list[tuple[str, int, int]]:
-    found = []
-    for node in ast.walk(tree):
-        if not isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            continue
-        doc = ast.get_docstring(node, clean=False)
-        if not doc:
-            continue
-        limit = (
-            _MAX_CLASS_DOCSTRING_LINES
-            if isinstance(node, ast.ClassDef)
-            else _MAX_DOCSTRING_LINES
-        )
-        lines = doc.count("\n") + 1
-        if lines > limit:
-            found.append((getattr(node, "name", "<module>"), lines, limit))
-    return found
-
-
 @functools.cache
 def _package_oversized() -> tuple[tuple[str, str, int, int], ...]:
     """``(file, name, lines, limit)`` of every oversized docstring, once."""
-    return tuple(
-        (source.rel, name, lines, limit)
-        for source in _sources()
-        for name, lines, limit in _oversized(source.tree)
-    )
+    found = []
+    for source in _sources():
+        for docstring in source.docstrings:
+            lines = docstring.text.count("\n") + 1
+            if lines > docstring.line_limit:
+                found.append((source.rel, docstring.name, lines, docstring.line_limit))
+    return tuple(found)
 
 
 def test_no_docstring_grows_into_a_design_document():
@@ -400,13 +408,10 @@ def _prose(source: _Source) -> list[str]:
     if run:
         blocks.append(" ".join(run))
 
-    for node in ast.walk(source.tree):
-        if isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            doc = ast.get_docstring(node, clean=True)
-            if doc:
-                blocks.append(re.sub(r"\s+", " ", doc))
+    for docstring in source.docstrings:
+        doc = inspect.cleandoc(docstring.text)
+        if doc:
+            blocks.append(re.sub(r"\s+", " ", doc))
     return blocks
 
 

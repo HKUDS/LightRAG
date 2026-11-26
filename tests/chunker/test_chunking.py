@@ -706,36 +706,6 @@ def test_recursive_split_with_multi_token_chars():
 
 
 @pytest.mark.offline
-def test_overlap_uses_token_count():
-    """
-    Verify overlap calculation uses token count, not character count.
-
-    "aAaAa" = 5 chars, 7 tokens (a=1, A=2, a=1, A=2, a=1)
-    """
-    tokenizer = make_multi_token_tokenizer()
-
-    # "aAaAa" = 5 characters, 7 tokens
-    content = "aAaAa"
-
-    chunks = chunking_by_token_size(
-        tokenizer,
-        content,
-        split_by_character="\n\n",
-        split_by_character_only=False,
-        chunk_token_size=4,
-        chunk_overlap_token_size=2,
-    )
-
-    # Chunks start at token positions: 0, 2, 4. [4:7] reaches the end, so the
-    # start at 6 (a tail of [4:7]) is not used.
-    # [0:4]=2 chars, [2:6]=2.5 chars, [4:7]=1.5 chars
-    assert len(chunks) == 3
-    assert chunks[0]["tokens"] == 4
-    assert chunks[1]["tokens"] == 4
-    assert chunks[2]["tokens"] == 3
-
-
-@pytest.mark.offline
 def test_mixed_multi_token_content():
     """Test chunking with mixed single and multi-token characters."""
     tokenizer = make_multi_token_tokenizer()
@@ -819,16 +789,3 @@ def test_split_by_character_only_does_not_encode_whole_document():
 
     assert [chunk["content"] for chunk in chunks] == ["one", "two", "three"]
     assert inner.encoded == ["one", "two", "three"]
-
-
-@pytest.mark.offline
-def test_fixed_window_path_still_encodes_whole_document():
-    """Without split_by_character the whole-document encode still happens."""
-    inner, tokenizer = _make_counting_tokenizer()
-    content = "abcdefghij"
-
-    chunking_by_token_size(
-        tokenizer, content, chunk_token_size=4, chunk_overlap_token_size=0
-    )
-
-    assert inner.encoded == [content]

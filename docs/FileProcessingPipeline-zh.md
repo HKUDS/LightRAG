@@ -624,6 +624,8 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 #### F —— 定长
 
+窗口在原文的字符边界处切分（与嵌入前硬切分使用同一个 `Tokenizer.split_by_token_limit`），因此窗口永远不会切断多字节字符，chunk 内容始终是它所来自的原文。chunk 的 `tokens` 统计的是存储下来的、去掉首尾空白后的内容；由于 BPE 把空格归入其后的词，开头空格被去掉的窗口可能比 `chunk_token_size` 多出一两个 token。
+
 - **`CHUNK_F_SIZE`** —— 未设，int。
   F 自己的 `chunk_token_size`，高于顶层兜底（`CHUNK_SIZE` 与 SDK 路径的 `LightRAG(chunk_token_size=…)`）。未设时 F 沿用顶层解析结果。
 - **`CHUNK_F_OVERLAP_SIZE`** —— 未设，int。
@@ -675,7 +677,7 @@ chunker(tokenizer, content, chunk_token_size, **strategy_kwargs)   (分块时按
 
 上游 `SemanticChunker` 会把**整篇文档**放进一次调用——每个句子滑窗一条，因此单请求条目数 = 全文句数，总 token 约为 `(2 × CHUNK_V_BUFFER_SIZE + 1) × 全文`。没有任何 provider 绑定会在内部切分这个列表，所以由 V 自己收口：
 
-- **单请求条目数**上限为 `EMBEDDING_BATCH_NUM`。设为 `0` 或负数等于主动放弃这个上界。
+- **单请求条目数**上限为 `EMBEDDING_BATCH_NUM`。其值必须不小于 `1`：它同时也是向量库写入的批大小，设为 `0` 或负数会在启动时被拒绝。
 - **同时在途的请求数**上限为 `EMBEDDING_FUNC_MAX_ASYNC`。这个上界的作用域是**单次分块调用**，不是整个部署——跨实例并发仍由既有的 Embedding 限流器负责。任一批失败后不再发起新批。
 - **单条滑窗的 token 长度**按 Embedding 函数声明的 `max_token_size` **尽力**截断。在 API server 路径下，该值优先取 `EMBEDDING_TOKEN_LIMIT`，未设置时则取 binding 自带的默认值——所有内置 binding 都声明了这个值（openai / azure_openai / ollama / jina / bedrock / lollms 为 `8192`，voyageai 为 `32000`，gemini 为 `2048`），因此不设 `EMBEDDING_TOKEN_LIMIT` **并不会**把预算交给 `CHUNK_V_SIZE`。只有当 `EmbeddingFunc` 自身未声明上限（`max_token_size=None` 或 `0`，仅直接调用 SDK 的场景可达）时，才回退到生效的 `CHUNK_V_SIZE`。"尽力"是字面意思：截断用的是 LightRAG 的通用 tokenizer，不保证等于 Embedding 模型的 tokenizer；而 provider 还可能在此之后改写输入（OpenAI 绑定会先拼接 document prefix，再执行自己的截断）。所以 `EMBEDDING_BATCH_NUM × 上限` 只是 LightRAG tokenizer 下的逻辑上界，**不是**对服务端实际收到多少 token 的承诺；provider 自身的原生截断（若有）独立生效。
 

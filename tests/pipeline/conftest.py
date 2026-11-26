@@ -2,8 +2,22 @@
 
 from uuid import uuid4
 
+import pytest
+
 from lightrag.kg.pipeline_ingress import PipelineIngressMessage
 from lightrag.kg.shared_storage import get_pipeline_ingress
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Give the long pipeline RSS check an early slot in parallel runs."""
+    for index, item in enumerate(items):
+        if item.nodeid == (
+            "tests/pipeline/test_scheduler_memory_bounded_e2e.py"
+            "::test_full_worker_feeder_pipeline_rss_does_not_track_backlog"
+        ):
+            items.insert(0, items.pop(index))
+            break
 
 
 async def request_failed_retry(rag) -> str:

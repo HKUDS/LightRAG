@@ -178,6 +178,10 @@ RETRY_ATTEMPTS = get_env_value("REDIS_RETRY_ATTEMPTS", 3, int)
 redis_retry = retry(
     stop=stop_after_attempt(RETRY_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=1, max=8),
+    # Surface the last attempt's own exception rather than tenacity.RetryError,
+    # so callers can still catch redis.exceptions.RedisError / ConnectionError
+    # and error messages carry Redis's text.
+    reraise=True,
     retry=(
         retry_if_exception_type(ConnectionError)
         | retry_if_exception_type(TimeoutError)
@@ -241,7 +245,7 @@ async def _ensure_no_eviction_policy(redis, redis_url: str, workspace: str) -> N
     if maxmemory <= 0 or not policy.startswith("allkeys"):
         _eviction_checked.add(redis_url)
         return
-    if os.getenv("REDIS_ALLOW_EVICTION_POLICY", "false").strip().lower() == "true":
+    if get_env_value("REDIS_ALLOW_EVICTION_POLICY", False, bool):
         _eviction_checked.add(redis_url)
         logger.warning(
             f"[{workspace}] Redis is configured to EVICT (maxmemory-policy="

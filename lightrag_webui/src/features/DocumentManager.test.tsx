@@ -24,8 +24,8 @@
  * because the busy window was missed entirely) is pinned in
  * documentDeletionProbe.test.ts.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { cleanup, screen, waitFor, within } from '@testing-library/react'
+import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import {
@@ -188,18 +188,9 @@ const backendAdapter = async (config: any) => {
   return respond(config, {})
 }
 
-/**
- * Wait until the list has stopped fetching. The stale-query refresh can be
- * scheduled behind the throttle gate's 2s trailing timer, so an assertion that
- * fires as soon as one request lands would finish before it.
- */
-const waitForPaginatedQuiescence = async (quietMs = 2500, maxRounds = 6) => {
-  for (let round = 0; round < maxRounds; round += 1) {
-    const before = backend.paginatedCalls
-    await new Promise((resolve) => setTimeout(resolve, quietMs))
-    if (backend.paginatedCalls === before) return
-  }
-  throw new Error('document list never stopped fetching')
+// Let each probe observation finish before advancing to its next timer.
+const advanceTime = async (ms: number) => {
+  await act(async () => { jest.advanceTimersByTime(ms) })
 }
 
 const rowFor = (docId: string) => {
@@ -224,6 +215,7 @@ afterEach(() => {
   cleanup()
   useBackendState.getState().clearHealthCheckTimer()
   __resetPaginatedDocumentRequestsForTests()
+  if (jest.isFakeTimers()) jest.useRealTimers()
 })
 
 afterAll(() => {
@@ -383,41 +375,37 @@ describe('DocumentManager post-action refreshes', () => {
       await user.click(within(row as HTMLElement).getByRole('checkbox'))
       await user.click(screen.getByRole('button', { name: /^Delete$/ }))
       await user.type(screen.getByPlaceholderText('Type yes to confirm'), 'yes')
-      await user.click(screen.getByRole('button', { name: 'YES' }))
-
-      await waitFor(() => {
-        expect(backend.deleteCalls).toBe(1)
-      })
+      jest.useFakeTimers()
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'YES' })) })
+      expect(backend.deleteCalls).toBe(1)
+      await advanceTime(1)
 
       // Navigate away while the deletion is still running. Every paginated
       // request from here on must carry the new filter.
+      expect(backend.deletionInFlight).toBe(true)
       backend.recordFilters = true
-      await user.click(screen.getByRole('button', { name: /^Failed/ }))
-      await waitFor(() => {
-        expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
-      })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Failed/ })) })
+      expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
 
-      // Wait out the deletion, then the probe's confirming refresh.
-      await waitFor(
-        () => {
-          expect(backend.deletionInFlight).toBe(false)
-        },
-        { timeout: 8000 }
-      )
+      // The probe chains its health checks at 0, 500, 1000, 2000 and 4000 ms.
+      // Allow each response to schedule the next check, then observe the
+      // commit at 3000 ms separately from the confirming refresh at 4000 ms.
+      await advanceTime(500)
+      await advanceTime(500)
+      await advanceTime(1000)
+      await advanceTime(1000)
+      expect(backend.deletionInFlight).toBe(false)
       const callsAtCommit = backend.paginatedCalls
-      await waitFor(
-        () => {
-          expect(backend.paginatedCalls > callsAtCommit).toBe(true)
-        },
-        { timeout: 8000 }
-      )
-      await waitForPaginatedQuiescence()
+      await advanceTime(1000)
+      expect(backend.paginatedCalls).toBeGreaterThan(callsAtCommit)
+
+      // A stale refresh can sit behind the 2s trailing throttle.
+      await advanceTime(2000)
 
       expect(backend.requestedFilters.filter((filter) => filter !== 'failed')).toHaveLength(0)
       expect(screen.queryAllByText(SURVIVOR_ID)).toHaveLength(0)
       expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
-    },
-    25000
+    }
   )
 
   test(
@@ -426,34 +414,28 @@ describe('DocumentManager post-action refreshes', () => {
       // Same defect, wider window: the activity probe's burst runs for up to
       // 16s off the closure captured when scan was clicked. Pre-existing, and
       // fixed by the same latest-render ref.
-      const user = userEvent.setup()
       renderWithProviders(<DocumentManager />)
 
       await waitFor(() => {
         expect(rowFor(DOC_ID) === null).toBe(false)
       })
 
-      await user.click(screen.getByRole('button', { name: /^Scan\/Retry/ }))
-      await waitFor(() => {
-        expect(backend.scanInFlight).toBe(true)
-      })
+      jest.useFakeTimers()
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Scan\/Retry/ })) })
+      expect(backend.scanInFlight).toBe(true)
+      await advanceTime(1)
 
       backend.recordFilters = true
-      await user.click(screen.getByRole('button', { name: /^Failed/ }))
-      await waitFor(() => {
-        expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
-      })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Failed/ })) })
+      expect(screen.queryAllByText(FAILED_ID).length > 0).toBe(true)
+      expect(backend.requestedFilters).toEqual(['failed'])
 
-      // Two more probe refreshes (its 2s and 4s ticks) must query the new view.
-      await waitFor(
-        () => {
-          expect(backend.requestedFilters.length >= 3).toBe(true)
-        },
-        { timeout: 10000 }
-      )
-
-      expect(backend.requestedFilters.filter((filter) => filter !== 'failed')).toHaveLength(0)
-    },
-    25000
+      // Both scheduled refreshes must run and query the new view.
+      await advanceTime(1000)
+      await advanceTime(1000)
+      expect(backend.requestedFilters).toEqual(['failed', 'failed'])
+      await advanceTime(2000)
+      expect(backend.requestedFilters).toEqual(['failed', 'failed', 'failed'])
+    }
   )
 })

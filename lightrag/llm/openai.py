@@ -34,6 +34,7 @@ from tenacity import (
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     embedding_timeout,
+    get_env_value,
     provider_timeout,
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
@@ -83,6 +84,19 @@ except ImportError:
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
+
+
+def _chat_usage_counts(usage: Any) -> dict[str, int]:
+    counts = {
+        "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+        "completion_tokens": getattr(usage, "completion_tokens", 0),
+        "total_tokens": getattr(usage, "total_tokens", 0),
+    }
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached_tokens = getattr(details, "cached_tokens", None)
+    if cached_tokens is not None:
+        counts["cached_prompt_tokens"] = cached_tokens
+    return counts
 
 
 class InvalidResponseError(Exception):
@@ -177,11 +191,7 @@ _TIKTOKEN_ENCODING_CACHE: dict[str, Any] = {}
 # Whether to request base64-encoded embeddings from the API.
 # Base64 is more efficient over the wire; set EMBEDDING_USE_BASE64=false for
 # providers that don't support it (e.g. Yandex Cloud).
-EMBEDDING_USE_BASE64: bool = os.getenv("EMBEDDING_USE_BASE64", "true").lower() in (
-    "true",
-    "1",
-    "yes",
-)
+EMBEDDING_USE_BASE64: bool = get_env_value("EMBEDDING_USE_BASE64", True, bool)
 
 
 def _get_tiktoken_encoding_for_model(model: str) -> Any:
@@ -784,14 +794,7 @@ async def openai_complete_if_cache(
 
                 # After streaming is complete, track token usage
                 if token_tracker and final_chunk_usage:
-                    # Use actual usage from the API
-                    token_counts = {
-                        "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
-                        "completion_tokens": getattr(
-                            final_chunk_usage, "completion_tokens", 0
-                        ),
-                        "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
-                    }
+                    token_counts = _chat_usage_counts(final_chunk_usage)
                     token_tracker.add_usage(token_counts)
                     logger.debug(f"Streaming token usage (from API): {token_counts}")
                 elif token_tracker:
@@ -872,13 +875,7 @@ async def openai_complete_if_cache(
             # trace is exactly the case that raises, and omitting it would
             # under-report by a full-budget generation.
             if token_tracker and hasattr(response, "usage"):
-                token_counts = {
-                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
-                    "completion_tokens": getattr(
-                        response.usage, "completion_tokens", 0
-                    ),
-                    "total_tokens": getattr(response.usage, "total_tokens", 0),
-                }
+                token_counts = _chat_usage_counts(response.usage)
                 token_tracker.add_usage(token_counts)
 
             # Compatible gateways can return non-JSON bodies that the SDK

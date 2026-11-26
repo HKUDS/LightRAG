@@ -31,7 +31,7 @@ import numpy as np
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc, setup_logger
+from lightrag.utils import EmbeddingFunc, get_env_value, setup_logger
 
 from functools import partial
 from lightrag.rerank import cohere_rerank
@@ -72,7 +72,7 @@ rerank_model_func = partial(
     model=os.getenv("RERANK_MODEL", "rerank-v3.5"),
     api_key=os.getenv("RERANK_BINDING_API_KEY"),
     base_url=os.getenv("RERANK_BINDING_HOST", "https://api.cohere.com/v2/rerank"),
-    enable_chunking=os.getenv("RERANK_ENABLE_CHUNKING", "false").lower() == "true",
+    enable_chunking=get_env_value("RERANK_ENABLE_CHUNKING", False, bool),
     max_tokens_per_doc=int(os.getenv("RERANK_MAX_TOKENS_PER_DOC", "4096")),
 )
 

@@ -124,19 +124,14 @@ async def test_search_labels_keeps_prefix_wildcard_for_latin_query():
     assert calls[0][1]["search_query"] == "Samsung*"
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        "lg전자",
-    ],
-)
-async def test_fallback_matches_case_insensitively_for_every_script(query):
+async def test_fallback_matches_case_insensitively_for_every_script():
     """A mixed query routed to the CJK path keeps the lowercased CONTAINS.
 
     Before Hangul and kana were routed to the CJK path, `lg전자` reached the
     Latin fallback and matched a stored `LG전자` through toLower; the CJK
     fallback compared the raw query and returned nothing.
     """
+    query = "lg전자"
     storage, calls = _make_storage(fail_fulltext=True)
 
     await storage.search_labels(query)

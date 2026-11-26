@@ -13,6 +13,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from lightrag.base import DocStatus
 
@@ -91,6 +92,30 @@ def _store_raw(storage, doc_id: str, payload: dict) -> None:
     a content_hash field)."""
     key = f"{storage.final_namespace}:{doc_id}"
     storage._redis.store[key] = json.dumps(payload)
+
+
+async def test_get_by_id_reraises_redis_error_after_retry_limit(
+    redis_doc_status, monkeypatch
+):
+    from lightrag.kg.redis_impl import RETRY_ATTEMPTS, RedisDocStatusStorage
+
+    attempts = 0
+
+    async def failing_get(_key):
+        nonlocal attempts
+        attempts += 1
+        raise RedisConnectionError("connection lost")
+
+    async def no_sleep(_delay):
+        pass
+
+    monkeypatch.setattr(redis_doc_status._redis, "get", failing_get)
+    monkeypatch.setattr(RedisDocStatusStorage.get_by_id.retry, "sleep", no_sleep)
+
+    with pytest.raises(RedisConnectionError):
+        await redis_doc_status.get_by_id("doc-1")
+
+    assert attempts == RETRY_ATTEMPTS
 
 
 async def test_get_doc_by_file_basename_returns_tuple_on_hit(redis_doc_status):

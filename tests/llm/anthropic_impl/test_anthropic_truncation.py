@@ -25,9 +25,10 @@ def _make_client(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_max_tokens_stop_reason_marks_result_truncated():
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "model_context_window_exceeded"])
+async def test_anthropic_truncation_stop_reason_marks_result_truncated(stop_reason):
     partial = '{"entities":[{"name":"Ali'
-    client = _make_client(text=partial, stop_reason="max_tokens")
+    client = _make_client(text=partial, stop_reason=stop_reason)
 
     with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
         result = await anthropic_complete_if_cache(
@@ -105,4 +106,49 @@ async def test_anthropic_thinking_only_max_tokens_raises_empty_truncated(
     message = str(excinfo.value)
     assert "budget consumed by reasoning" in message
     assert "max_tokens" in message and "thinking.budget_tokens" in message
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stop_reason", "content", "expected_hint", "absent_hint"),
+    [
+        (
+            "model_context_window_exceeded",
+            [],
+            "shorten the input",
+            "raising max_tokens",
+        ),
+        (
+            "model_context_window_exceeded",
+            [SimpleNamespace(type="text", text=" ")],
+            "shorten the input",
+            "raising max_tokens",
+        ),
+        (
+            "max_tokens",
+            [SimpleNamespace(type="text", text=" \n")],
+            "raising max_tokens",
+            "shorten the input",
+        ),
+    ],
+    ids=["context-no-text-block", "context-blank-text", "max-tokens-blank-text"],
+)
+async def test_anthropic_blank_truncated_response_raises_with_remedy(
+    stop_reason, content, expected_hint, absent_hint
+):
+    """A truncated response with no visible text is never returned as a
+    blank ``TruncatedResponse``; the hint names the remedy for its limit."""
+    client = _make_client(content=content, stop_reason=stop_reason)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
+        with pytest.raises(EmptyTruncatedResponseError) as excinfo:
+            await anthropic_complete_if_cache(
+                model="claude-test", prompt="Extract", api_key="test-key"
+            )
+
+    message = str(excinfo.value)
+    assert f"stop_reason={stop_reason}" in message
+    assert expected_hint in message
+    assert absent_hint not in message
     client.close.assert_awaited_once()
