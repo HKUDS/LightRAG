@@ -448,10 +448,10 @@
       "queryEmpty": "Masukkan pertanyaan sebelum mengirim.",
       "queryTooShort": "Query Anda terlalu pendek. Masukkan setidaknya 3 karakter bahasa Inggris atau kombinasi yang setara; setiap karakter Mandarin, Jepang, atau Korea dihitung sebagai 2.",
       "dismissError": "Tutup error",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "Bersihkan Percakapan?",
+      "clearConfirmDescription": "Tindakan ini akan menghapus semua pesan dan riwayat percakapan yang tersimpan. Tindakan ini tidak dapat dibatalkan.",
+      "clearConfirmCancel": "Batal",
+      "clearConfirmButton": "Bersihkan Percakapan"
     },
     "querySettings": {
       "parametersTitle": "Parameter",

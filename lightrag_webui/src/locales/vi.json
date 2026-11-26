@@ -448,10 +448,10 @@
       "queryEmpty": "Vui lòng nhập câu hỏi trước khi gửi.",
       "queryTooShort": "Truy vấn quá ngắn. Hãy nhập ít nhất 3 ký tự tiếng Anh hoặc tổ hợp tương đương; mỗi ký tự Trung, Nhật hoặc Hàn được tính là 2.",
       "dismissError": "Đóng thông báo lỗi",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "Xóa cuộc trò chuyện?",
+      "clearConfirmDescription": "Thao tác này sẽ xóa tất cả tin nhắn và lịch sử trò chuyện đã lưu. Không thể hoàn tác thao tác này.",
+      "clearConfirmCancel": "Hủy",
+      "clearConfirmButton": "Xóa cuộc trò chuyện"
     },
     "querySettings": {
       "parametersTitle": "Tham Số",

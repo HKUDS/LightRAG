@@ -448,10 +448,10 @@
       "queryEmpty": "Bitte geben Sie eine Frage ein, bevor Sie senden.",
       "queryTooShort": "Ihre Abfrage ist zu kurz. Geben Sie mindestens 3 englische Zeichen oder eine gleichwertige Kombination ein; jedes chinesische, japanische oder koreanische Zeichen zählt doppelt.",
       "dismissError": "Fehlermeldung schließen",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "Unterhaltung löschen?",
+      "clearConfirmDescription": "Dadurch werden alle Nachrichten und der gespeicherte Chat-Verlauf entfernt. Diese Aktion kann nicht rückgängig gemacht werden.",
+      "clearConfirmCancel": "Abbrechen",
+      "clearConfirmButton": "Unterhaltung löschen"
     },
     "querySettings": {
       "parametersTitle": "Parameter",

@@ -448,10 +448,10 @@
       "queryEmpty": "يرجى إدخال سؤال قبل الإرسال.",
       "queryTooShort": "الاستعلام قصير جدًا. أدخل ما يعادل 3 أحرف إنجليزية على الأقل؛ يُحسب كل حرف صيني أو ياباني أو كوري بحرفين.",
       "dismissError": "إغلاق رسالة الخطأ",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "مسح المحادثة؟",
+      "clearConfirmDescription": "سيؤدي هذا إلى إزالة جميع الرسائل وسجل المحادثة المحفوظ. لا يمكن التراجع عن هذا الإجراء.",
+      "clearConfirmCancel": "إلغاء",
+      "clearConfirmButton": "مسح المحادثة"
     },
     "querySettings": {
       "parametersTitle": "المعلمات",

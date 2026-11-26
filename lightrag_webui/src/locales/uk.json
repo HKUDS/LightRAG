@@ -448,10 +448,10 @@
       "queryEmpty": "Введіть запитання перед надсиланням.",
       "queryTooShort": "Запит надто короткий. Введіть щонайменше 3 англійські символи або еквівалентну комбінацію; кожен китайський, японський або корейський символ рахується як 2.",
       "dismissError": "Закрити повідомлення про помилку",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "Очистити розмову?",
+      "clearConfirmDescription": "Усі повідомлення та збережена історія чату будуть видалені. Цю дію неможливо скасувати.",
+      "clearConfirmCancel": "Скасувати",
+      "clearConfirmButton": "Очистити розмову"
     },
     "querySettings": {
       "parametersTitle": "Параметри",

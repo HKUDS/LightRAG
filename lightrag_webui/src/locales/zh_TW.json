@@ -448,10 +448,10 @@
       "queryEmpty": "傳送前請先輸入問題。",
       "queryTooShort": "查詢內容太短。請至少輸入 3 個英文字元或等效組合；每個中日韓字元按 2 個英文字元計算。",
       "dismissError": "關閉錯誤提示",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "清空對話？",
+      "clearConfirmDescription": "此操作將刪除所有訊息和已儲存的聊天歷史，且無法復原。",
+      "clearConfirmCancel": "取消",
+      "clearConfirmButton": "清空對話"
     },
     "querySettings": {
       "parametersTitle": "參數",

@@ -448,10 +448,10 @@
       "queryEmpty": "送信する前に質問を入力してください。",
       "queryTooShort": "クエリが短すぎます。英字3文字以上または同等の組み合わせを入力してください。日本語・中国語・韓国語の1文字は英字2文字として数えます。",
       "dismissError": "エラーメッセージを閉じる",
-      "clearConfirmTitle": "Clear Conversation?",
-      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
-      "clearConfirmCancel": "Cancel",
-      "clearConfirmButton": "Clear Conversation"
+      "clearConfirmTitle": "会話をクリアしますか？",
+      "clearConfirmDescription": "すべてのメッセージと保存されたチャット履歴が削除されます。この操作は元に戻せません。",
+      "clearConfirmCancel": "キャンセル",
+      "clearConfirmButton": "会話をクリア"
     },
     "querySettings": {
       "parametersTitle": "パラメータ",
