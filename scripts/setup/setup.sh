@@ -158,7 +158,7 @@ normalize_vllm_rerank_binding_state() {
   fi
 }
 
-# Backfill sentinel hosts for bedrock/gemini bindings when LLM_BINDING_HOST or
+# Backfill sentinel hosts for bedrock/gemini/voyageai bindings when LLM_BINDING_HOST or
 # EMBEDDING_BINDING_HOST is missing or empty. Flows that skip collect_llm_config /
 # collect_embedding_config (--server, --storage) would otherwise let the openai URL
 # hardcoded in env.example leak into the regenerated .env.
@@ -171,6 +171,7 @@ normalize_provider_binding_hosts() {
   case "${ENV_VALUES[EMBEDDING_BINDING]:-}" in
     bedrock) embedding_sentinel="DEFAULT_BEDROCK_ENDPOINT" ;;
     gemini) embedding_sentinel="DEFAULT_GEMINI_ENDPOINT" ;;
+    voyageai) embedding_sentinel="DEFAULT_VOYAGEAI_ENDPOINT" ;;
   esac
   if [[ -n "$llm_sentinel" && -z "${ENV_VALUES[LLM_BINDING_HOST]:-}" ]]; then
     ENV_VALUES["LLM_BINDING_HOST"]="$llm_sentinel"
@@ -2421,6 +2422,9 @@ default_embedding_model_for_binding() {
     gemini)
       printf 'gemini-embedding-001'
       ;;
+    voyageai)
+      printf 'voyage-3'
+      ;;
     bedrock)
       printf 'amazon.titan-embed-text-v2:0'
       ;;
@@ -2440,7 +2444,7 @@ default_embedding_dim_for_binding() {
     openai|azure_openai)
       printf '3072'
       ;;
-    ollama|bedrock|lollms)
+    ollama|bedrock|lollms|voyageai)
       printf '1024'
       ;;
     jina)
@@ -2524,7 +2528,7 @@ collect_llm_config() {
 }
 
 collect_embedding_config() {
-  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock")
+  local options=("openai" "azure_openai" "ollama" "jina" "lollms" "gemini" "bedrock" "voyageai")
   local current_binding="${ENV_VALUES[EMBEDDING_BINDING]:-openai}"
   local binding model model_default host host_default api_key dim dim_default
 
@@ -2580,6 +2584,13 @@ collect_embedding_config() {
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://api.jina.ai/v1/embeddings}")"
       host="$(prompt_with_default "Jina endpoint" "$host_default")"
       api_key="$(prompt_secret_until_valid_with_default "Jina API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key jina)"
+      ;;
+    voyageai)
+      # DEFAULT_VOYAGEAI_ENDPOINT lets the SDK pick the host from the key type;
+      # set a URL only for a gateway or proxy in front of VoyageAI.
+      host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "DEFAULT_VOYAGEAI_ENDPOINT")"
+      host="$(prompt_with_default "VoyageAI endpoint" "$host_default")"
+      api_key="$(prompt_secret_until_valid_with_default "VoyageAI API key: " "${ENV_VALUES[EMBEDDING_BINDING_API_KEY]:-$llm_api_key_default}" validate_api_key voyageai)"
       ;;
     *)
       host_default="$(provider_default_or_existing "$binding" "$current_binding" "${ENV_VALUES[EMBEDDING_BINDING_HOST]:-}" "${llm_host_fallback:-https://api.openai.com/v1}")"
