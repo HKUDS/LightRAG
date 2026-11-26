@@ -980,6 +980,23 @@ def _looks_like_json_extraction_result(result: str) -> bool:
     return False
 
 
+def _json_extraction_field_text(value: Any, list_separator: str | None) -> str:
+    """Read one JSON extraction field as the text the record parsers expect.
+
+    A JSON ``null`` is an empty field, never the string ``"None"``. With a
+    ``list_separator``, an array (``"keywords": ["a", "b"]``) is joined into
+    the separated string the delimited text format carries, so it is not
+    stored as its Python repr. Without one, an array stays ``str()``.
+    """
+    if value is None:
+        return ""
+    if list_separator is not None and isinstance(value, (list, tuple)):
+        return list_separator.join(
+            str(item) for item in value if item is not None and str(item).strip()
+        )
+    return str(value)
+
+
 async def _process_json_extraction_result(
     result: str,
     chunk_key: str,
@@ -1049,7 +1066,8 @@ async def _process_json_extraction_result(
 
         try:
             entity_name = normalize_entity_name(
-                str(entity_data.get("name", "")), final_space_pass=False
+                _json_extraction_field_text(entity_data.get("name"), None),
+                final_space_pass=False,
             )
             if not entity_name or not entity_name.strip():
                 logger.info(
@@ -1058,7 +1076,8 @@ async def _process_json_extraction_result(
                 continue
 
             entity_type = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("type", "")), remove_inner_quotes=True
+                _json_extraction_field_text(entity_data.get("type"), ", "),
+                remove_inner_quotes=True,
             )
             entity_type = _normalize_and_validate_entity_type(
                 entity_type, f"{chunk_key}: entity '{entity_name}'"
@@ -1067,7 +1086,8 @@ async def _process_json_extraction_result(
                 continue
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("description", "")), multiline=True
+                _json_extraction_field_text(entity_data.get("description"), "\n"),
+                multiline=True,
             )
             if not entity_description.strip():
                 logger.warning(
@@ -1111,10 +1131,12 @@ async def _process_json_extraction_result(
 
         try:
             source = normalize_entity_name(
-                str(rel_data.get("source", "")), final_space_pass=False
+                _json_extraction_field_text(rel_data.get("source"), None),
+                final_space_pass=False,
             )
             target = normalize_entity_name(
-                str(rel_data.get("target", "")), final_space_pass=False
+                _json_extraction_field_text(rel_data.get("target"), None),
+                final_space_pass=False,
             )
 
             if not source:
@@ -1132,12 +1154,14 @@ async def _process_json_extraction_result(
                 continue
 
             edge_keywords = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("keywords", "")), remove_inner_quotes=True
+                _json_extraction_field_text(rel_data.get("keywords"), ", "),
+                remove_inner_quotes=True,
             )
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("description", "")), multiline=True
+                _json_extraction_field_text(rel_data.get("description"), "\n"),
+                multiline=True,
             )
 
             if not edge_description.strip():

@@ -50,3 +50,46 @@ async def test_process_json_extraction_top_level_array_yields_nothing() -> None:
     )
     assert nodes == {}
     assert edges == {}
+
+
+@pytest.mark.asyncio
+async def test_process_json_extraction_reads_array_fields_as_text() -> None:
+    """``"keywords": ["a", "b"]`` and ``"type": ["person"]`` are joined like the
+    text format's comma-separated fields, not stored as their Python repr: the
+    repr gave the keywords ``['marriage', 'collaboration']`` and, through its
+    quotes, made the entity type invalid, which dropped the whole entity."""
+    raw = (
+        '{"entities":[{"name":"Marie Curie","type":["person"],'
+        '"description":["A physicist.","A chemist."]}],'
+        '"relationships":[{"source":"Marie Curie","target":"Pierre Curie",'
+        '"keywords":["marriage","collaboration"],'
+        '"description":"Married and researched radioactivity together."}]}'
+    )
+    nodes, edges = await _process_json_extraction_result(
+        raw, chunk_key="chunk-1", timestamp=1, file_path="doc.pdf"
+    )
+    assert nodes["Marie Curie"][0]["entity_type"] == "person"
+    assert nodes["Marie Curie"][0]["description"] == "A physicist.\nA chemist."
+    edge = edges[("Marie Curie", "Pierre Curie")][0]
+    assert edge["keywords"] == "marriage, collaboration"
+
+
+@pytest.mark.asyncio
+async def test_process_json_extraction_reads_null_fields_as_empty() -> None:
+    """A JSON ``null`` is an empty field, not the string ``"None"``: null
+    keywords are stored empty, and a null name or description drops its record
+    as an empty one does."""
+    raw = (
+        '{"entities":[{"name":"Alice","type":"person","description":null},'
+        '{"name":null,"type":"person","description":"nameless"},'
+        '{"name":"Acme","type":"organization","description":"a company"}],'
+        '"relationships":[{"source":"Alice","target":"Acme","keywords":null,'
+        '"description":"Alice works at Acme"},'
+        '{"source":null,"target":"Acme","keywords":"x","description":"orphan"}]}'
+    )
+    nodes, edges = await _process_json_extraction_result(
+        raw, chunk_key="chunk-1", timestamp=1, file_path="doc.pdf"
+    )
+    assert set(nodes) == {"Acme"}
+    assert set(edges) == {("Alice", "Acme")}
+    assert edges[("Alice", "Acme")][0]["keywords"] == ""
