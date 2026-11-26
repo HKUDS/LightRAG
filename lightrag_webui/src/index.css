@@ -66,6 +66,9 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* Tell the browser which palette native form controls and scrollbars
+     should render with; the .dark class below flips it. */
+  color-scheme: light;
   --background: hsl(0 0% 100%);
   --foreground: hsl(240 10% 3.9%);
   --card: hsl(0 0% 100%);
@@ -80,7 +83,10 @@
   --muted-foreground: hsl(240 3.8% 46.1%);
   --accent: hsl(240 4.8% 95.9%);
   --accent-foreground: hsl(240 5.9% 10%);
-  --destructive: hsl(0 84.2% 60.2%);
+  /* Dark enough for the 98% foreground to reach WCAG AA (4.5:1) on it —
+     including the /80 hover tint — and for the token itself to read as text
+     on --background. */
+  --destructive: hsl(0 72% 41%);
   --destructive-foreground: hsl(0 0% 98%);
   --border: hsl(240 5.9% 90%);
   --input: hsl(240 5.9% 90%);
@@ -102,6 +108,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: hsl(240 10% 3.9%);
   --foreground: hsl(0 0% 98%);
   --card: hsl(240 10% 3.9%);
@@ -116,8 +123,11 @@
   --muted-foreground: hsl(240 5% 64.9%);
   --accent: hsl(240 3.7% 15.9%);
   --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(0 0% 98%);
+  /* Light enough to read as text on the near-black --background (Alert);
+     the foreground flips to near-black so Badge/Button text stays AA on it,
+     including the /80 hover tint. */
+  --destructive: hsl(0 70% 72%);
+  --destructive-foreground: hsl(0 0% 9%);
   --border: hsl(240 3.7% 15.9%);
   --input: hsl(240 3.7% 15.9%);
   --ring: hsl(240 4.9% 83.9%);
@@ -208,6 +218,36 @@
 
   ::-webkit-scrollbar-track {
     background-color: hsl(0 0% 0%);
+  }
+}
+
+/* Reduced motion: stop looping and spatial movement, keep non-motion
+   feedback. Scoped overrides, NOT a blanket animation-duration reset (which
+   can make some animations more jarring). Unlayered rules beat Tailwind's
+   utilities layer; Radix Presence unmounts immediately when animation-name
+   computes to none, so dialogs/popovers still close. The !important also
+   reaches third-party unlayered styles (sonner). Canvas/WebGL graph rendering
+   is JS-driven and out of reach of CSS. */
+@media (prefers-reduced-motion: reduce) {
+  /* Looping indicators complete one cycle, then hold still. */
+  .animate-spin,
+  .animate-pulse {
+    animation-iteration-count: 1;
+  }
+
+  /* Spatial enter/exit keyframes (zoom/slide) resolve straight to the final
+     state instead of moving; nothing is left hidden at opacity 0. */
+  .animate-in,
+  .animate-out {
+    animation: none;
+  }
+
+  /* Transitions keep color/opacity/shadow feedback; movement becomes instant. */
+  *,
+  *::before,
+  *::after {
+    transition-property: color, background-color, border-color, opacity, box-shadow, fill,
+      stroke !important;
   }
 }
 
