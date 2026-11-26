@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useId } from 'react'
 import { Check, ChevronsUpDown, Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
@@ -95,6 +95,7 @@ export function AsyncSelect<T>({
   clearable = true,
   debounceTime = 150
 }: AsyncSelectProps<T>) {
+  const listboxId = useId()
   const [open, setOpen] = useState(false)
   const [originalOptions, setOriginalOptions] = useState<T[]>([])
   const [loading, setLoading] = useState(false)
@@ -176,6 +177,8 @@ export function AsyncSelect<T>({
           variant="outline"
           role="combobox"
           aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-controls={listboxId}
           aria-label={ariaLabel}
           className={cn(
             'justify-between',
@@ -192,7 +195,6 @@ export function AsyncSelect<T>({
       </PopoverTrigger>
       <PopoverContent
         className={cn('p-0', className)}
-        onCloseAutoFocus={(e) => e.preventDefault()}
         align="start"
         sideOffset={8}
         collisionPadding={5}
@@ -213,7 +215,7 @@ export function AsyncSelect<T>({
               </div>
             )}
           </div>
-          <CommandList>
+          <CommandList id={listboxId}>
             {error && <div className="text-destructive p-4 text-center">{error}</div>}
             {loading && options.length === 0 && (loadingSkeleton || <DefaultLoadingSkeleton />)}
             {!loading &&
@@ -238,7 +240,7 @@ export function AsyncSelect<T>({
                     onSelect={() => {
                       handleSelect(optionValue);
                     }}
-                    className="truncate"
+                    className="truncate [content-visibility:auto] [contain-intrinsic-size:auto_2rem]"
                   >
                     {renderOption(option)}
                     <Check

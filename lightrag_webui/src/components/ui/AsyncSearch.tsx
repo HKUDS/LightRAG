@@ -83,6 +83,7 @@ export function AsyncSearch<T>({
   const [searchTerm, setSearchTerm] = useState('')
   const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
   const containerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const requestGeneration = useRef(0)
 
   useEffect(() => () => { requestGeneration.current += 1 }, [])
@@ -149,20 +150,23 @@ export function AsyncSearch<T>({
 
   const handleSelect = useCallback((currentValue: string) => {
     onChange(currentValue)
-    requestAnimationFrame(() => {
-      // Blur the input to ensure focus event triggers on next click
-      const input = document.activeElement as HTMLElement
-      input?.blur()
-      // Close the dropdown
-      setOpen(false)
-    })
+    setOpen(false)
+    inputRef.current?.focus()
   }, [onChange])
 
   const handleFocus = useCallback(() => {
+    if (disabled) return
     setOpen(true)
     // Use current search term to fetch options
     fetchOptions(searchTerm)
-  }, [searchTerm, fetchOptions])
+  }, [disabled, searchTerm, fetchOptions])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setOpen(false)
+    }
+  }, [])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
@@ -175,16 +179,26 @@ export function AsyncSearch<T>({
     <div
       ref={containerRef}
       className={cn(disabled && 'cursor-not-allowed opacity-50', className)}
+      aria-disabled={disabled || undefined}
       onMouseDown={handleMouseDown}
     >
       <Command shouldFilter={false} className="bg-transparent">
         <div>
           <CommandInput
+            ref={inputRef}
             placeholder={placeholder}
             value={searchTerm}
             className="max-h-8"
             aria-label={ariaLabel}
+            disabled={disabled}
             onFocus={handleFocus}
+            onKeyDown={handleKeyDown}
+            onClick={() => {
+              if (!disabled && !open) {
+                setOpen(true)
+                fetchOptions(searchTerm)
+              }
+            }}
             onValueChange={(value) => {
               setSearchTerm(value)
               if (!open) setOpen(true)
@@ -213,7 +227,7 @@ export function AsyncSearch<T>({
                   value={getOptionValue(option)}
                   onSelect={handleSelect}
                   onMouseMove={() => onFocus(getOptionValue(option))}
-                  className="truncate cmd-item"
+                  className="truncate cmd-item [content-visibility:auto] [contain-intrinsic-size:auto_2rem]"
                 >
                   {renderOption(option)}
                 </CommandItem>

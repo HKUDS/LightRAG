@@ -16,28 +16,29 @@ const Text = ({
   side?: 'top' | 'right' | 'bottom' | 'left'
   onClick?: () => void
 }) => {
-  if (!tooltip) {
-    return (
-      <label
-        className={cn(className, onClick !== undefined ? 'cursor-pointer' : undefined)}
+  const trigger =
+    onClick !== undefined ? (
+      <button
+        type="button"
+        className={cn('appearance-none border-0 bg-transparent p-0 text-left [font:inherit] cursor-pointer', className)}
         onClick={onClick}
       >
         {text}
+      </button>
+    ) : (
+      <label className={className} tabIndex={tooltip ? 0 : undefined}>
+        {text}
       </label>
     )
+
+  if (!tooltip) {
+    return trigger
   }
 
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
-        <TooltipTrigger asChild>
-          <label
-            className={cn(className, onClick !== undefined ? 'cursor-pointer' : undefined)}
-            onClick={onClick}
-          >
-            {text}
-          </label>
-        </TooltipTrigger>
+        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
         <TooltipContent side={side} className={tooltipClassName}>
           {tooltip}
         </TooltipContent>

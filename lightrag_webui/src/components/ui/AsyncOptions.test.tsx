@@ -44,3 +44,59 @@ describe.each(['search', 'select'] as const)('Async %s results', (kind) => {
     expect(screen.queryAllByText('New entity').length).toBe(1)
   })
 })
+
+describe('Async primitive accessibility', () => {
+  test('AsyncSearch disabled actually disables the input', () => {
+    renderWithProviders(
+      <AsyncSearch
+        fetcher={() => Promise.resolve<string[]>([])}
+        renderOption={(o: string) => <span>{o}</span>}
+        getOptionValue={(o: string) => o}
+        onChange={() => {}}
+        onFocus={() => {}}
+        value={null}
+        disabled
+        placeholder="Search entities"
+      />
+    )
+    const input = screen.getByPlaceholderText('Search entities') as HTMLInputElement
+    expect(input.disabled).toBe(true)
+  })
+
+  test('AsyncSearch keeps focus on the input after selecting an option', async () => {
+    renderWithProviders(
+      <AsyncSearch
+        fetcher={() => Promise.resolve(['Alpha'])}
+        preload
+        renderOption={(o: string) => <span>{o}</span>}
+        getOptionValue={(o: string) => o}
+        onChange={() => {}}
+        onFocus={() => {}}
+        value={null}
+        placeholder="Search entities"
+      />
+    )
+    const input = screen.getByPlaceholderText('Search entities')
+    fireEvent.focus(input)
+    const option = await screen.findByText('Alpha')
+    fireEvent.click(option)
+    expect(document.activeElement === input).toBe(true)
+  })
+
+  test('AsyncSelect combobox advertises its listbox', async () => {
+    renderWithProviders(
+      <AsyncSelect
+        fetcher={() => Promise.resolve<string[]>([])}
+        renderOption={(o: string) => <span>{o}</span>}
+        getOptionValue={(o: string) => o}
+        getDisplayValue={(o: string) => o}
+        onChange={() => {}}
+        value=""
+        ariaLabel="Pick entity"
+      />
+    )
+    const combobox = screen.getByRole('combobox', { name: 'Pick entity' })
+    expect(combobox.getAttribute('aria-haspopup')).toBe('listbox')
+    expect(combobox.hasAttribute('aria-controls')).toBe(true)
+  })
+})
