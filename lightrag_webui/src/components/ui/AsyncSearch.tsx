@@ -150,8 +150,10 @@ export function AsyncSearch<T>({
 
   const handleSelect = useCallback((currentValue: string) => {
     onChange(currentValue)
-    setOpen(false)
+    // Focus BEFORE closing: when focus had left the input, focus() re-fires
+    // handleFocus (setOpen(true)); closing last makes the close win either way.
     inputRef.current?.focus()
+    setOpen(false)
   }, [onChange])
 
   const handleFocus = useCallback(() => {
@@ -162,11 +164,14 @@ export function AsyncSearch<T>({
   }, [disabled, searchTerm, fetchOptions])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Escape') {
+    // Consume Escape only while open: a prevented Escape while closed would
+    // block a parent Radix Dialog's dismissal (DismissableLayer checks
+    // defaultPrevented).
+    if (e.key === 'Escape' && open) {
       e.preventDefault()
       setOpen(false)
     }
-  }, [])
+  }, [open])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
