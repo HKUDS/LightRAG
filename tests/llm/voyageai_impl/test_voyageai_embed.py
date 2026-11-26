@@ -62,6 +62,32 @@ async def test_voyageai_embed_passes_model(patched_async_client):
     assert captured[0]["model"] == "voyage-3-lite"
 
 
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        (None, None),
+        ("  ", None),
+        ("DEFAULT_VOYAGEAI_ENDPOINT", None),
+        (" https://voyage-gw.example/v1 ", "https://voyage-gw.example/v1"),
+    ],
+    ids=["unset", "blank", "sentinel", "gateway"],
+)
+@pytest.mark.asyncio
+async def test_voyageai_embed_base_url_reaches_client(
+    patched_async_client, base_url, expected
+):
+    """An unset/sentinel endpoint must leave base_url to the SDK (it derives
+    the host from the key type); a real URL is passed through, stripped."""
+    _, client_cls = patched_async_client
+    from lightrag.llm.voyageai import voyageai_embed
+
+    await voyageai_embed.func(texts=["x"], api_key="fake", base_url=base_url)
+
+    client_kwargs = client_cls.call_args.kwargs
+    assert client_kwargs.get("base_url") == expected
+    assert ("base_url" in client_kwargs) == (expected is not None)
+
+
 @pytest.mark.asyncio
 async def test_voyageai_embed_accepts_legacy_voyage_api_key(
     patched_async_client, monkeypatch
