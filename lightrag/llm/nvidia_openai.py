@@ -73,7 +73,9 @@ async def nvidia_openai_embed(
     if input_type is None:
         input_type = "query" if context == "query" else "passage"
 
-    client_kwargs = {}
+    # @retry above owns retries. The SDK defaults to max_retries=2, which
+    # would turn each of its attempts into up to three requests.
+    client_kwargs = {"max_retries": 0}
     if base_url is not None:
         client_kwargs["base_url"] = base_url
     if api_key:
