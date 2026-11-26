@@ -563,6 +563,18 @@ confirm_default_yes() { return 1; }
             "1024",
             "",
         ),
+        (
+            "collect_embedding_config",
+            "EMBEDDING",
+            "voyageai",
+            "prompt_secret_until_valid_with_default() { printf 'voyage-secret-key'; }",
+            "voyageai",
+            "voyage-3",
+            # The SDK-default sentinel, not the generic branch's OpenAI URL.
+            "DEFAULT_VOYAGEAI_ENDPOINT",
+            "1024",
+            "set",
+        ),
     ],
     ids=[
         "llm-provider-defaults",
@@ -571,6 +583,7 @@ confirm_default_yes() { return 1; }
         "llm-bedrock-sentinel-default",
         "embedding-gemini-sentinel-default",
         "embedding-bedrock-sentinel-default",
+        "embedding-voyageai-sentinel-default",
     ],
 )
 def test_collect_provider_config_uses_provider_specific_defaults(
