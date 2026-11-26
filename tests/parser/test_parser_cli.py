@@ -270,3 +270,21 @@ def test_cli_direct_script_native_does_not_shadow_python_docx(
     assert "python-docx not installed" not in proc.stderr
     assert (tmp_path / "demo.docx.parsed" / "demo.blocks.jsonl").is_file()
     assert source.is_file()
+
+
+def test_cli_runs_without_the_native_docx_dependencies(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The native DOCX parser needs python-docx and defusedxml, which only the
+    # ``api`` extra installs. Without them the CLI must still debug the other
+    # engines instead of failing on the import of the DOCX parser's error.
+    monkeypatch.setitem(sys.modules, "lightrag.parser.docx.parse_document", None)
+    source = tmp_path / "notes.txt"
+    source.write_text("hello world\n", encoding="utf-8")
+
+    rc = main([str(source), "--engine", "legacy"])
+
+    assert rc == 0
+    assert "hello world" in capsys.readouterr().out

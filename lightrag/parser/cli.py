@@ -160,10 +160,18 @@ async def _run(args: argparse.Namespace) -> int:
     from lightrag.parser.external._base import ExternalParserBase
     from lightrag.parser.registry import get_parser, suffix_capabilities
     from lightrag.parser.debug import build_debug_rag
-    from lightrag.parser.docx.parse_document import DocxContentError
     from lightrag.utils import compute_mdhash_id
     import lightrag.pipeline as pipeline_mod
     import lightrag.utils_pipeline as utils_pipeline_mod
+
+    try:
+        from lightrag.parser.docx.parse_document import DocxContentError
+    except ImportError:
+        # The native DOCX parser needs python-docx and defusedxml (the ``api``
+        # extra). Without them it cannot run, so nothing raises its error:
+        # the other engines are debugged as usual.
+        class DocxContentError(Exception):  # type: ignore[no-redef]
+            pass
 
     source = args.input_file.resolve()
     if not source.is_file():
