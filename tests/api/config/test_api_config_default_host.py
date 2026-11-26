@@ -29,11 +29,19 @@ def test_default_host_and_its_override(monkeypatch, binding, default):
     assert get_default_host(binding) == "https://gateway.example/v1"
 
 
-def test_azure_default_ignores_llm_host(monkeypatch):
+@pytest.mark.parametrize(
+    ("binding", "expected"),
+    [
+        ("azure_openai", "https://azure.example"),
+        # Embedding-only: an LLM gateway URL must never become its endpoint.
+        ("voyageai", "DEFAULT_VOYAGEAI_ENDPOINT"),
+    ],
+)
+def test_default_ignores_llm_host(monkeypatch, binding, expected):
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
     monkeypatch.setenv("LLM_BINDING_HOST", "https://gateway.example/v1")
 
-    assert get_default_host("azure_openai") == "https://azure.example"
+    assert get_default_host(binding) == expected
 
 
 @pytest.mark.parametrize(

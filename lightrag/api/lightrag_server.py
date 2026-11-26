@@ -1009,6 +1009,7 @@ def create_optimized_embedding_function(
                     "texts": texts,
                     "api_key": api_key,
                     "embedding_dim": embedding_dim,
+                    "base_url": host,
                 }
                 if model:
                     kwargs["model"] = model
