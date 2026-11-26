@@ -3126,15 +3126,24 @@ async def _merge_entities_impl(
     if target_exists and target_entity not in source_entities:
         entities_to_collect.append(target_entity)
 
+    # get_node_edges does not say which endpoint comes first: some backends
+    # list the queried node first, others (MongoDB, Memgraph, OpenSearch) keep
+    # the stored direction. Relations are undirected, so take every incident
+    # edge whichever side the entity is on. An edge between two collected
+    # entities is listed by both; it always becomes a self-loop and is skipped
+    # below, so seen_edges only saves its second get_edge read.
+    seen_edges: set[tuple[str, str]] = set()
     for entity_name in entities_to_collect:
         # Get all relationships of the entities
         edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
         if edges:
             for src, tgt in edges:
-                # Ensure src is the current entity
-                if src == entity_name:
-                    edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
-                    all_relations.append((src, tgt, edge_data))
+                edge_key = (src, tgt) if src <= tgt else (tgt, src)
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
+                all_relations.append((src, tgt, edge_data))
 
     # 5. Create or update the target entity. A missing target is intentional:
     # spelling-repair merges may consolidate sources into a new canonical name.
