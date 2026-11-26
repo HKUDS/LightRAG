@@ -1043,12 +1043,16 @@ class _FakeTruncatedSession(_FakeSession):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stop_reason", "truncated"),
-    [("max_tokens", True), ("end_turn", False)],
+    [
+        ("max_tokens", True),
+        ("model_context_window_exceeded", True),
+        ("end_turn", False),
+    ],
 )
 async def test_bedrock_stop_reason_sets_truncation_marker(
     monkeypatch, stop_reason, truncated
 ):
-    """Only Converse stopReason == "max_tokens" flags the response uncacheable."""
+    """A token-limit stopReason flags the response uncacheable."""
     from lightrag.utils import is_truncated_response
 
     monkeypatch.delenv("AWS_REGION", raising=False)
@@ -1127,6 +1131,30 @@ async def test_bedrock_empty_max_tokens_response_names_the_token_limit(monkeypat
     assert f"reasoning_content_len={len('internal thought')}" in message
     assert "budget consumed by reasoning" in message
     assert "BEDROCK_LLM_MAX_TOKENS" in message
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_bedrock_empty_context_window_response_names_the_context_limit(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with patch(
+        "lightrag.llm.bedrock.aioboto3.Session",
+        return_value=_empty_response_session(
+            [], stop_reason="model_context_window_exceeded", reasoning=False
+        ),
+    ):
+        with pytest.raises(Exception) as excinfo:
+            await bedrock_complete_if_cache.__wrapped__(
+                model="bedrock-model", prompt="Extract"
+            )
+
+    message = str(excinfo.value)
+    assert "stopReason=model_context_window_exceeded" in message
+    assert "larger context window" in message
+    assert "model produced no output" not in message
 
 
 @pytest.mark.offline
