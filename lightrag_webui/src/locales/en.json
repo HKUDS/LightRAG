@@ -109,6 +109,7 @@
       "generalError": "Upload Failed\n{{error}}",
       "fileTypes": "Supported types: {{types}}",
       "fileUploader": {
+        "uploadProgress": "Upload progress",
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
         "fileRejected": "File {{name}} was rejected",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "Select document {{name}}",
       "title": "Document Management",
       "scanButton": "Scan/Retry",
       "scanTooltip": "Scan and process documents in input folder, and also reprocess all failed documents",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "Align left",
+      "positionCenter": "Align center",
+      "positionRight": "Align right",
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
       "cancellationRequested": "Cancellation Requested",

@@ -400,8 +400,16 @@ interface ProgressProps {
 }
 
 function Progress({ value, error }: ProgressProps) {
+  const { t } = useTranslation()
   return (
-    <div className="relative h-2 w-full">
+    <div
+      className="relative h-2 w-full"
+      role="progressbar"
+      aria-label={t('documentPanel.uploadDocuments.fileUploader.uploadProgress')}
+      aria-valuenow={value}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
       <div className="h-full w-full overflow-hidden rounded-full bg-secondary">
         <div
           className={cn(

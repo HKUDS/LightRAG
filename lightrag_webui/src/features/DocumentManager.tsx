@@ -378,6 +378,82 @@ type RefreshRequest =
  */
 const DOCUMENT_REFRESH_FAILURE_TOAST_ID = 'document-refresh-failed'
 
+// --- URL query sync -------------------------------------------------------
+// The app uses HashRouter, so the panel's query lives INSIDE the fragment:
+// '#/?page=2&status=failed&sort=created_at&order=asc'. Only non-default
+// values are written, keeping a default-state panel's URL untouched. Parsing
+// happens here, at the boundary: anything invalid reads as null and falls
+// back to the panel default.
+
+const URL_STATUS_FILTERS: readonly StatusFilter[] = [
+  'all', 'completed', 'parse', 'analyze', 'process', 'deleting', 'failed'
+]
+const URL_SORT_FIELDS: readonly SortField[] = ['created_at', 'updated_at', 'id', 'file_path']
+
+type DocumentUrlState = {
+  page: number | null
+  statusFilter: StatusFilter | null
+  sortField: SortField | null
+  sortDirection: SortDirection | null
+}
+
+const readDocumentUrlState = (): DocumentUrlState => {
+  const hash = window.location.hash
+  const queryIndex = hash.indexOf('?')
+  const params = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '')
+
+  const pageParam = Number(params.get('page'))
+  const statusParam = params.get('status')
+  const sortParam = params.get('sort')
+  const orderParam = params.get('order')
+
+  return {
+    page: Number.isInteger(pageParam) && pageParam >= 1 ? pageParam : null,
+    statusFilter: URL_STATUS_FILTERS.find((value) => value === statusParam) ?? null,
+    sortField: URL_SORT_FIELDS.find((value) => value === sortParam) ?? null,
+    sortDirection: orderParam === 'asc' || orderParam === 'desc' ? orderParam : null
+  }
+}
+
+const writeDocumentUrlState = (state: {
+  page: number
+  statusFilter: StatusFilter
+  sortField: SortField
+  sortDirection: SortDirection
+}): void => {
+  const hash = window.location.hash
+  const queryIndex = hash.indexOf('?')
+  const path = queryIndex >= 0 ? hash.slice(0, queryIndex) : hash
+  const existing = new URLSearchParams(queryIndex >= 0 ? hash.slice(queryIndex + 1) : '')
+
+  // Rebuilt in a fixed order so the URL does not churn with the order of
+  // user actions; params owned by anything else are appended untouched.
+  const params = new URLSearchParams()
+  if (state.page > 1) params.set('page', String(state.page))
+  if (state.statusFilter !== 'all') params.set('status', state.statusFilter)
+  if (state.sortField !== 'updated_at' || state.sortDirection !== 'desc') {
+    params.set('sort', state.sortField)
+    params.set('order', state.sortDirection)
+  }
+  for (const [key, value] of existing) {
+    if (key !== 'page' && key !== 'status' && key !== 'sort' && key !== 'order') {
+      params.append(key, value)
+    }
+  }
+
+  const query = params.toString()
+  const nextHash = query ? `${path || '#/'}?${query}` : path
+  if (nextHash !== hash) {
+    window.location.hash = nextHash
+  }
+}
+
+// Shared look of the three sortable header buttons: a real <button> inside
+// the <th> so sorting is keyboard-operable; the negative margin stretches it
+// over the cell padding so the hover target stays the whole header cell.
+const SORT_HEADER_BUTTON_CLASS =
+  '-mx-2 flex h-10 cursor-pointer items-center px-2 font-medium hover:bg-gray-200 focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none dark:hover:bg-gray-800'
+
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
@@ -411,16 +487,22 @@ export default function DocumentManager() {
   const documentsPageSize = useSettingsStore.use.documentsPageSize()
   const setDocumentsPageSize = useSettingsStore.use.setDocumentsPageSize()
 
+  // Deep-link support: on mount the URL wins over the defaults below. Read
+  // once through a lazy initializer so every piece of state agrees on the
+  // same snapshot. Hash parsing (not useSearchParams) because this panel is
+  // also rendered outside any Router context.
+  const [initialUrlState] = useState(readDocumentUrlState)
+
   // New pagination state
   const [currentPageDocs, setCurrentPageDocs] = useState<DocStatusResponse[]>([])
-  const [pagination, setPagination] = useState<PaginationInfo>({
-    page: 1,
+  const [pagination, setPagination] = useState<PaginationInfo>(() => ({
+    page: initialUrlState.page ?? 1,
     page_size: documentsPageSize,
     total_count: 0,
     total_pages: 0,
     has_next: false,
     has_prev: false
-  })
+  }))
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
   // Mirror statusCounts in a ref so async callbacks (e.g. activity probe ticks)
   // can read the latest value without being tied to the closure captured at
@@ -435,14 +517,15 @@ export default function DocumentManager() {
   const hasLoadedDocumentsRef = useRef(false)
 
   // Sort state
-  const [sortField, setSortField] = useState<SortField>('updated_at')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [sortField, setSortField] = useState<SortField>(initialUrlState.sortField ?? 'updated_at')
+  const [sortDirection, setSortDirection] = useState<SortDirection>(initialUrlState.sortDirection ?? 'desc')
 
   // State for document status filter
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialUrlState.statusFilter ?? 'all');
 
-  // State to store page number for each status filter
-  const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>({
+  // State to store page number for each status filter. The deep-linked page
+  // seeds its own filter's slot so switching away and back restores it.
+  const [pageByStatus, setPageByStatus] = useState<Record<StatusFilter, number>>(() => ({
     all: 1,
     completed: 1,
     parse: 1,
@@ -450,7 +533,8 @@ export default function DocumentManager() {
     process: 1,
     deleting: 1,
     failed: 1,
-  });
+    [initialUrlState.statusFilter ?? 'all']: initialUrlState.page ?? 1,
+  }));
 
   // State for document selection
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
@@ -527,6 +611,9 @@ export default function DocumentManager() {
       failed: 1,
     });
   };
+
+  const ariaSortFor = (field: SortField): 'ascending' | 'descending' | 'none' =>
+    sortField === field ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'
 
   // Define a new type that includes status information
   type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
@@ -1276,6 +1363,41 @@ export default function DocumentManager() {
     latestRefreshRequestVersionRef.current += 1
   }, [pagination.page, pagination.page_size, statusFilter, sortField, sortDirection])
 
+  // Reflect the panel state into the URL so the view is deep-linkable and
+  // back/forward steps through it. Runs after boundary corrections too, so
+  // the URL always names the page actually on screen.
+  useEffect(() => {
+    writeDocumentUrlState({
+      page: pagination.page,
+      statusFilter,
+      sortField,
+      sortDirection
+    })
+  }, [pagination.page, statusFilter, sortField, sortDirection])
+
+  // Back/forward (or a hand-edited hash) lands here. Absent keys mean the
+  // defaults, so stepping back to a bare '#/' resets the panel. Our own
+  // writes fire this listener as well; the equal-value setStates bail out,
+  // so there is no feedback loop.
+  useEffect(() => {
+    const applyUrlState = () => {
+      const urlState = readDocumentUrlState()
+      const nextPage = urlState.page ?? 1
+      const nextStatus = urlState.statusFilter ?? 'all'
+      const nextSortField = urlState.sortField ?? 'updated_at'
+      const nextSortDirection = urlState.sortDirection ?? 'desc'
+      setPagination(prev => (prev.page === nextPage ? prev : { ...prev, page: nextPage }))
+      setStatusFilter(nextStatus)
+      setSortField(nextSortField)
+      setSortDirection(nextSortDirection)
+      setPageByStatus(prev => (
+        prev[nextStatus] === nextPage ? prev : { ...prev, [nextStatus]: nextPage }
+      ))
+    }
+    window.addEventListener('hashchange', applyUrlState)
+    return () => window.removeEventListener('hashchange', applyUrlState)
+  }, [])
+
   // Monitor pipelineActive changes and trigger an immediate refresh. The
   // polling interval is reconciled by the main polling useEffect below
   // (which also depends on pipelineActive), so there's no need to re-call
@@ -1736,10 +1858,14 @@ export default function DocumentManager() {
                       <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                         <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
                           <TableHead
-                            onClick={() => handleSort('id')}
-                            className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                            aria-sort={ariaSortFor(showFileName ? 'file_path' : 'id')}
+                            className="select-none"
                           >
-                            <div className="flex items-center">
+                            <button
+                              type="button"
+                              onClick={() => handleSort('id')}
+                              className={SORT_HEADER_BUTTON_CLASS}
+                            >
                               {showFileName
                                 ? t('documentPanel.documentManager.columns.fileName')
                                 : t('documentPanel.documentManager.columns.id')
@@ -1749,37 +1875,45 @@ export default function DocumentManager() {
                                   {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                                 </span>
                               )}
-                            </div>
+                            </button>
                           </TableHead>
                           <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
                           <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                           <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                           <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                           <TableHead
-                            onClick={() => handleSort('created_at')}
-                            className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                            aria-sort={ariaSortFor('created_at')}
+                            className="select-none"
                           >
-                            <div className="flex items-center">
+                            <button
+                              type="button"
+                              onClick={() => handleSort('created_at')}
+                              className={SORT_HEADER_BUTTON_CLASS}
+                            >
                               {t('documentPanel.documentManager.columns.created')}
                               {sortField === 'created_at' && (
                                 <span className="ml-1">
                                   {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                                 </span>
                               )}
-                            </div>
+                            </button>
                           </TableHead>
                           <TableHead
-                            onClick={() => handleSort('updated_at')}
-                            className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                            aria-sort={ariaSortFor('updated_at')}
+                            className="select-none"
                           >
-                            <div className="flex items-center">
+                            <button
+                              type="button"
+                              onClick={() => handleSort('updated_at')}
+                              className={SORT_HEADER_BUTTON_CLASS}
+                            >
                               {t('documentPanel.documentManager.columns.updated')}
                               {sortField === 'updated_at' && (
                                 <span className="ml-1">
                                   {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
                                 </span>
                               )}
-                            </div>
+                            </button>
                           </TableHead>
                           <TableHead className="w-16 text-center">
                             {t('documentPanel.documentManager.columns.select')}
@@ -1788,7 +1922,12 @@ export default function DocumentManager() {
                       </TableHeader>
                       <TableBody className="text-sm overflow-auto">
                         {filteredAndSortedDocs.map((doc) => (
-                          <TableRow key={doc.id}>
+                          <TableRow
+                            key={doc.id}
+                            // Offscreen rows skip render/layout; the 'auto' prefix
+                            // lets the browser remember each row's last height.
+                            className="[content-visibility:auto] [contain-intrinsic-size:auto_3.25rem]"
+                          >
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                               {showFileName ? (
                                 <>
@@ -1855,6 +1994,9 @@ export default function DocumentManager() {
                               <Checkbox
                                 checked={selectedDocIds.includes(doc.id)}
                                 onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
+                                aria-label={t('documentPanel.documentManager.selectDocument', {
+                                  name: showFileName ? (doc.file_path || doc.id) : doc.id
+                                })}
                                 // disabled={doc.status !== 'processed'}
                                 className="mx-auto"
                               />

@@ -109,6 +109,7 @@
       "generalError": "Завантаження не вдалося\n{{error}}",
       "fileTypes": "Підтримувані типи: {{types}}",
       "fileUploader": {
+        "uploadProgress": "Upload progress",
         "singleFileLimit": "Не можна завантажити більше 1 файлу одночасно",
         "maxFilesLimit": "Не можна завантажити більше {{count}} файлів",
         "fileRejected": "Файл {{name}} було відхилено",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "Select document {{name}}",
       "title": "Управління документами",
       "scanButton": "Сканувати/Повторити",
       "scanTooltip": "Сканувати та обробити документи в папці введення, а також повторно обробити всі невдалі документи",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "Align left",
+      "positionCenter": "Align center",
+      "positionRight": "Align right",
       "title": "Статус пайплайну",
       "busy": "Пайплайн зайнятий",
       "cancellationRequested": "Запит на скасування",

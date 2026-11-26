@@ -150,6 +150,9 @@ export default function PipelineStatusDialog({
                 position === 'left' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('left')}
+              aria-label={t('documentPanel.pipelineStatus.positionLeft')}
+              aria-pressed={position === 'left'}
+              tooltip={t('documentPanel.pipelineStatus.positionLeft')}
             >
               <AlignLeft className="h-4 w-4" />
             </Button>
@@ -161,6 +164,9 @@ export default function PipelineStatusDialog({
                 position === 'center' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('center')}
+              aria-label={t('documentPanel.pipelineStatus.positionCenter')}
+              aria-pressed={position === 'center'}
+              tooltip={t('documentPanel.pipelineStatus.positionCenter')}
             >
               <AlignCenter className="h-4 w-4" />
             </Button>
@@ -172,6 +178,9 @@ export default function PipelineStatusDialog({
                 position === 'right' && 'bg-zinc-200 text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600'
               )}
               onClick={() => setPosition('right')}
+              aria-label={t('documentPanel.pipelineStatus.positionRight')}
+              aria-pressed={position === 'right'}
+              tooltip={t('documentPanel.pipelineStatus.positionRight')}
             >
               <AlignRight className="h-4 w-4" />
             </Button>
@@ -239,6 +248,8 @@ export default function PipelineStatusDialog({
             <div
               ref={historyRef}
               onScroll={handleScroll}
+              role="log"
+              aria-live="polite"
               className="font-mono text-xs rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto overflow-x-hidden min-h-[7.5em] max-h-[40vh]"
             >
               {status?.history_messages?.length ? (

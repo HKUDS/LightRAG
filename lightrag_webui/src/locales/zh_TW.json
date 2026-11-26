@@ -109,6 +109,7 @@
       "generalError": "上傳失敗\n{{error}}",
       "fileTypes": "支援的檔案類型：{{types}}",
       "fileUploader": {
+        "uploadProgress": "上傳進度",
         "singleFileLimit": "一次只能上傳一個檔案",
         "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
         "fileRejected": "檔案 {{name}} 被拒絕",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "選擇文件 {{name}}",
       "title": "文件管理",
       "scanButton": "掃描/重試",
       "scanTooltip": "掃描處理輸入目錄中的文件，同時重新處理所有失敗的文件",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "靠左對齊",
+      "positionCenter": "置中對齊",
+      "positionRight": "靠右對齊",
       "title": "流水線狀態",
       "busy": "流水線忙碌",
       "cancellationRequested": "取消請求",

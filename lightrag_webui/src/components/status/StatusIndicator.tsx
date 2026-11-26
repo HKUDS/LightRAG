@@ -24,8 +24,9 @@ const StatusIndicator = () => {
 
   return (
     <div className="fixed right-4 bottom-4 flex items-center gap-2 opacity-80 select-none">
-      <div
-        className="flex cursor-pointer items-center gap-2"
+      <button
+        type="button"
+        className="flex cursor-pointer items-center gap-2 appearance-none rounded-sm border-0 bg-transparent p-0 focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
         onClick={() => setDialogOpen(true)}
       >
         <div
@@ -41,7 +42,7 @@ const StatusIndicator = () => {
         <span className="text-muted-foreground text-xs">
           {health ? t('graphPanel.statusIndicator.connected') : t('graphPanel.statusIndicator.disconnected')}
         </span>
-      </div>
+      </button>
 
       <StatusDialog
         open={dialogOpen}

@@ -109,6 +109,7 @@
       "generalError": "Tải Lên Thất Bại\n{{error}}",
       "fileTypes": "Các loại được hỗ trợ: {{types}}",
       "fileUploader": {
+        "uploadProgress": "Upload progress",
         "singleFileLimit": "Không thể tải lên nhiều hơn 1 tệp một lần",
         "maxFilesLimit": "Không thể tải lên nhiều hơn {{count}} tệp",
         "fileRejected": "Tệp {{name}} đã bị từ chối",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "Select document {{name}}",
       "title": "Quản Lý Tài Liệu",
       "scanButton": "Quét/Thử lại",
       "scanTooltip": "Quét và xử lý tài liệu trong thư mục đầu vào, đồng thời xử lý lại tất cả tài liệu thất bại",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "Align left",
+      "positionCenter": "Align center",
+      "positionRight": "Align right",
       "title": "Trạng Thái Quy Trình",
       "busy": "Quy Trình Đang Bận",
       "cancellationRequested": "Đã Yêu Cầu Hủy",
