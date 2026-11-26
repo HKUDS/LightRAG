@@ -3,7 +3,7 @@
 Provider SDKs report optional usage fields as ``None`` on successful calls; an
 ``int += None`` there would discard the generated answer. Each binding's own
 tests cover what it passes in; this pins the tracker's own fallback and how
-it sums the optional ``cached_prompt_tokens``.
+it sums the optional cache counts.
 """
 
 import pytest
@@ -35,15 +35,22 @@ def test_add_usage_treats_none_counts_as_missing(reported_total, expected_total)
     }
 
 
-def test_cached_prompt_tokens_sum_only_reported_calls():
+@pytest.mark.parametrize(
+    ("field", "label"),
+    [
+        ("cached_prompt_tokens", "Cached prompt tokens"),
+        ("cache_creation_tokens", "Cache write tokens"),
+    ],
+)
+def test_optional_cache_counts_sum_only_reported_calls(field, label):
     tracker = TokenTracker()
     usage = {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}
 
-    tracker.add_usage({**usage, "cached_prompt_tokens": 2})
+    tracker.add_usage({**usage, field: 2})
     tracker.add_usage(usage)
-    tracker.add_usage({**usage, "cached_prompt_tokens": 3})
+    tracker.add_usage({**usage, field: 3})
 
-    assert tracker.get_usage()["cached_prompt_tokens"] == 5
-    assert str(tracker).endswith(", Cached prompt tokens: 5")
+    assert tracker.get_usage()[field] == 5
+    assert str(tracker).endswith(f", {label}: 5")
     tracker.reset()
-    assert "cached_prompt_tokens" not in tracker.get_usage()
+    assert field not in tracker.get_usage()

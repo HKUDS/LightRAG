@@ -67,6 +67,30 @@ class InvalidResponseError(Exception):
 _DEFAULT_MAX_RETRIES = 4
 
 
+def _tracker_usage(read: Any) -> dict[str, int]:
+    """Map Anthropic usage fields to the TokenTracker shape.
+
+    Anthropic's ``input_tokens`` leaves out cached input, so the cache reads
+    and writes are added back into ``prompt_tokens`` (which then means the
+    same as OpenAI's) and are also passed on separately. A cache count the
+    response doesn't carry is left out instead of being reported as 0.
+    """
+    cache_write = read("cache_creation_input_tokens")
+    cache_read = read("cache_read_input_tokens")
+    prompt_tokens = (read("input_tokens") or 0) + (cache_write or 0) + (cache_read or 0)
+    output_tokens = read("output_tokens") or 0
+    counts = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": prompt_tokens + output_tokens,
+    }
+    if cache_read is not None:
+        counts["cached_prompt_tokens"] = cache_read
+    if cache_write is not None:
+        counts["cache_creation_tokens"] = cache_write
+    return counts
+
+
 async def anthropic_complete_if_cache(
     model: str,
     prompt: str,
@@ -77,9 +101,23 @@ async def anthropic_complete_if_cache(
     api_key: str | None = None,
     image_inputs: list[Any] | None = None,
     token_tracker: Any | None = None,
+    cache_system_prompt: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Anthropic Messages API with LightRAG-compatible shims.
+
+    Prompt caching:
+    - ``cache_system_prompt=True`` puts a ``cache_control`` breakpoint on the
+      system prompt, so calls that share it (every chunk of an extraction
+      run) read it from Anthropic's cache instead of paying for it again.
+      Off by default: a cache write costs more than plain input, so a run
+      with only a few calls can end up paying more. Prompts below the
+      model's minimum cacheable length are simply not cached.
+    - Turn it on per role, e.g. ``RoleLLMConfig(kwargs={"cache_system_prompt":
+      True})`` for ``extract``. It does not change LightRAG's own LLM cache
+      keys.
+    - With a ``token_tracker``, cache reads and writes show up as
+      ``cached_prompt_tokens`` and ``cache_creation_tokens``.
 
     Retries:
     - The Anthropic SDK is the only retry layer (see the comment on
@@ -205,7 +243,16 @@ async def anthropic_complete_if_cache(
             **kwargs,
         }
         if system_prompt:
-            create_params["system"] = system_prompt
+            if cache_system_prompt:
+                create_params["system"] = [
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            else:
+                create_params["system"] = system_prompt
         response = await anthropic_async_client.messages.create(**create_params)
     except APITimeoutError as e:
         # APITimeoutError subclasses APIConnectionError, so it must come first
@@ -269,21 +316,8 @@ async def anthropic_complete_if_cache(
             # block -- that must not cost the tracker a real, billed call.
             if token_tracker and getattr(response, "usage", None):
                 usage = response.usage
-                prompt_tokens = sum(
-                    getattr(usage, field, 0) or 0
-                    for field in (
-                        "input_tokens",
-                        "cache_creation_input_tokens",
-                        "cache_read_input_tokens",
-                    )
-                )
-                output_tokens = getattr(usage, "output_tokens", 0) or 0
                 token_tracker.add_usage(
-                    {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": output_tokens,
-                        "total_tokens": prompt_tokens + output_tokens,
-                    }
+                    _tracker_usage(lambda field: getattr(usage, field, None))
                 )
             # When extended thinking is enabled, the content list interleaves
             # ThinkingBlock/RedactedThinkingBlock entries with the visible
@@ -380,22 +414,7 @@ async def anthropic_complete_if_cache(
                     content = safe_unicode_decode(content.encode("utf-8"))
                 yield content
             if token_tracker and usage_counts:
-                prompt_tokens = sum(
-                    usage_counts.get(field, 0)
-                    for field in (
-                        "input_tokens",
-                        "cache_creation_input_tokens",
-                        "cache_read_input_tokens",
-                    )
-                )
-                output_tokens = usage_counts.get("output_tokens", 0)
-                token_tracker.add_usage(
-                    {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": output_tokens,
-                        "total_tokens": prompt_tokens + output_tokens,
-                    }
-                )
+                token_tracker.add_usage(_tracker_usage(usage_counts.get))
         except Exception as e:
             logger.error(f"Error in stream response: {str(e)}")
             raise
