@@ -60,6 +60,7 @@ from lightrag.constants import (
     DEFAULT_P_REFERENCES_HEADINGS,
     DEFAULT_P_REFERENCES_TAIL_N,
 )
+from lightrag.chunker._html_rowspan import build_rowspan_slicer
 from lightrag.exceptions import BlocksSidecarCorruptError
 from lightrag.table_markup import (
     TABLE_TAG_RE as _TABLE_TAG_RE,
@@ -794,6 +795,9 @@ def _split_table_text(
     body_last_min = max(last_min - wrapper_overhead - header_overhead, 1)
     row_chunks: list[list[Any]] | None = None
     serialize: Callable[[list[Any]], str] | None = None
+    # True when serialized slices may hold repeated rowspan cells the row
+    # splitter never measured (see ``lightrag.chunker._html_rowspan``).
+    slices_add_cells = False
     # HeaderRecovery (JSON): when the repeating header prefixes the body, pin it
     # OUT of the rows being split so every emitted slice holds only genuine data
     # rows. The full header is then re-injected into every slice afterwards —
@@ -835,7 +839,21 @@ def _split_table_text(
                 last_min=body_last_min,
             )
 
+            # ``None`` unless a body cell spans rows and the whole table is in
+            # the supported grammar: the rows are then serialized as cut.
+            slicer = build_rowspan_slicer(
+                body, rows_html, table_label=_extract_table_id(attrs) or "<no-id>"
+            )
+            slices_add_cells = slicer is not None
+            # Every chunk is a contiguous run of ``rows_html`` holding the
+            # same tuple objects, so its first row locates it in the table.
+            # A lookup miss raises rather than serializing the wrong rows.
+            row_index = {id(row): i for i, row in enumerate(rows_html)}
+
             def serialize(chunk_rows: list[tuple[str, str]]) -> str:
+                if slicer is not None:
+                    start = row_index[id(chunk_rows[0])]
+                    chunk_rows = slicer.slice(start, start + len(chunk_rows))
                 return (
                     f"<table {attrs}>"
                     f"{_serialize_rows_with_wrappers(chunk_rows)}"
@@ -937,6 +955,13 @@ def _split_table_text(
                 target_ideal=sub_ideal,
                 last_min=sub_last_min,
             )
+        if len(sub_chunks) <= 1 and slices_add_cells:
+            # The splitter measures the source rows only, so it can call a
+            # slice that is over the cap through its repeated rowspan cells
+            # already small enough. Halve it instead: each half still makes
+            # progress towards the single-row checks above.
+            middle = len(chunk_rows) // 2
+            sub_chunks = [chunk_rows[:middle], chunk_rows[middle:]]
         if len(sub_chunks) <= 1:
             # The splitter could not reduce further (e.g. one row already
             # dominates the body). Keep it whole only when it needs no injected

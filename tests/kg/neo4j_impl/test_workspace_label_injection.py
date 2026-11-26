@@ -20,17 +20,7 @@ APOC call at all.
 These tests run without a live Neo4j instance.
 """
 
-import os
-import sys
-
 import pytest
-
-# Add the project root directory to the Python path
-sys.path.append(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    )
-)
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
@@ -56,38 +46,20 @@ def _make_storage(workspace: str) -> Neo4JStorage:
 @pytest.mark.parametrize(
     "workspace, expected",
     [
-        # Normal names pass through unchanged.
-        ("my-project", "my-project"),
-        ("base", "base"),
-        ("workspace_123", "workspace_123"),
-        # Whitespace is stripped; empty falls back to "base".
-        ("  trimmed  ", "trimmed"),
-        ("", "base"),
-        ("   ", "base"),
-        # Backticks are doubled for identifier context.
-        ("ws`name", "ws``name"),
+        # Every backtick is doubled, not only the first.
         ("a`b`c", "a``b``c"),
+        # A breakout attempt stays inside the quoted identifier.
         ("ws`} RETURN 0", "ws``} RETURN 0"),
-        # Single quotes are NOT touched here: inside backticks they are literal,
-        # so doubling them would corrupt the label name.
-        ("ws'name", "ws'name"),
-        ("team'a", "team'a"),
-        ("base' OR 1=1", "base' OR 1=1"),
-        # Mixed: only backticks are escaped.
+        # Single quotes are NOT touched: inside backticks they are literal, so
+        # doubling them would corrupt the label name. This label is built from
+        # _get_raw_workspace_label, whose stripping and "base" default are
+        # pinned by the table below.
         ("ws'`name", "ws'``name"),
     ],
 )
 def test_get_workspace_label(workspace, expected):
     storage = _make_storage(workspace)
     assert storage._get_workspace_label() == expected
-
-
-def test_label_safe_in_backtick_identifier():
-    """The returned label cannot break out of a backtick-quoted identifier."""
-    storage = _make_storage("ws`} OR 1=1")
-    identifier = f"`{storage._get_workspace_label()}`"
-    # Every ` in the label was doubled to ``, so the quoting stays balanced.
-    assert identifier.count("`") % 2 == 0
 
 
 # ---------------------------------------------------------------------------
@@ -98,13 +70,11 @@ def test_label_safe_in_backtick_identifier():
 @pytest.mark.parametrize(
     "workspace, expected",
     [
-        ("my-project", "my-project"),
         ("  trimmed  ", "trimmed"),
         ("", "base"),
         ("   ", "base"),
         # No escaping of any kind: the raw value is bound, never interpolated.
         ("ws`name", "ws`name"),
-        ("team'a", "team'a"),
         ("x'); CALL apoc.util.sleep(1);", "x'); CALL apoc.util.sleep(1);"),
     ],
 )

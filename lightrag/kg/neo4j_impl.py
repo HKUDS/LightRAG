@@ -15,7 +15,7 @@ from tenacity import (
 )
 
 import logging
-from ..utils import logger, validate_workspace
+from ..utils import logger, parse_bool_setting, validate_workspace
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..kg.shared_storage import get_data_init_lock
@@ -253,10 +253,15 @@ class Neo4JStorage(BaseGraphStorage):
                     config.get("neo4j", "liveness_check_timeout", fallback=30.0),
                 ),
             )
-            KEEP_ALIVE = os.environ.get(
+            KEEP_ALIVE = parse_bool_setting(
                 "NEO4J_KEEP_ALIVE",
-                config.get("neo4j", "keep_alive", fallback="true"),
-            ).lower() in ("true", "1", "yes", "on")
+                os.environ.get(
+                    "NEO4J_KEEP_ALIVE",
+                    config.get("neo4j", "keep_alive", fallback="true"),
+                ),
+                True,
+                source="Neo4j setting",
+            )
             DATABASE = os.environ.get(
                 "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", self.namespace)
             )
@@ -1130,6 +1135,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
@@ -1176,6 +1182,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_nodes_batch(self, nodes: list[tuple[str, dict[str, str]]]) -> None:
         """Batch insert/update multiple nodes using a single UNWIND Cypher query.
@@ -1260,6 +1267,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_edges_batch(
         self, edges: list[tuple[str, str, dict[str, str]]]
@@ -1310,6 +1318,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
@@ -1807,6 +1816,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def delete_node(self, node_id: str) -> None:
         """Delete a node with the specified label
@@ -1832,21 +1842,6 @@ class Neo4JStorage(BaseGraphStorage):
             logger.error(f"[{self.workspace}] Error during node deletion: {str(e)}")
             raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-                neo4jExceptions.ClientError,
-                neo4jExceptions.SessionExpired,
-                ConnectionResetError,
-                OSError,
-            )
-        ),
-    )
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
 
@@ -1870,6 +1865,7 @@ class Neo4JStorage(BaseGraphStorage):
                 OSError,
             )
         ),
+        reraise=True,
     )
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges

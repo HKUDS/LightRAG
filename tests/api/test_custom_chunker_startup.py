@@ -9,53 +9,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lightrag.api import config
 from lightrag.chunker import plugins, registry
+from .conftest import LightRAGConstructed
 
 pytestmark = pytest.mark.offline
 
 
 @pytest.fixture
-def startup(monkeypatch, tmp_path, lightrag_caplog):
-    monkeypatch.setattr(config, "_global_args", None)
-    monkeypatch.setattr(config, "_initialized", False)
+def startup(monkeypatch, prepare_startup, lightrag_caplog):
     monkeypatch.setattr(registry, "_REGISTRY", {})
     monkeypatch.setattr(registry, "_DUPLICATES", set())
     monkeypatch.setattr(plugins, "_loaded", False)
     monkeypatch.setattr(plugins, "_failures", [])
-    monkeypatch.setenv("CUSTOM_CHUNKER", "")
-    monkeypatch.setenv("LLM_BINDING", "openai")
-    monkeypatch.setenv("EMBEDDING_BINDING", "openai")
-    monkeypatch.setenv("RERANK_BINDING", "null")
-    monkeypatch.setenv("UI_TEMPLATES_DIR", "")
-    monkeypatch.setenv("AUTH_ACCOUNTS", "")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "lightrag-server",
-            "--working-dir",
-            str(tmp_path / "rag"),
-            "--input-dir",
-            str(tmp_path / "inputs"),
-        ],
-    )
-    args = config.initialize_config(force=True)
-    from lightrag.api import lightrag_server as server
-
-    captured = []
-
-    class Constructed(Exception):
-        """Stops startup once the stubbed LightRAG constructor captured its kwargs."""
-
-    def construct(**kwargs):
-        captured.append(kwargs)
-        raise Constructed
-
-    monkeypatch.setattr(server, "LightRAG", construct)
-    monkeypatch.setattr(server, "check_frontend_build", lambda: (False, False))
-    monkeypatch.setattr(server, "check_workspace_frontend_build", lambda: False)
-    return server, args, captured, Constructed
+    prepared = prepare_startup({"CUSTOM_CHUNKER": ""})
+    return prepared.server, prepared.args, prepared.captured, LightRAGConstructed
 
 
 @pytest.mark.parametrize("factory", ["create_app", "get_application"])

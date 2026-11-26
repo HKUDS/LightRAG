@@ -57,7 +57,7 @@ from lightrag.constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     ROLLBACK_REPORT_SAMPLE_CAP,
-    DEFAULT_SUMMARY_PRIORITY,
+    DEFAULT_QUERY_PRIORITY,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_KG_CHUNK_PICK_METHOD,
@@ -1204,7 +1204,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     )
 
     entity_extraction_use_json: bool = field(
-        default=os.getenv("ENTITY_EXTRACTION_USE_JSON", "false").lower() == "true"
+        default=get_env_value("ENTITY_EXTRACTION_USE_JSON", False, bool)
     )
     """When True, entity extraction uses JSON structured output instead of delimiter-based text.
     JSON mode is slower but significantly improves extraction quality and compatibility with smaller models.
@@ -6545,11 +6545,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 progress_callback=progress_callback,
             )
         elif param.mode == "bypass":
-            # Bypass mode: directly use LLM without knowledge retrieval
-            # Apply higher priority to entity/relation summary tasks
+            # Bypass mode: directly use LLM without knowledge retrieval.
+            # It is an interactive answer like kg/naive queries, so it takes
+            # the same query priority on the query role queue.
             use_llm_func = partial(
                 global_config["role_llm_funcs"]["query"],
-                _priority=DEFAULT_SUMMARY_PRIORITY,
+                _priority=DEFAULT_QUERY_PRIORITY,
             )
 
             param.stream = True if param.stream is None else param.stream

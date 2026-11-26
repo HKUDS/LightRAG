@@ -42,18 +42,18 @@ lightrag/evaluation/
 
 ### 1. Install Dependencies
 
-Use the project's `evaluation` extra (recommended; it carries the version caps
+Use the project's `evaluation` extra (recommended; it carries the version floor
 RAGAS needs):
 
 ```bash
 pip install -e ".[evaluation]"
 ```
 
-Or install the packages by hand, keeping the same cap on `langchain-community`
+Or install the packages by hand, keeping the same floor on `ragas`
 (see *Troubleshooting* below for why):
 
 ```bash
-pip install ragas datasets "langchain-community<0.4.2" langfuse
+pip install "ragas>=0.4.4" datasets langfuse
 ```
 
 ### 2. Run Evaluation
@@ -369,10 +369,10 @@ pip install -e ".[evaluation]"
 
 RAGAS is installed but cannot be imported. ragas (up to 0.4.3) imports
 `langchain_community.chat_models.vertexai`, which `langchain-community` 0.4.2
-deleted. Downgrade it:
+deleted; ragas 0.4.4 made that import optional. Upgrade ragas:
 
 ```bash
-pip install "langchain-community<0.4.2"
+pip install "ragas>=0.4.4"
 ```
 
 The evaluator reports the underlying import error in its `ImportError`
