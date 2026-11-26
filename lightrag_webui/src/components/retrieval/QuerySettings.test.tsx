@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 
 import { renderWithProviders } from '@/test/render'
 import en from '@/locales/en.json'
+import { useQuerySettingsStore, defaultQuerySettings } from '@/stores/querySettings'
 import QuerySettings from './QuerySettings'
 
 /**
@@ -109,5 +110,49 @@ describe('QuerySettings scope notice', () => {
         .map((key) => `${name}:${key}`)
     })
     expect(missing).toEqual([])
+  })
+})
+
+/**
+ * The mode trigger's only visible keyboard focus indicator is the Select
+ * primitive's focus ring. Zeroing it out of the trigger's own className
+ * leaves a keyboard user with no way to see which control is focused.
+ */
+describe('QuerySettings mode selector focus', () => {
+  afterEach(() => {
+    cleanup()
+    useQuerySettingsStore.setState({ querySettings: { ...defaultQuerySettings } })
+  })
+
+  test('the mode trigger keeps the primitive focus ring, with no zeroing classes', () => {
+    // A narrower-coverage mode: the trigger's className is then a cn() merge
+    // of the base classes and the red warning classes — the path where a
+    // focus-zeroing class could hide.
+    useQuerySettingsStore.setState({
+      querySettings: { ...defaultQuerySettings, mode: 'naive' }
+    })
+    renderWithProviders(<QuerySettings />)
+
+    const trigger = screen.getByRole('combobox', { name: strings.queryMode })
+    const classes = (trigger.getAttribute('class') ?? '').split(/\s+/)
+
+    // The warning branch really was exercised.
+    expect(classes).toContain('border-red-400')
+
+    // The primitive's ring survives the merge...
+    expect(classes).toContain('focus:ring-2')
+    expect(classes).toContain('focus:ring-ring')
+    expect(classes).toContain('focus:ring-offset-2')
+    // ...and nothing zeroes it out.
+    expect(
+      classes.filter((token) =>
+        ['focus:ring-0', 'focus:ring-offset-0', 'focus:outline-0'].includes(token)
+      )
+    ).toEqual([])
+
+    // The rest of the trigger's styling is untouched by the fix. In the
+    // warning branch the red hover wins the twMerge over hover:bg-primary/5.
+    expect(classes).toContain('hover:bg-red-100')
+    expect(classes).toContain('[&>span]:line-clamp-1')
   })
 })

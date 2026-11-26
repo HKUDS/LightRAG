@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "Préfixe de mode de requête invalide. Utilisez : /<mode> [espace] votre requête",
       "queryEmpty": "Veuillez saisir une question avant d'envoyer.",
       "queryTooShort": "Votre requête est trop courte. Saisissez au moins 3 caractères anglais ou une combinaison équivalente ; chaque caractère chinois, japonais ou coréen compte double.",
-      "dismissError": "Fermer le message d’erreur"
+      "dismissError": "Fermer le message d’erreur",
+      "clearConfirmTitle": "Clear Conversation?",
+      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
+      "clearConfirmCancel": "Cancel",
+      "clearConfirmButton": "Clear Conversation"
     },
     "querySettings": {
       "parametersTitle": "Paramètres",

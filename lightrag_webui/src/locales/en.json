@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query",
       "queryEmpty": "Please enter a question before sending.",
       "queryTooShort": "Your query is too short. Enter at least 3 English characters or an equivalent combination; each Chinese, Japanese or Korean character counts as 2.",
-      "dismissError": "Dismiss error"
+      "dismissError": "Dismiss error",
+      "clearConfirmTitle": "Clear Conversation?",
+      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
+      "clearConfirmCancel": "Cancel",
+      "clearConfirmButton": "Clear Conversation"
     },
     "querySettings": {
       "parametersTitle": "Parameters",

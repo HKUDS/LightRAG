@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "Неверный префикс режима запроса. Используйте: /<режим> [пробел] ваш запрос",
       "queryEmpty": "Введите вопрос перед отправкой.",
       "queryTooShort": "Запрос слишком короткий. Введите не менее 3 английских символов или эквивалентную комбинацию; каждый китайский, японский или корейский символ считается за 2.",
-      "dismissError": "Закрыть сообщение об ошибке"
+      "dismissError": "Закрыть сообщение об ошибке",
+      "clearConfirmTitle": "Clear Conversation?",
+      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
+      "clearConfirmCancel": "Cancel",
+      "clearConfirmButton": "Clear Conversation"
     },
     "querySettings": {
       "parametersTitle": "Параметры",

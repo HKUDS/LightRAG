@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "Ungültiges Abfragemodus-Präfix. Verwenden Sie: /<mode> [Leerzeichen] Ihre Abfrage",
       "queryEmpty": "Bitte geben Sie eine Frage ein, bevor Sie senden.",
       "queryTooShort": "Ihre Abfrage ist zu kurz. Geben Sie mindestens 3 englische Zeichen oder eine gleichwertige Kombination ein; jedes chinesische, japanische oder koreanische Zeichen zählt doppelt.",
-      "dismissError": "Fehlermeldung schließen"
+      "dismissError": "Fehlermeldung schließen",
+      "clearConfirmTitle": "Clear Conversation?",
+      "clearConfirmDescription": "This will remove all messages and the saved conversation history. This action cannot be undone.",
+      "clearConfirmCancel": "Cancel",
+      "clearConfirmButton": "Clear Conversation"
     },
     "querySettings": {
       "parametersTitle": "Parameter",

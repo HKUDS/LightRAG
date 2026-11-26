@@ -206,7 +206,10 @@ export default function QuerySettings() {
                   <SelectTrigger
                     id="query_mode_select"
                     className={cn(
-                      'hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1',
+                      // No focus-zeroing here: the Select primitive's
+                      // focus:ring-2 is the trigger's only visible keyboard
+                      // focus indicator.
+                      'hover:bg-primary/5 h-9 cursor-pointer active:right-0 flex-1 text-left [&>span]:break-all [&>span]:line-clamp-1',
                       showQualityWarning &&
                         'border-red-400 bg-red-100 text-red-700 hover:bg-red-100 dark:border-red-600 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/30'
                     )}
