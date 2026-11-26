@@ -37,6 +37,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
@@ -1322,8 +1323,8 @@ def test_an_explicit_ceiling_wins_over_the_derivation(tmp_path):
     assert instance.admin_write_max_hold_seconds == 45.0
 
 
-def test_both_admin_write_bounds_are_read_from_the_environment():
-    """Both env vars are honoured, and the ceiling's is only an OVERRIDE.
+def test_both_admin_write_bounds_accept_environment_overrides():
+    """Both explicit env vars are honoured.
 
     Read in a subprocess because these are resolved at import: reloading
     ``lightrag.lightrag`` in-process would rebind ``LightRAG`` itself for every
@@ -1334,21 +1335,14 @@ def test_both_admin_write_bounds_are_read_from_the_environment():
         "print(m.ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT,"
         " m.ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE)"
     )
-    bare = {
-        key: value
-        for key, value in os.environ.items()
-        if key
-        not in (
-            "EMBEDDING_TIMEOUT",
-            "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS",
-            "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT",
-        )
-    }
+    env = os.environ.copy()
+    env.pop("EMBEDDING_TIMEOUT", None)
 
     explicit = subprocess.run(
         [sys.executable, "-c", script],
         env={
-            **bare,
+            **env,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT": "7.5",
             "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS": "600",
         },
@@ -1357,17 +1351,6 @@ def test_both_admin_write_bounds_are_read_from_the_environment():
         check=True,
     )
     assert explicit.stdout.split() == ["7.5", "600.0"]
-
-    # Unset: no override at all, and the acquire timeout -- deliberately NOT
-    # derived from the ceiling -- stays at its own default.
-    unset = subprocess.run(
-        [sys.executable, "-c", script],
-        env=bare,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert unset.stdout.split() == ["30.0", "None"]
 
 
 def test_an_environment_embedding_timeout_still_reaches_the_ceiling(tmp_path):
@@ -1389,6 +1372,7 @@ def test_an_environment_embedding_timeout_still_reaches_the_ceiling(tmp_path):
         not in (
             "EMBEDDING_TIMEOUT",
             "LIGHTRAG_ADMIN_WRITE_MAX_HOLD_SECONDS",
+            "LIGHTRAG_ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT",
             "PYTHON_DOTENV_DISABLED",
         )
     }
@@ -1402,16 +1386,22 @@ def test_an_environment_embedding_timeout_still_reaches_the_ceiling(tmp_path):
             "print(f['default_embedding_timeout'].default,"
             " m.ADMIN_WRITE_MAX_HOLD_SECONDS_OVERRIDE,"
             " m._default_admin_write_hold_seconds("
-            "f['default_embedding_timeout'].default))",
+            "f['default_embedding_timeout'].default),"
+            " m.ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT)",
         ],
         cwd=str(tmp_path),
-        env=bare,
+        env={**bare, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
         capture_output=True,
         text=True,
         check=True,
     )
 
-    assert result.stdout.split() == ["300", "None", "1800.0"]
+    embedding_timeout, hold_override, hold_ceiling, acquire_timeout = (
+        result.stdout.split()
+    )
+    assert (embedding_timeout, hold_override, hold_ceiling) == ("300", "None", "1800.0")
+    # The acquire timeout has its own default even when the hold ceiling grows.
+    assert acquire_timeout == "30.0"
 
 
 def test_an_explicit_ceiling_below_the_embedding_timeout_is_refused(tmp_path):

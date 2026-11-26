@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from lightrag.api.config import get_default_host, parse_args
+from lightrag.api.config import parse_args
 
 
 pytestmark = pytest.mark.offline
@@ -26,23 +26,12 @@ def _clear_bedrock_auth_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_bedrock_default_host_uses_sdk_default_endpoint(monkeypatch):
-    monkeypatch.delenv("LLM_BINDING_HOST", raising=False)
-
-    assert get_default_host("bedrock") == "DEFAULT_BEDROCK_ENDPOINT"
-
-
-def test_bedrock_custom_host_is_returned(monkeypatch):
-    monkeypatch.setenv("LLM_BINDING_HOST", "https://proxy.example.com")
-
-    assert get_default_host("bedrock") == "https://proxy.example.com"
-
-
 def test_bedrock_env_binding_alias_is_normalized(monkeypatch):
     _clear_bedrock_auth_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("LLM_BINDING", "aws_bedrock")
     monkeypatch.setenv("EMBEDDING_BINDING", "aws_bedrock")
+    # Also the case that a bearer token alone is accepted.
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-test")
 
     args = parse_args()
@@ -122,23 +111,15 @@ def test_bedrock_role_accepts_default_aws_credential_provider_chain(monkeypatch)
     assert args.query_llm_binding == "bedrock"
 
 
-def test_bedrock_binding_rejects_partial_sigv4_pair(monkeypatch):
+# A bearer token does not excuse a half-configured SigV4 pair.
+@pytest.mark.parametrize("bearer_token", [None, "absk-test"])
+def test_bedrock_binding_rejects_partial_sigv4_pair(monkeypatch, bearer_token):
     _clear_bedrock_auth_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("LLM_BINDING", "bedrock")
     monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "akid")
-
-    with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
-        parse_args()
-
-
-def test_bedrock_binding_rejects_partial_sigv4_pair_with_bearer_token(monkeypatch):
-    _clear_bedrock_auth_env(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-    monkeypatch.setenv("LLM_BINDING", "bedrock")
-    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-test")
+    if bearer_token:
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", bearer_token)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "akid")
 
     with pytest.raises(ValueError, match="Bedrock LLM binding requires"):
@@ -158,35 +139,14 @@ def test_bedrock_binding_accepts_sigv4_pair(monkeypatch):
     assert args.llm_binding == "bedrock"
 
 
-def test_bedrock_binding_accepts_bearer_token(monkeypatch):
-    _clear_bedrock_auth_env(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-    monkeypatch.setenv("LLM_BINDING", "bedrock")
-    monkeypatch.setenv("EMBEDDING_BINDING", "ollama")
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-test")
-
-    args = parse_args()
-
-    assert args.llm_binding == "bedrock"
-
-
-def test_bedrock_role_requires_complete_role_sigv4_pair(monkeypatch):
+@pytest.mark.parametrize("bearer_token", [None, "absk-test"])
+def test_bedrock_role_requires_complete_role_sigv4_pair(monkeypatch, bearer_token):
     _clear_bedrock_auth_env(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["lightrag-server"])
     monkeypatch.setenv("QUERY_LLM_BINDING", "bedrock")
     monkeypatch.setenv("QUERY_LLM_MODEL", "us.amazon.nova-lite-v1:0")
-    monkeypatch.setenv("QUERY_AWS_ACCESS_KEY_ID", "akid")
-
-    with pytest.raises(ValueError, match="Bedrock role 'query' requires"):
-        parse_args()
-
-
-def test_bedrock_role_rejects_partial_sigv4_pair_with_bearer_token(monkeypatch):
-    _clear_bedrock_auth_env(monkeypatch)
-    monkeypatch.setattr(sys, "argv", ["lightrag-server"])
-    monkeypatch.setenv("QUERY_LLM_BINDING", "bedrock")
-    monkeypatch.setenv("QUERY_LLM_MODEL", "us.amazon.nova-lite-v1:0")
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "absk-test")
+    if bearer_token:
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", bearer_token)
     monkeypatch.setenv("QUERY_AWS_ACCESS_KEY_ID", "akid")
 
     with pytest.raises(ValueError, match="Bedrock role 'query' requires"):

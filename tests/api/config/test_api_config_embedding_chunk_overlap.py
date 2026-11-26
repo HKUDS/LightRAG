@@ -36,16 +36,13 @@ def test_defaults_when_unset(monkeypatch):
     assert DEFAULT_EMBEDDING_CHUNK_OVERLAP_TOKEN_SIZE == 100
 
 
-def test_env_value_is_honoured(monkeypatch):
-    args = _parse(monkeypatch, "42")
-    assert args.embedding_chunk_overlap_token_size == 42
-
-
-def test_zero_is_honoured(monkeypatch):
-    """0 is a legal, meaningful value (disables the fallback's overlap) —
-    must not be treated as falsy/unset."""
-    args = _parse(monkeypatch, "0")
-    assert args.embedding_chunk_overlap_token_size == 0
+# 0 is a legal, meaningful value (disables the fallback's overlap) and must
+# not be treated as falsy/unset; 42 tells an integer parse from a bool one,
+# which would also read "0" as 0.
+@pytest.mark.parametrize(("value", "expected"), [("0", 0), ("42", 42)])
+def test_env_value_is_honoured(monkeypatch, value, expected):
+    args = _parse(monkeypatch, value)
+    assert args.embedding_chunk_overlap_token_size == expected
 
 
 def test_does_not_share_a_value_with_chunk_overlap_size(monkeypatch):

@@ -91,24 +91,6 @@ def _edge(edge_id: str, target_entity_id: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_robust_fallback_not_truncated_when_exactly_at_cap():
-    """A-B-C chain: all 3 real nodes exactly fill max_nodes=3 -- must not be
-    falsely reported as truncated."""
-    node_docs = {n: _FakeNode(n) for n in ["A", "B", "C"]}
-    edges_by_node = {
-        "A": [_edge("e1", "B")],
-        "B": [_edge("e1", "A"), _edge("e2", "C")],
-        "C": [_edge("e2", "B")],
-    }
-    storage = _make_storage(node_docs, edges_by_node)
-
-    result = await storage._robust_fallback("A", max_depth=5, max_nodes=3)
-
-    assert {n.id for n in result.nodes} == {"A", "B", "C"}
-    assert result.is_truncated is False
-
-
-@pytest.mark.asyncio
 async def test_robust_fallback_reports_truncated_over_cap():
     """Star graph (A + 5 leaves) with max_nodes=3 must be flagged truncated
     and must never return more than max_nodes nodes."""
@@ -127,10 +109,11 @@ async def test_robust_fallback_reports_truncated_over_cap():
 
 @pytest.mark.asyncio
 async def test_robust_fallback_duplicate_queue_entries_not_falsely_truncated():
-    """Diamond graph (A->B, A->C, B->D, C->D): D is reachable via two
-    parents and gets queued twice before ever being visited. The duplicate
-    entry must be dropped by the visited check, not misread as a real
-    candidate that didn't fit under the cap."""
+    """Diamond graph (A->B, A->C, B->D, C->D) with max_nodes=4: all four
+    nodes exactly fill the cap, so the graph must not be reported truncated.
+    D is reachable via two parents and gets queued twice before ever being
+    visited; the duplicate entry must be dropped by the visited check, not
+    misread as a real candidate that didn't fit under the cap."""
     node_docs = {n: _FakeNode(n) for n in ["A", "B", "C", "D"]}
     edges_by_node = {
         "A": [_edge("e1", "B"), _edge("e2", "C")],

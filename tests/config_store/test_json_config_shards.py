@@ -511,7 +511,7 @@ class TestRegistration:
         assert "owned by workspace 'teamalpha'" in str(info.value)
 
 
-def _register_in_subprocess(working_dir, workspace: str, rendezvous):
+def _register_in_subprocess(working_dir, workspace: str, rendezvous, role: str):
     repo_root = str(Path(__file__).resolve().parents[2])
     # The probe runs as a script, so its sys.path starts at this directory:
     # without the root on PYTHONPATH it imports whichever lightrag is
@@ -523,7 +523,14 @@ def _register_in_subprocess(working_dir, workspace: str, rendezvous):
         ),
     }
     return subprocess.Popen(
-        [sys.executable, str(_PROBE), str(working_dir), workspace, str(rendezvous)],
+        [
+            sys.executable,
+            str(_PROBE),
+            str(working_dir),
+            workspace,
+            str(rendezvous),
+            role,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -549,11 +556,17 @@ def test_concurrent_registrations_across_process_trees_keep_both_members(
     # Outside working_dir: the first start scans its child directories.
     rendezvous = tmp_path_factory.mktemp("rendezvous")
     procs = [
-        _register_in_subprocess(tmp_path, workspace, rendezvous)
-        for workspace in ("teamalpha", "teambeta")
+        _register_in_subprocess(tmp_path, "teamalpha", rendezvous, "holder"),
+        _register_in_subprocess(tmp_path, "teambeta", rendezvous, "contender"),
     ]
-    release_when_ready(rendezvous, procs)
-    outputs = [proc.communicate(timeout=60) for proc in procs]
+    try:
+        release_when_ready(rendezvous, procs)
+        outputs = [proc.communicate(timeout=60) for proc in procs]
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
     for proc, (out, err) in zip(procs, outputs):
         assert proc.returncode == 0, err
     uuids = {

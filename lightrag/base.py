@@ -164,7 +164,7 @@ class QueryParam:
     ``{user_prompt}`` placeholder silently drops it.
     """
 
-    enable_rerank: bool = os.getenv("RERANK_BY_DEFAULT", "true").lower() == "true"
+    enable_rerank: bool = get_env_value("RERANK_BY_DEFAULT", True, bool)
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """

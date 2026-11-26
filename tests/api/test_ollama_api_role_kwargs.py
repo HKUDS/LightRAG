@@ -1,4 +1,4 @@
-"""Offline regression tests for Ollama API role-specific kwargs."""
+"""Offline regression tests: the Ollama-compatible API routes use query-role kwargs."""
 
 import importlib
 import sys

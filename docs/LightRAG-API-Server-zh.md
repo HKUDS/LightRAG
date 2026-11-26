@@ -175,6 +175,23 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
+* OpenAI LLM + VoyageAI 嵌入
+
+```
+LLM_BINDING=openai
+LLM_MODEL=gpt-4o
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your_api_key
+
+EMBEDDING_BINDING=voyageai
+EMBEDDING_BINDING_HOST=DEFAULT_VOYAGEAI_ENDPOINT
+EMBEDDING_MODEL=voyage-3
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING_API_KEY=your_voyage_api_key
+```
+
+> `DEFAULT_VOYAGEAI_ENDPOINT`（或不设置、留空 `EMBEDDING_BINDING_HOST`）表示由 VoyageAI SDK 按 key 类型选择地址：MongoDB Atlas 的 key（`al-...`）发往 `https://ai.mongodb.com/v1`，其他 key 发往 `https://api.voyageai.com/v1`。VoyageAI 不会使用 `LLM_BINDING_HOST`。只有需要经过网关或代理时才填写 URL；不要在这里保留其他服务的地址，否则请求会发到那里。
+
 > **重要提示**：在文档索引前必须确定使用的 Embedding 模型和非对称嵌入配置，且在查询阶段必须沿用相同设置。有些存储（例如 PostgreSQL）在首次建立表时需要确定向量维度。更换 Embedding 模型、向量维度、`EMBEDDING_ASYMMETRIC`、query/document 前缀或 provider task 行为后，必须清空现有 LightRAG workspace/向量数据并重新索引源文件。
 
 #### 非对称嵌入配置
@@ -222,7 +239,7 @@ lightrag-gunicorn --workers 4
 
 - `--host`：服务器监听地址（默认：0.0.0.0）
 - `--port`：服务器监听端口（默认：9621）
-- `--timeout`：LLM 请求超时时间（默认：150 秒）
+- `--timeout`：Gunicorn worker 超时的基准秒数，实际 worker 超时为该值 + 30（默认：150）。`lightrag-server` 不使用；LLM 请求超时由 `LLM_TIMEOUT` 控制
 - `--log-level`：日志级别（默认：INFO）
 - `--working-dir`：数据库持久化目录（默认：./rag_storage）
 - `--input-dir`：上传文件存放目录（默认：./inputs）
@@ -262,7 +279,7 @@ lightrag-server --port 9621
 
 - 创建一个项目目录。
 - 将 LightRAG 仓库中的 `docker-compose.yml` 文件复制到您的项目目录中。
-- 准备 `.env` 文件：复制示例文件 [`env.example`](https://ai.znipower.com:5013/c/env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
+- 准备 `.env` 文件：复制示例文件 [`env.example`](../env.example) 创建自定义的 `.env` 文件，并根据您的具体需求配置 LLM 和嵌入参数。
 - 通过以下命令启动 LightRAG 服务器：
 
 ```shell
@@ -310,10 +327,10 @@ VLM_PROCESS_ENABLE=false
 LLM_BINDING=openai
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
 
 #######################################################################################
 ### Embedding Configuration (do not change after the first file is processed)
@@ -381,7 +398,7 @@ RERANK_BINDING_API_KEY=your_rerank_api_key_here
 LIGHTRAG_PARSER=*:native-iteP,*:mineru-iteP,*:legacy-R
 
 VLM_PROCESS_ENABLE=true
-VLM_LLM_MODEL=gpt-5-mini
+VLM_LLM_MODEL=gpt-6.1-terra
 
 MINERU_API_MODE=official
 MINERU_API_TOKEN=your_mineru_api_token
@@ -845,14 +862,14 @@ OPENAI_LLM_MAX_COMPLETION_TOKENS=9000
 
 ```bash
 LLM_BINDING=openai
-LLM_MODEL=gpt-5-mini
+LLM_MODEL=gpt-6.1-terra
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
 
-EXTRACT_LLM_MODEL=gpt-5-mini
-KEYWORD_LLM_MODEL=gpt-5-nano
-QUERY_LLM_MODEL=gpt-5
-VLM_LLM_MODEL=gpt-5-mini
+EXTRACT_LLM_MODEL=gpt-6.1-terra
+KEYWORD_LLM_MODEL=gpt-6-luna
+QUERY_LLM_MODEL=gpt-6.1-sol
+VLM_LLM_MODEL=gpt-6.1-terra
 ```
 
 **按角色的模型推荐：**
@@ -1000,6 +1017,8 @@ python -m lightrag.tools.migrate_graph_storage --apply
 
 只有图数据被迁移；向量与 KV 数据不受影响且继续有效，因为迁移后的图保持相同的实体与关系标识。该工具要求目标图分片为空，并且在写入任何数据之前，会拒绝所有它能观察到、且无法完整迁移的结构——缺少可用标识的节点、重复的节点 ID、互为反向的边对，以及 PostgreSQL `jsonb` 无法存储的取值。若写入过程中失败，它只移除本次运行实际写入的内容。有一点限制需要知悉：Apache AGE 使用 `SELECT DISTINCT` 枚举边，因此同一对节点之间两条完全相同的关系只会返回一行，工具无法察觉图的度数将会改变。更换存储后端的通用建议仍然是重新索引 —— 本工具是针对这一特定组合的进阶路径。前置条件、报告格式与失败处理请参考 [README_MIGRATE_GRAPH_STORAGE.md](../lightrag/tools/README_MIGRATE_GRAPH_STORAGE.md)
 
+使用 Docker Compose 部署时，请在 `lightrag` 服务的一次性容器中运行该工具，并按照 [Migrate from PGGraphStorage to PGTableGraphStorage](DockerDeployment.md#migrate-from-pggraphstorage-to-pgtablegraphstorage) 的步骤操作；这些步骤也包括在切换 PostgreSQL 镜像之前删除 AGE 图。
+
 ### LightRAG API 服务器命令行选项
 
 | 参数 | 默认值 | 描述 |
@@ -1008,7 +1027,7 @@ python -m lightrag.tools.migrate_graph_storage --apply
 | `--port` | `9621` | 服务器端口 |
 | `--working-dir` | `./rag_storage` | RAG 存储工作目录 |
 | `--input-dir` | `./inputs` | 上传/输入文档目录 |
-| `--timeout` | `150` | Gunicorn worker timeout 以及 fallback 请求超时 |
+| `--timeout` | `150` | Gunicorn worker 超时的基准秒数（worker 超时 = 该值 + 30）；不是 LLM 请求超时 |
 | `--max-async` | `4` | 基础 LLM 最大并发；也是单文档 chunk 抽取的 task 上限（每个实体/关系合并阶段使用其两倍的 task 上限） |
 | `--log-level` | `INFO` | 日志级别（`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`） |
 | `--verbose` | `False` | 详细调试输出，配合 debug 日志生效 |

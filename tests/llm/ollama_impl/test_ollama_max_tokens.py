@@ -1,5 +1,6 @@
 """Offline tests for Ollama's generic output-token alias."""
 
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -59,17 +60,12 @@ async def _sent_options(**generation_kwargs):
     ],
 )
 async def test_max_tokens_alias_precedence(generation_kwargs, expected_options):
-    assert await _sent_options(**generation_kwargs) == expected_options
+    # A role binds one options dict for its lifetime, so the caller's copy
+    # must come back unchanged.
+    caller_kwargs = copy.deepcopy(generation_kwargs)
 
-
-async def test_mapping_options_are_not_mutated():
-    shared_options = {"temperature": 0.2}
-
-    assert await _sent_options(max_tokens=37, options=shared_options) == {
-        "temperature": 0.2,
-        "num_predict": 37,
-    }
-    assert shared_options == {"temperature": 0.2}
+    assert await _sent_options(**caller_kwargs) == expected_options
+    assert caller_kwargs == generation_kwargs
 
 
 async def test_ollama_options_object_is_copied_when_alias_is_applied():
