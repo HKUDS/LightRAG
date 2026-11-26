@@ -175,6 +175,23 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
+* OpenAI LLM + VoyageAI 嵌入
+
+```
+LLM_BINDING=openai
+LLM_MODEL=gpt-4o
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your_api_key
+
+EMBEDDING_BINDING=voyageai
+EMBEDDING_BINDING_HOST=DEFAULT_VOYAGEAI_ENDPOINT
+EMBEDDING_MODEL=voyage-3
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING_API_KEY=your_voyage_api_key
+```
+
+> `DEFAULT_VOYAGEAI_ENDPOINT`（或不设置、留空 `EMBEDDING_BINDING_HOST`）表示由 VoyageAI SDK 按 key 类型选择地址：MongoDB Atlas 的 key（`al-...`）发往 `https://ai.mongodb.com/v1`，其他 key 发往 `https://api.voyageai.com/v1`。VoyageAI 不会使用 `LLM_BINDING_HOST`。只有需要经过网关或代理时才填写 URL；不要在这里保留其他服务的地址，否则请求会发到那里。
+
 > **重要提示**：在文档索引前必须确定使用的 Embedding 模型和非对称嵌入配置，且在查询阶段必须沿用相同设置。有些存储（例如 PostgreSQL）在首次建立表时需要确定向量维度。更换 Embedding 模型、向量维度、`EMBEDDING_ASYMMETRIC`、query/document 前缀或 provider task 行为后，必须清空现有 LightRAG workspace/向量数据并重新索引源文件。
 
 #### 非对称嵌入配置
