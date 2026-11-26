@@ -62,7 +62,7 @@
     "react-i18next": "^17.1.13",
     "react-markdown": "^10.1.0",
     "react-number-format": "^5.4.5",
-    "react-router-dom": "^7.18.5",
+    "react-router-dom": "^7.18.6",
     "react-select": "^5.10.2",
     "react-syntax-highlighter": "^16.1.2",
     "rehype-katex": "^7.0.1",
