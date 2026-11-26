@@ -225,9 +225,11 @@
    feedback. Scoped overrides, NOT a blanket animation-duration reset (which
    can make some animations more jarring). Unlayered rules beat Tailwind's
    utilities layer; Radix Presence unmounts immediately when animation-name
-   computes to none, so dialogs/popovers still close. The !important also
-   reaches third-party unlayered styles (sonner). Canvas/WebGL graph rendering
-   is JS-driven and out of reach of CSS. */
+   computes to none, so dialogs/popovers still close. The !important lets the
+   universal selector outrank higher-specificity unlayered transition rules
+   (sonner does not rely on it: it ships its own prefers-reduced-motion block
+   for its toasts). Canvas/WebGL graph rendering is JS-driven and out of reach
+   of CSS. */
 @media (prefers-reduced-motion: reduce) {
   /* Looping indicators complete one cycle, then hold still. */
   .animate-spin,

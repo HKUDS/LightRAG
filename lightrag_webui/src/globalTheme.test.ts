@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import type { Window as HappyDomWindow } from 'happy-dom'
 
 /**
  * Global theme contracts of index.css:
@@ -8,13 +9,16 @@ import { afterEach, describe, expect, test } from 'bun:test'
  *   (asserted as COMPUTED style: the real declaration blocks are injected
  *   into happy-dom, which resolves color-scheme).
  * - the prefers-reduced-motion fallback stops looping/spatial animation
- *   while keeping non-motion transitions. happy-dom cannot toggle the
- *   prefers-reduced-motion media feature (matchMedia is always false and
- *   exposes no override), so these rules are pinned at source level — they
- *   are genuinely source-level CSS properties, not rendered component output.
+ *   while keeping non-motion transitions. happy-dom 21.0.4 resolves the
+ *   prefers-reduced-motion media feature from
+ *   window.happyDOM.settings.device.prefersReducedMotion (for matchMedia AND
+ *   getComputedStyle), so these rules are asserted as COMPUTED style on real
+ *   elements with that setting toggled — not pinned at source level.
  * - the destructive tokens reach WCAG AA (4.5:1) in every place the UI uses
- *   them: Badge/Button text on the token (static and /80 hover tint) and
- *   Alert text on the page background, in BOTH themes. The ratios are
+ *   them: Badge/Button text on the token (static and hover tint) and Alert
+ *   text on the page background, in BOTH themes. Badge hovers at /80 and
+ *   Button at /90; /80 mixes more page background into the tint, so it is the
+ *   worse contrast in both themes and bounds Button's /90 too. The ratios are
  *   computed from the actual token values, so a token edit that breaks
  *   contrast fails here rather than in a manual audit.
  */
@@ -117,49 +121,137 @@ describe('color-scheme', () => {
 })
 
 describe('prefers-reduced-motion fallback', () => {
-  const block = (): string => {
-    const start = css.indexOf('@media (prefers-reduced-motion: reduce) {')
+  // The preload registers happy-dom's Window as the global; the DOM lib's
+  // Window type does not carry its happyDOM API, so reach it through the type.
+  const device = (window as unknown as HappyDomWindow).happyDOM.settings.device
+  const initialMotion = device.prefersReducedMotion
+
+  // The real @media block from index.css, kept in its source cascade context:
+  // any @layer wrapping it is preserved. happy-dom drops @layer contents, so a
+  // block moved into a layer computes to nothing and these tests fail — the
+  // alarm for "the override must stay unlayered to outrank the utilities layer".
+  const reducedMotionCss = (): string => {
+    const source = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const start = source.indexOf('@media (prefers-reduced-motion: reduce)')
     if (start === -1) throw new Error('missing prefers-reduced-motion block in index.css')
     let depth = 0
-    for (let i = css.indexOf('{', start); i < css.length; i++) {
-      if (css[i] === '{') depth += 1
-      else if (css[i] === '}') {
+    let end = -1
+    for (let i = source.indexOf('{', start); i < source.length; i++) {
+      if (source[i] === '{') depth += 1
+      else if (source[i] === '}') {
         depth -= 1
-        if (depth === 0) return css.slice(start, i + 1)
+        if (depth === 0) {
+          end = i + 1
+          break
+        }
       }
     }
-    throw new Error('unterminated prefers-reduced-motion block in index.css')
+    if (end === -1) throw new Error('unterminated prefers-reduced-motion block in index.css')
+    const block = source.slice(start, end)
+    let wrapper: string | undefined
+    for (const match of source.matchAll(/@layer\b([^{;]*)\{/g)) {
+      if (match.index === undefined || match.index >= start) continue
+      let layerDepth = 1
+      let i = match.index + match[0].length
+      while (i < source.length && layerDepth > 0) {
+        if (source[i] === '{') layerDepth += 1
+        else if (source[i] === '}') layerDepth -= 1
+        i += 1
+      }
+      if (start < i - 1) wrapper = match[1].trim()
+    }
+    return wrapper === undefined ? block : `@layer ${wrapper} { ${block} }`
   }
 
-  const ruleFor = (selector: string): string | undefined => {
-    const inner = block()
-    const body = inner
-      .slice(inner.indexOf('{') + 1, inner.lastIndexOf('}'))
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-    for (const match of body.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const selectors = match[1].replace(/\s+/g, ' ').trim()
-      if (selectors.split(',').some((s) => s.trim() === selector)) return match[2]
-    }
-    return undefined
+  // Stand-ins for Tailwind's animation/transition utilities. UNLAYERED because
+  // happy-dom drops @layer contents, so a layered base would compute to nothing.
+  // Each base uses the declaration form its override writes (happy-dom does not
+  // expand shorthands into longhands): iteration-count longhand for the looping
+  // indicators, the animation shorthand for enter/exit.
+  const base = `
+    .animate-spin { animation-name: spin; animation-duration: 1s; animation-iteration-count: infinite; }
+    .animate-pulse { animation-name: pulse; animation-duration: 2s; animation-iteration-count: infinite; }
+    .animate-in { animation: enter 150ms ease-out; }
+    .animate-out { animation: exit 150ms ease-in; }
+    .transition-all { transition-property: all; transition-duration: 150ms; }
+    .third-party { transition-property: transform; transition-duration: 200ms; }
+  `
+
+  const style = document.createElement('style')
+  style.id = 'reduced-motion-test'
+  const host = document.createElement('div')
+
+  const element = (className: string): HTMLElement => {
+    const el = document.createElement('div')
+    el.className = className
+    host.appendChild(el)
+    return el
   }
+
+  // happy-dom caches computed style per element and invalidates it only on a DOM
+  // mutation, so toggling the setting alone would return stale values. Re-attach
+  // the probes to force the media query to be re-evaluated.
+  const setMotion = (value: string): void => {
+    device.prefersReducedMotion = value
+    for (const el of Array.from(host.children)) host.appendChild(el)
+  }
+
+  const computed = (el: HTMLElement, property: string): string =>
+    getComputedStyle(el).getPropertyValue(property)
+
+  const transitionList = (el: HTMLElement): string[] =>
+    computed(el, 'transition-property')
+      .split(',')
+      .map((property) => property.trim())
+
+  beforeEach(() => {
+    style.textContent = base + reducedMotionCss()
+    document.head.appendChild(style)
+    document.body.appendChild(host)
+  })
+
+  afterEach(() => {
+    device.prefersReducedMotion = initialMotion
+    style.remove()
+    host.remove()
+    host.replaceChildren()
+  })
 
   test('looping indicators run a single cycle', () => {
-    expect(ruleFor('.animate-spin')).toMatch(/animation-iteration-count:\s*1/)
-    expect(ruleFor('.animate-pulse')).toMatch(/animation-iteration-count:\s*1/)
+    const spin = element('animate-spin')
+    const pulse = element('animate-pulse')
+    expect(computed(spin, 'animation-iteration-count')).toBe('infinite')
+    expect(computed(pulse, 'animation-iteration-count')).toBe('infinite')
+    setMotion('reduce')
+    expect(computed(spin, 'animation-iteration-count')).toBe('1')
+    expect(computed(pulse, 'animation-iteration-count')).toBe('1')
   })
 
   test('spatial enter/exit keyframes resolve to the final state', () => {
-    expect(ruleFor('.animate-in')).toMatch(/animation:\s*none/)
-    expect(ruleFor('.animate-out')).toMatch(/animation:\s*none/)
+    const enter = element('animate-in')
+    const exit = element('animate-out')
+    expect(computed(enter, 'animation')).toBe('enter 150ms ease-out')
+    expect(computed(exit, 'animation')).toBe('exit 150ms ease-in')
+    setMotion('reduce')
+    expect(computed(enter, 'animation')).toBe('none')
+    expect(computed(exit, 'animation')).toBe('none')
   })
 
   test('transitions keep color/opacity feedback and drop movement', () => {
-    const rule = ruleFor('*')
-    expect(rule).toMatch(/transition-property:[^;]*\bcolor\b/)
-    expect(rule).toMatch(/transition-property:[^;]*\bopacity\b/)
-    expect(rule).not.toMatch(/transition-property:[^;]*\btransform\b/)
-    // Must also reach third-party unlayered styles (sonner).
-    expect(rule).toMatch(/!important/)
+    const utility = element('transition-all')
+    // A higher-specificity unlayered rule: only the override's !important lets
+    // the universal selector beat it (the rendered form of the old !important pin).
+    const thirdParty = element('third-party')
+    expect(computed(utility, 'transition-property')).toBe('all')
+    expect(computed(thirdParty, 'transition-property')).toBe('transform')
+    setMotion('reduce')
+    for (const el of [utility, thirdParty]) {
+      const list = transitionList(el)
+      expect(list).toContain('color')
+      expect(list).toContain('opacity')
+      expect(list).not.toContain('transform')
+      expect(list).not.toContain('all')
+    }
   })
 })
 
