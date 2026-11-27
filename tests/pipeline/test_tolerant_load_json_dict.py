@@ -10,6 +10,8 @@ practice; the caller's retry / text fallback covers the rare case.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lightrag.utils import strip_markdown_code_fence, tolerant_load_json_dict
@@ -68,13 +70,6 @@ def test_greedy_regex_would_fail_same_input() -> None:
     raw = '{"facts":[{"text":"ok"}]} trailing {brace}'
     assert _legacy_greedy_load(raw) == {}
     assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
-
-
-def test_single_line_fence_is_stripped() -> None:
-    """The shared fence stripper handles fences with no interior newlines,
-    which the old inline pipeline regex (mandatory ``\\n``) missed."""
-    assert strip_markdown_code_fence('```json {"a":1}```').strip() == '{"a":1}'
-    assert tolerant_load_json_dict('```json {"a":1}```') == {"a": 1}
 
 
 @pytest.mark.parametrize(
@@ -245,3 +240,84 @@ def test_malformed_object_with_trailing_citation_recovers() -> None:
         "type": "Chart",
         "description": "ok",
     }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(
+            '```json {"a":1}```',
+            '{"a":1}',
+            id="3bt-single-line",
+        ),
+        pytest.param(
+            '````json\n{"code": "```py\\nx\\n```"}\n````',
+            '{"code": "```py\\nx\\n```"}',
+            id="4bt-nested-triple-backtick",
+        ),
+        pytest.param(
+            '````json {"a":1}````',
+            '{"a":1}',
+            id="4bt-single-line",
+        ),
+        pytest.param(
+            '~~~json\n{"a": 1}\n~~~',
+            '{"a": 1}',
+            id="tilde-multiline",
+        ),
+        pytest.param(
+            '~~~~JSON\n{"a": 1}\n~~~~',
+            '{"a": 1}',
+            id="4tilde-uppercase-json",
+        ),
+        pytest.param(
+            '~~~json {"a":1}~~~',
+            '{"a":1}',
+            id="tilde-single-line",
+        ),
+        pytest.param(
+            '```json\n{"a": 1}\n````',
+            '{"a": 1}',
+            id="commonmark-longer-backtick-closer",
+        ),
+        pytest.param(
+            '~~~json\n{"a": 1}\n~~~~',
+            '{"a": 1}',
+            id="commonmark-longer-tilde-closer",
+        ),
+    ],
+)
+def test_strip_markdown_code_fence_commonmark_variants(raw: str, expected: str) -> None:
+    """Fences with no interior newline, 4+ backticks around embedded triple
+    backticks, tilde fences and longer closers are all stripped."""
+    assert strip_markdown_code_fence(raw).strip() == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param('````json\n{"a":1}\n```', id="4-open-3-close-mismatch"),
+        pytest.param('```json\n{"a":1}\n~~~', id="backtick-tilde-mismatch"),
+    ],
+)
+def test_strip_markdown_code_fence_rejects_mismatched_fences_by_identity(
+    raw: str,
+) -> None:
+    assert strip_markdown_code_fence(raw) is raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("```json" + " " * 1500 + "x", id="fence-then-spaces"),
+        pytest.param('```json\n{"d":"' + " " * 16000, id="truncated-spaces"),
+        pytest.param("```json\n" + "\n " * 1000, id="newline-space-runs"),
+    ],
+)
+def test_strip_markdown_code_fence_is_linear_on_whitespace_runs(raw: str) -> None:
+    """Degenerate LLM output (whitespace repeated up to the token limit) must
+    not backtrack: a regex with a lazy body between whitespace runs takes
+    seconds on these inputs and blocks the event loop."""
+    started = time.perf_counter()
+    assert strip_markdown_code_fence(raw) is raw
+    assert time.perf_counter() - started < 0.5
