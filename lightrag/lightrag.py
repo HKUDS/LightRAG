@@ -7429,7 +7429,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                (``entity_chunks`` / ``relation_chunks``) and graph
                ``source_id`` lists, then classifies it as either
                *delete-outright* (no remaining sources) or *rebuild*
-               (still references chunks from other documents).
+               (still references chunks from other documents). A candidate
+               with no source at all holds nothing of the document and is
+               left alone.
             3. For *delete-outright* entries: removes the relationship /
                entity from the graph storage, vector storage, and chunk
                tracking, then persists via :py:meth:`_insert_done`.
@@ -7716,6 +7718,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         relationships_to_rebuild: dict[tuple[str, str], list[str]] = {}
         entity_chunk_updates: dict[str, list[str]] = {}
         relation_chunk_updates: dict[tuple[str, str], list[str]] = {}
+        kept_without_source: list[str] = []
 
         try:
             if candidate_entities is None:
@@ -7808,9 +7811,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # does NOT distinguish a present-but-empty tracking row from an
                     # absent one. Here an empty `existing_sources` falls back to the
                     # graph `source_id` below; treating a present-empty row as
-                    # authoritative (as the edit paths now do) would instead route
-                    # the object into `entities_to_delete`, a deletion-behavior
-                    # change that needs its own issue + tests before being applied.
+                    # authoritative (as the edit paths now do) would instead keep
+                    # an object whose `source_id` still names the deleted chunks,
+                    # a deletion-behavior change that needs its own issue + tests
+                    # before being applied.
                     if stored_chunks and isinstance(stored_chunks, dict):
                         existing_sources = [
                             chunk_id
@@ -7829,8 +7833,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     existing_sources = graph_sources
 
                 if not existing_sources:
-                    entities_to_delete.add(node_label)
-                    entity_chunk_updates[node_label] = []
+                    # No source at all, so nothing of this document's to
+                    # subtract (*Candidates without a source* in
+                    # docs/design/PurgeRecoveryContract.md).
+                    kept_without_source.append(node_label)
                     continue
 
                 remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
@@ -7879,8 +7885,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # NOTE: as with the entity branch above, truthiness is
                     # kept here on purpose — a present-but-empty relation tracking
                     # row falls back to the graph `source_id` rather than being
-                    # treated as authoritative "tracks no chunks". Changing that is a
-                    # deletion-behavior change and belongs in its own issue + tests.
+                    # treated as authoritative "tracks no chunks", which would keep an
+                    # edge whose `source_id` still names the deleted chunks. Changing
+                    # that is a deletion-behavior change and belongs in its own
+                    # issue + tests.
                     if stored_chunks and isinstance(stored_chunks, dict):
                         existing_sources = [
                             chunk_id
@@ -7899,8 +7907,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     existing_sources = graph_sources
 
                 if not existing_sources:
-                    relationships_to_delete.add(edge_tuple)
-                    relation_chunk_updates[edge_tuple] = []
+                    # Same as for entities; an edge without a `source_id`
+                    # field is skipped above for the same reason.
+                    kept_without_source.append(f"{edge_tuple[0]}~{edge_tuple[1]}")
                     continue
 
                 remaining_sources = subtract_source_ids(existing_sources, chunk_ids)
@@ -7927,6 +7936,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
                 append_pipeline_history(pipeline_status, log_message)
+                if kept_without_source:
+                    # The accepted residue's recovery path: these are kept, so
+                    # say which, for an operator who wants them gone.
+                    log_message = (
+                        f"[purge] {doc_id}: kept {len(kept_without_source)} "
+                        "candidate(s) with no source: "
+                        + ", ".join(kept_without_source[:10])
+                        + (" ..." if len(kept_without_source) > 10 else "")
+                    )
+                    logger.info(log_message)
+                    append_pipeline_history(pipeline_status, log_message)
 
             # Update entity/relation chunk-tracking with the remaining sources.
             current_time = int(time.time())
