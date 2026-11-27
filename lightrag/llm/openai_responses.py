@@ -68,7 +68,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.exceptions import ContentPolicyViolationError, EmptyTruncatedResponseError
+from lightrag.llm._error_utils import is_content_policy_error
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     provider_timeout,
@@ -467,6 +468,8 @@ async def openai_responses_complete_if_cache(
             generation failed after the request was accepted, or it was
             stopped for a reason other than the output budget. Retried.
         ResponseRefusedError: The model refused. Not retried.
+        ContentPolicyViolationError: Provider moderation rejected the request
+            or stopped generation (``content_filter``). Not retried.
         EmptyTruncatedResponseError: Empty output caused by budget exhaustion.
             Not retried.
         RateLimitError: Retried, except a permanent spend stop
@@ -570,6 +573,17 @@ async def openai_responses_complete_if_cache(
         raise
     except BadRequestError as e:
         await _close_quietly(client)
+        # Provider moderation verdicts (DashScope data_inspection_failed,
+        # Azure content_filter) are deterministic: fail fast with the typed
+        # non-retryable error, keeping the provider's reason in the message.
+        if is_content_policy_error(e):
+            logger.error(
+                f"OpenAI Responses content policy violation (not retrying): {e}"
+            )
+            raise ContentPolicyViolationError(
+                "Content policy violation (provider moderation rejected the "
+                f"request): {e}"
+            ) from e
         # Same transient-400 recovery as the Chat Completions driver: a
         # corrupted request body in transit surfaces as an unparseable-JSON
         # 400 and succeeds on retry. Genuine 400s still fail fast.
@@ -636,7 +650,9 @@ async def _stream_response(
     Stopped generations: ``response.incomplete`` also carries reasons other
     than the output budget, ``content_filter`` chief among them. Those are not
     truncation, so they raise rather than ending the iterator on whatever text
-    had been yielded.
+    had been yielded. ``content_filter`` is a provider moderation verdict and
+    raises the non-retryable ``ContentPolicyViolationError``; any other reason
+    raises the retryable ``InvalidResponseError``.
 
     Refusal: a refused turn streams ``response.refusal.*`` events and can still
     end with ``response.completed``. The refusal text is collected and raised
@@ -805,6 +821,11 @@ async def _stream_response(
                 f"(incomplete_reason={incomplete_reason})"
             )
             logger.error(error_message)
+            # content_filter is a provider moderation verdict, deterministic
+            # for the prompt: the non-retryable typed error. Any other reason
+            # keeps the retryable InvalidResponseError.
+            if incomplete_reason == "content_filter":
+                raise ContentPolicyViolationError(error_message)
             raise InvalidResponseError(error_message)
 
         if truncated:
@@ -880,6 +901,14 @@ async def _stream_response(
             except Exception as close_error:  # noqa: BLE001 - cleanup only
                 logger.warning(f"Failed to close COT tag on error: {close_error}")
         logger.error(f"Error in Responses stream: {e}")
+        # A mid-stream moderation error (DashScope SSE verdict raised as
+        # APIError) is classified here too; the finally block still closes
+        # the stream and client.
+        if is_content_policy_error(e):
+            raise ContentPolicyViolationError(
+                "Content policy violation (provider moderation rejected "
+                f"the stream): {e}"
+            ) from e
         raise
     finally:
         if cot_active and not closing_without_yield:
@@ -944,11 +973,17 @@ async def _handle_non_streaming(
         # any other incomplete reason is a generation that was stopped, and
         # returning its tail would present it as a complete answer.
         if getattr(response, "status", None) == "incomplete" and not truncated:
+            incomplete_reason = _incomplete_reason(response)
             error_message = (
                 "OpenAI Responses request stopped before completion "
-                f"(incomplete_reason={_incomplete_reason(response)})"
+                f"(incomplete_reason={incomplete_reason})"
             )
             logger.error(error_message)
+            # content_filter is a provider moderation verdict, deterministic
+            # for the prompt: the non-retryable typed error. Any other reason
+            # keeps the retryable InvalidResponseError.
+            if incomplete_reason == "content_filter":
+                raise ContentPolicyViolationError(error_message)
             raise InvalidResponseError(error_message)
 
         content = _extract_text(response)
