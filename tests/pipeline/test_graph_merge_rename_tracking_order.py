@@ -99,6 +99,7 @@ class _VectorStorage:
     def __init__(self, global_config):
         self.global_config = global_config
         self.delete_error: BaseException | None = None
+        self.flush_error: BaseException | None = None
 
     async def upsert(self, data):
         pass
@@ -118,6 +119,8 @@ class _VectorStorage:
 
     async def index_done_callback(self):
         await asyncio.sleep(0)
+        if self.flush_error is not None:
+            raise self.flush_error
 
 
 class _DeferredKVStorage(_KVStorage):
@@ -792,6 +795,44 @@ class TestADurableMergeIsNeverReportedAsNotHavingHappened:
             await rag.merge_via_edit()
 
         assert SOURCE not in rag.persisted_graph().nodes()
+
+
+class TestADurableRenameIsNeverReportedAsNotHavingHappened:
+    """A vector flush failing after the rename commit is typed, not bare.
+
+    The rename's vector stores are flushed last, after the graph commit and the
+    tracking retirement, and on a deferred-embedding backend (NanoVectorDB, the
+    default) that flush is where the embedding call runs. Propagating its error
+    as-is told the caller the rename had not happened, although the old name
+    was already gone -- and the retry it invites is refused, because the new
+    name already exists. `_merge_entities_impl` types its own final flush the
+    same way. A non-rename edit keeps the bare error, because re-issuing it
+    rewrites the vector records; `test_graph_deletion_tracking_ordering.py`
+    pins that.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store", ["entities_vdb", "relationships_vdb"])
+    async def test_a_failed_vector_flush_after_the_rename_is_typed(self, rag, store):
+        boom = _Boom("embedding backend timed out")
+        getattr(rag, store).flush_error = boom
+
+        with pytest.raises(VectorStorageConsistencyError) as excinfo:
+            await rag.rename()
+
+        assert excinfo.value.__cause__ is boom
+        message = str(excinfo.value)
+        # SOURCE is a prefix of RENAMED, so match the quoted pair.
+        assert f"`{SOURCE}` to `{RENAMED}`" in message
+        assert "lightrag-rebuild-vdb" in message
+        # The rename really did land, rows included: the report has to match.
+        persisted = rag.persisted_graph()
+        assert RENAMED in persisted.nodes()
+        assert SOURCE not in persisted.nodes()
+        assert rag.entity_chunks.records[RENAMED] == CHUNKS
+        assert SOURCE not in rag.entity_chunks.records
+        assert _rows_without_live_objects(rag) == []
+        assert _live_objects_without_rows(rag) == []
 
 
 class TestMigratedRowsAreDurableBeforeTheRemovalCommit:
