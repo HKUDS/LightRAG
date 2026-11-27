@@ -24,6 +24,57 @@ from typing import Any
 from redis.exceptions import ResponseError, WatchError
 
 
+def redis_glob_match(pattern: str, key: str) -> bool:
+    """Same glob rules as Redis MATCH (stringmatchlen in util.c): * ? [...]
+    with ^ and ranges, and backslash escapes. A plain startswith() here would
+    hide unescaped patterns, since it treats * and ? as normal characters.
+    """
+
+    def match(p: int, k: int) -> bool:
+        while p < len(pattern):
+            c = pattern[p]
+            if c == "*":
+                while p + 1 < len(pattern) and pattern[p + 1] == "*":
+                    p += 1
+                if p + 1 == len(pattern):
+                    return True
+                return any(match(p + 1, j) for j in range(k, len(key) + 1))
+            if k >= len(key):
+                return False
+            if c == "?":
+                pass
+            elif c == "[":
+                p += 1
+                negate = p < len(pattern) and pattern[p] == "^"
+                if negate:
+                    p += 1
+                hit = False
+                while p < len(pattern) and pattern[p] != "]":
+                    if pattern[p] == "\\" and p + 1 < len(pattern):
+                        p += 1
+                        hit |= pattern[p] == key[k]
+                    elif p + 2 < len(pattern) and pattern[p + 1] == "-":
+                        lo, hi = sorted((pattern[p], pattern[p + 2]))
+                        hit |= lo <= key[k] <= hi
+                        p += 2
+                    else:
+                        hit |= pattern[p] == key[k]
+                    p += 1
+                if hit == negate:
+                    return False
+            else:
+                if c == "\\" and p + 1 < len(pattern):
+                    p += 1
+                    c = pattern[p]
+                if c != key[k]:
+                    return False
+            p += 1
+            k += 1
+        return k == len(key)
+
+    return match(0, 0)
+
+
 class FakeRedis:
     def __init__(self):
         self.store: dict[str, str] = {}
@@ -125,11 +176,12 @@ class FakeRedis:
         exercisable — sorting keeps it deterministic and skip-free.
         """
         self._maybe_fail("scan")
-        prefix = match[:-1] if match.endswith("*") else match
         all_keys = (
             list(self.store) + list(self.zsets) + list(self.sets) + list(self.hashes)
         )
-        keys = sorted(k for k in dict.fromkeys(all_keys) if k.startswith(prefix))
+        keys = sorted(
+            k for k in dict.fromkeys(all_keys) if redis_glob_match(match or "*", k)
+        )
         start = int(cursor)
         batch = keys[start : start + count]
         next_cursor = start + count
@@ -178,9 +230,8 @@ class FakeRedis:
         return next_cursor, batch
 
     def scan_iter(self, **kwargs):
-        match = kwargs.get("match", "")
-        prefix = match[:-1] if match.endswith("*") else match
-        keys = [k for k in self.store if k.startswith(prefix)]
+        match = kwargs.get("match") or "*"
+        keys = [k for k in self.store if redis_glob_match(match, k)]
 
         async def _aiter():
             for k in keys:
