@@ -1601,6 +1601,15 @@ Residue on failure is therefore always the recoverable direction: the old object
 are live and still carry their rows, plus an orphaned row under the new key that a
 retry overwrites. Retrying the operation is the recovery step.
 
+**Deleting a document after a rename or merge does not remove what was moved.**
+Deletion finds a document's contributions through its recovery anchors, which
+still name the entities as they were extracted. The renamed entity, the merge
+target and the redirected relations therefore keep the deleted document's chunk
+ids and descriptions, and one that only that document supported stays in the
+graph. Once the graph has been curated this way, per-document deletion is no
+longer exact; edit or delete those objects by hand if they must go. See
+[Merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model).
+
 All operations are available in both synchronous and asynchronous versions. Async versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 * Insert Custom KG
