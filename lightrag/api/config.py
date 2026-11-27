@@ -87,9 +87,11 @@ def get_default_host(binding_type: str, *, use_llm_host: bool = True) -> str:
         # Let the SDK choose its regional endpoint unless explicitly overridden.
         "bedrock": "DEFAULT_BEDROCK_ENDPOINT",
         "gemini": "DEFAULT_GEMINI_ENDPOINT",
+        "voyageai": "DEFAULT_VOYAGEAI_ENDPOINT",
     }
     default_host = defaults.get(binding_type, "http://localhost:11434")
-    if use_llm_host and binding_type != "azure_openai":
+    # voyageai is embedding-only, so LLM_BINDING_HOST never names its endpoint.
+    if use_llm_host and binding_type not in {"azure_openai", "voyageai"}:
         return os.getenv("LLM_BINDING_HOST", default_host)
     return default_host
 

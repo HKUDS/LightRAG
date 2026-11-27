@@ -175,6 +175,23 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
+* OpenAI LLM + VoyageAI Embedding:
+
+```
+LLM_BINDING=openai
+LLM_MODEL=gpt-4o
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your_api_key
+
+EMBEDDING_BINDING=voyageai
+EMBEDDING_BINDING_HOST=DEFAULT_VOYAGEAI_ENDPOINT
+EMBEDDING_MODEL=voyage-3
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING_API_KEY=your_voyage_api_key
+```
+
+> `DEFAULT_VOYAGEAI_ENDPOINT` (or leaving `EMBEDDING_BINDING_HOST` unset or empty) lets the VoyageAI SDK pick the endpoint from the key type: MongoDB Atlas keys (`al-...`) go to `https://ai.mongodb.com/v1`, other keys to `https://api.voyageai.com/v1`. `LLM_BINDING_HOST` is never used for VoyageAI. Set a URL only to route requests through a gateway or proxy, and do not leave another provider's URL here: requests would be sent to it.
+
 > **Important Note**: The embedding model and asymmetric embedding configuration must be determined before document indexing, and the same settings must be used during the query phase. For certain storage solutions (e.g., PostgreSQL), the vector dimension must be defined upon initial table creation. When changing the embedding model, embedding dimension, `EMBEDDING_ASYMMETRIC`, query/document prefixes, or provider task behavior, clear the existing LightRAG workspace/vector data and re-index the source files.
 
 #### Asymmetric Embedding Configuration

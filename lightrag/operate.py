@@ -402,6 +402,11 @@ def _parse_mm_display_name(content: str, fallback: str) -> str:
     return fallback
 
 
+def _summary_description_line(description: str) -> str:
+    """Render one description as a line of the summary prompt's JSONL list."""
+    return json.dumps({"Description": description}, ensure_ascii=False)
+
+
 async def _handle_entity_relation_summary(
     description_type: str,
     entity_or_relation_name: str,
@@ -453,25 +458,14 @@ async def _handle_entity_relation_summary(
 
     # Iterative map-reduce process
     while True:
-        # Calculate total tokens in current list while periodically yielding so
-        # a large merge does not monopolize the event loop in single-worker mode.
-        total_tokens = 0
-        # Tokenize each description once; the chunk-building pass below
-        # reuses these counts instead of re-encoding the same strings.
-        desc_token_counts = []
-        for i, desc in enumerate(current_list, start=1):
-            tokens = len(tokenizer.encode(desc))
-            desc_token_counts.append(tokens)
-            total_tokens += tokens
-            await _cooperative_yield(i, every=32)
-
-        # If total length is within limits, perform final summarization
-        if total_tokens <= summary_context_size or len(current_list) <= 2:
-            if (
-                len(current_list) < force_llm_summary_on_merge
-                and total_tokens < summary_max_tokens
+        # A short list whose bare texts fit is stored as their join, with no
+        # LLM call and no prompt, so the prompt's JSON overhead must not decide
+        # this exit: it is measured on the bare texts, exactly as it is stored.
+        if len(current_list) < force_llm_summary_on_merge:
+            bare_tokens = sum(len(tokenizer.encode(desc)) for desc in current_list)
+            if bare_tokens < summary_max_tokens and (
+                bare_tokens <= summary_context_size or len(current_list) <= 2
             ):
-                # no LLM needed, just join the descriptions
                 # Sanitize for the same reason as the single-description
                 # early return above: inputs merged from pre-existing graph
                 # data are not guaranteed XML-safe.
@@ -479,22 +473,40 @@ async def _handle_entity_relation_summary(
                     separator.join(current_list)
                 )
                 return final_description if final_description else "", llm_was_used
-            else:
-                if total_tokens > summary_context_size and len(current_list) <= 2:
-                    logger.warning(
-                        f"Summarizing {entity_or_relation_name}: Oversize description found"
-                    )
-                # Final summarization of remaining descriptions - LLM will be used
-                final_summary = await _summarize_descriptions(
-                    description_type,
-                    entity_or_relation_name,
-                    current_list,
-                    global_config,
-                    llm_response_cache,
-                    truncation_tally=truncation_tally,
-                    truncation_write_ahead=truncation_write_ahead,
+
+        # Calculate total tokens in current list while periodically yielding so
+        # a large merge does not monopolize the event loop in single-worker mode.
+        total_tokens = 0
+        # Tokenize each description once; the chunk-building pass below
+        # reuses these counts instead of re-encoding the same strings.
+        # Count a description as _summarize_descriptions renders it (a JSON
+        # line plus its newline), because that rendering is what it trims to
+        # summary_context_size. Counting the bare text undercounts every group,
+        # and the trim then silently drops the descriptions at its tail.
+        desc_token_counts = []
+        for i, desc in enumerate(current_list, start=1):
+            tokens = len(tokenizer.encode(_summary_description_line(desc) + "\n"))
+            desc_token_counts.append(tokens)
+            total_tokens += tokens
+            await _cooperative_yield(i, every=32)
+
+        # If total length is within limits, perform final summarization
+        if total_tokens <= summary_context_size or len(current_list) <= 2:
+            if total_tokens > summary_context_size and len(current_list) <= 2:
+                logger.warning(
+                    f"Summarizing {entity_or_relation_name}: Oversize description found"
                 )
-                return final_summary, True  # LLM was used for final summarization
+            # Final summarization of remaining descriptions - LLM will be used
+            final_summary = await _summarize_descriptions(
+                description_type,
+                entity_or_relation_name,
+                current_list,
+                global_config,
+                llm_response_cache,
+                truncation_tally=truncation_tally,
+                truncation_write_ahead=truncation_write_ahead,
+            )
+            return final_summary, True  # LLM was used for final summarization
 
         # Need to split into chunks - Map phase
         # Ensure each chunk has minimum 2 descriptions to guarantee progress
@@ -615,21 +627,27 @@ async def _summarize_descriptions(
     tokenizer = global_config["tokenizer"]
     summary_context_size = global_config["summary_context_size"]
 
-    # Create list of JSON objects with "Description" field
-    json_descriptions = [{"Description": desc} for desc in description_list]
-
     # Use truncate_list_by_token_size for length truncation
-    truncated_json_descriptions = await atruncate_list_by_token_size(
-        json_descriptions,
-        key=lambda x: json.dumps(x, ensure_ascii=False),
+    truncated_descriptions = await atruncate_list_by_token_size(
+        description_list,
+        key=_summary_description_line,
         separator="\n",
         max_token_size=summary_context_size,
         tokenizer=tokenizer,
     )
+    # The map phase sizes groups to fit, so a trim here means an oversize
+    # description (a forced pair, or a final list of two): say what is lost.
+    dropped = len(description_list) - len(truncated_descriptions)
+    if dropped:
+        logger.warning(
+            f"Summarizing {description_type}:{description_name}: {dropped} of "
+            f"{len(description_list)} descriptions exceed summary_context_size "
+            f"({summary_context_size} tokens) and are left out of the summary"
+        )
 
     # Convert to JSONL format (one JSON object per line)
     joined_descriptions = "\n".join(
-        json.dumps(desc, ensure_ascii=False) for desc in truncated_json_descriptions
+        _summary_description_line(desc) for desc in truncated_descriptions
     )
 
     # Prepare context for the prompt
