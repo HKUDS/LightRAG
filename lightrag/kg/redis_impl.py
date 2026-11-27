@@ -70,6 +70,26 @@ from tenacity import (
     before_sleep_log,
 )
 
+# SCAN/KEYS MATCH is a glob, and workspace names can contain * ? [ ]
+# (validate_workspace only checks path safety). Without escaping, workspace
+# "a*" would also match workspace "abc" and drop() would delete its keys.
+# A backslash cannot occur in a workspace name, so the escaping is unambiguous.
+#
+# Accepted residue: escaping does not make the prefixes disjoint. A workspace
+# literally named "<ws>_<namespace>:<rest>" has keys that start with
+# "<ws>_<namespace>:", so workspace <ws>'s patterns still reach them. Only
+# rejecting ":" in workspace names would close that, and it would strand the
+# data of existing workspaces that use one; such a name has to be built on
+# purpose, and the API server never produces one (it maps every character
+# outside [A-Za-z0-9_] to "_").
+_REDIS_GLOB_SPECIAL_RE = re.compile(r"([\\*?\[\]])")
+
+
+def _scan_match(prefix: str) -> str:
+    """Glob pattern matching every key that starts with ``prefix``."""
+    return _REDIS_GLOB_SPECIAL_RE.sub(r"\\\1", prefix) + "*"
+
+
 # Storage-managed ``create_time`` is serialized as the FIRST key of every KV
 # value so it can be recovered with a bounded prefix read instead of pulling
 # the whole row back over the wire -- a ``full_docs`` row is an entire
@@ -82,17 +102,6 @@ from tenacity import (
 # match is not a failure -- it falls back to a full read -- but a needlessly
 # strict pattern would silently send EVERY update down that fallback and
 # quietly undo the optimization.
-# SCAN/KEYS MATCH is a glob, and workspace names can contain * ? [ ]
-# (validate_workspace only checks path safety). Without escaping, workspace
-# "a*" would also match workspace "abc" and drop() would delete its keys.
-_REDIS_GLOB_SPECIAL_RE = re.compile(r"([\\*?\[\]])")
-
-
-def _scan_match(prefix: str) -> str:
-    """Glob pattern matching every key that starts with ``prefix``."""
-    return _REDIS_GLOB_SPECIAL_RE.sub(r"\\\1", prefix) + "*"
-
-
 _CREATE_TIME_PREFIX_BYTES = 64
 _CREATE_TIME_PREFIX_RE = re.compile(r'^\{\s*"create_time"\s*:\s*(-?\d+)\s*[,}]')
 

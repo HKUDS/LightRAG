@@ -121,8 +121,17 @@ async def test_doc_ids_survive_a_colon_in_the_workspace(fake, read):
     assert await storage.get_by_id(ids[0]) is not None
 
 
-@pytest.mark.parametrize("kind", ["kv", "doc_status"])
-@pytest.mark.parametrize("workspace", ["a*", "a?c", "[a]bc"])
+# Each glob character goes through the shared _scan_match once; each drop()
+# implementation (KV, and doc status with its sidecar patterns) once.
+@pytest.mark.parametrize(
+    ("kind", "workspace"),
+    [
+        ("kv", "a*"),
+        ("doc_status", "a*"),
+        ("doc_status", "a?c"),
+        ("doc_status", "[a]bc"),
+    ],
+)
 async def test_drop_leaves_a_glob_matched_workspace_alone(fake, kind, workspace):
     # Each workspace, read as an unescaped glob, matches "abc".
     victim = _make(fake, kind, "abc")
@@ -143,16 +152,8 @@ async def test_drop_leaves_a_glob_matched_workspace_alone(fake, kind, workspace)
     result = await dropped.drop()
 
     assert result["status"] == "success"
+    # is_empty() uses the same pattern: unescaped, it would see abc's keys.
     assert await dropped.is_empty()
     remaining = set(fake.store) | set(fake.zsets) | set(fake.sets)
     assert victim_keys <= remaining
     assert not any(k.startswith(dropped.final_namespace) for k in remaining)
-
-
-@pytest.mark.parametrize("kind", ["kv", "doc_status"])
-async def test_is_empty_ignores_a_glob_matched_workspace(fake, kind):
-    victim = _make(fake, kind, "abc")
-    fake.store[f"{victim.final_namespace}:doc-1"] = json.dumps(_doc_row())
-
-    assert await _make(fake, kind, "a*").is_empty()
-    assert not await victim.is_empty()
