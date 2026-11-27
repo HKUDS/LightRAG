@@ -24,7 +24,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.exceptions import ContentPolicyViolationError, EmptyTruncatedResponseError
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     embedding_timeout,
@@ -358,6 +358,57 @@ def _extract_response_text(
     return ("\n".join(regular_parts), "\n".join(thought_parts))
 
 
+# Safety-family finish reasons are provider moderation / policy verdicts, not
+# caller-budget truncation: they raise the non-retryable
+# ContentPolicyViolationError whether or not partial text exists. Resolved from
+# the SDK enum members; the name fallback keeps the set usable when a member is
+# exposed as its raw string value rather than the enum object.
+_SAFETY_FINISH_REASONS = frozenset(
+    getattr(types.FinishReason, name, name)
+    for name in (
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_RECITATION",
+    )
+)
+
+
+def _content_policy_reason(payload: Any) -> str | None:
+    """Return the provider moderation verdict on a response or stream chunk.
+
+    Two surfaces carry a verdict: ``prompt_feedback.block_reason`` (the prompt
+    was rejected before generation, so candidates may be absent) and a
+    safety-family ``candidates[0].finish_reason`` (generation was stopped by
+    policy). Both are deterministic for a given prompt, so callers raise the
+    non-retryable ``ContentPolicyViolationError`` rather than retrying or
+    returning flagged text. Returns a reason descriptor naming the verdict, or
+    ``None`` when the payload carries no policy verdict.
+    """
+    prompt_feedback = getattr(payload, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None)
+    if block_reason is not None:
+        name = getattr(block_reason, "name", block_reason)
+        return f"prompt_feedback.block_reason={name}"
+
+    candidates = getattr(payload, "candidates", None)
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+        if finish_reason in _SAFETY_FINISH_REASONS:
+            name = getattr(finish_reason, "name", finish_reason)
+            return f"finish_reason={name}"
+    return None
+
+
+# ContentPolicyViolationError (provider moderation verdicts: a safety-family
+# finish_reason or prompt_feedback.block_reason) is deliberately absent from the
+# retry predicate below, like EmptyTruncatedResponseError: the verdict is
+# deterministic for a given prompt, so retrying re-buys the same rejection at
+# full price. A caller that wants another attempt must change the input.
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -455,6 +506,10 @@ async def gemini_complete_if_cache(
     Raises:
         RuntimeError: If the response from Gemini is empty.
         ValueError: If API key is not provided or configured.
+        ContentPolicyViolationError: If provider moderation rejected the prompt
+            (``prompt_feedback.block_reason``) or stopped generation with a
+            safety-family ``finish_reason``, with or without partial text,
+            streaming or not. Not retried; flagged text is never returned.
         google.genai.errors.APIError: When the SDK call fails. 5xx and 429
             responses are retried up to three attempts first; the last
             attempt's exception is raised as-is, never wrapped in
@@ -550,6 +605,19 @@ async def gemini_complete_if_cache(
                     usage = getattr(chunk, "usage_metadata", None)
                     if usage is not None:
                         usage_metadata = usage
+
+                    # A moderation verdict can arrive on a terminal chunk with no
+                    # text, so check before extracting content. Raising here lands
+                    # in the except branch below (closes COT, re-raises); a blocked
+                    # stream must fail loud rather than end empty and successful.
+                    policy_reason = _content_policy_reason(chunk)
+                    if policy_reason is not None:
+                        message = (
+                            "Gemini stream stopped by provider content policy "
+                            f"({policy_reason})"
+                        )
+                        logger.error(message)
+                        raise ContentPolicyViolationError(message)
 
                     # Extract both regular and thought content
                     regular_text, thought_text = _extract_response_text(
@@ -655,6 +723,22 @@ async def gemini_complete_if_cache(
     usage = getattr(response, "usage_metadata", None)
     if token_tracker and usage:
         token_tracker.add_usage(_usage_counts(usage))
+
+    # A provider moderation verdict (input-side prompt_feedback.block_reason, or
+    # a safety-family finish_reason) is deterministic: fail fast with the typed
+    # non-retryable error, naming the reason. Checked before the empty-response
+    # validation so a blocked prompt with absent candidates is not misreported as
+    # "model produced no output", and before the truncation return so flagged
+    # partial text is never returned or cached as a complete answer. Only the
+    # length is logged, never the flagged content.
+    policy_reason = _content_policy_reason(response)
+    if policy_reason is not None:
+        message = (
+            "Gemini content policy violation "
+            f"({policy_reason}, content_len={len(final_text)})"
+        )
+        logger.error(message)
+        raise ContentPolicyViolationError(message)
 
     def _empty_response_error(thought_len: int) -> Exception:
         """Diagnose an empty Gemini response the way the OpenAI binding does.
