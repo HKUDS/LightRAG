@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ThemeProviderContext } from '@/contexts/ThemeProviderContext'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -12,6 +13,21 @@ type ThemeProviderProps = {
 export default function ThemeProvider({ children, ...props }: ThemeProviderProps) {
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
+  const { i18n } = useTranslation()
+
+  // WCAG 3.1.1: the document language must follow the active UI language,
+  // not the HTML shell's static pre-hydration default. Locale ids use
+  // underscores (zh_TW); BCP-47 wants hyphens (zh-TW).
+  useEffect(() => {
+    const syncLang = (language: string) => {
+      window.document.documentElement.lang = language.replace(/_/g, '-')
+    }
+    syncLang(i18n.language)
+    i18n.on('languageChanged', syncLang)
+    return () => {
+      i18n.off('languageChanged', syncLang)
+    }
+  }, [i18n])
 
   useEffect(() => {
     const root = window.document.documentElement
