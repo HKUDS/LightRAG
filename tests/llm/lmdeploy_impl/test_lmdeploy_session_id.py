@@ -12,12 +12,10 @@ import pytest
 
 from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
 
-from .test_lmdeploy_retry import FakeRequestError, _install_fake_lmdeploy
-
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
 
-async def test_concurrent_calls_use_distinct_sessions(monkeypatch):
+async def test_concurrent_calls_use_distinct_sessions(fake_lmdeploy):
     active_sessions: set[int] = set()
     seen_sessions: list[int] = []
     both_in_flight = asyncio.Event()
@@ -26,7 +24,7 @@ async def test_concurrent_calls_use_distinct_sessions(monkeypatch):
         # Mirrors lmdeploy's preprocess(): a session with an active request
         # is refused with a 409 REQUEST_CONFLICT.
         if session_id in active_sessions:
-            raise FakeRequestError(409)
+            raise fake_lmdeploy.RequestError(409)
         active_sessions.add(session_id)
         seen_sessions.append(session_id)
         if len(active_sessions) == 2:
@@ -37,7 +35,7 @@ async def test_concurrent_calls_use_distinct_sessions(monkeypatch):
         finally:
             active_sessions.discard(session_id)
 
-    _install_fake_lmdeploy(monkeypatch, fake_generate)
+    fake_lmdeploy.generate = fake_generate
 
     results = await asyncio.gather(
         lmdeploy_model_if_cache("fake-model", "first"),

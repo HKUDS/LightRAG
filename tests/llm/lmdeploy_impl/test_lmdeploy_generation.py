@@ -1,18 +1,10 @@
-"""Regression coverage for lmdeploy_model_if_cache's do_sample handling.
+"""What lmdeploy_model_if_cache hands to lmdeploy and what it returns.
 
-The function's own docstring documents ``do_sample`` defaulting to False for
-greedy decoding, but the generation branch for lmdeploy >= 0.6.0 used to
-unconditionally overwrite it to True regardless of what was passed in (or
-its documented default) -- see lightrag/llm/lmdeploy.py.
-
-Imports only from lightrag.llm.lmdeploy directly (not via
-tests/extraction/test_keyword_extraction_drivers.py, which also imports
-lightrag.llm.ollama at module level -- that import fails in environments
-without the real `ollama` package installed, which would make these tests
-uncollectable for a reason unrelated to what they're testing).
+``do_sample`` defaults to False (greedy decoding) as the docstring documents;
+it used to be overwritten to True on lmdeploy >= 0.6.0.
 """
 
-import sys
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -22,160 +14,100 @@ from lightrag.utils import TruncatedResponse
 
 pytestmark = [pytest.mark.offline, pytest.mark.asyncio]
 
+_DEFAULT_GEN_CONFIG = {"skip_special_tokens": True, "max_new_tokens": 512}
 
-def _install_fake_lmdeploy(monkeypatch, *, less_than_0_6_0: bool) -> dict:
-    """Install a fake `lmdeploy` module and pipeline, mirroring the mock
-    setup already proven in test_keyword_extraction_drivers.py::
-    test_lmdeploy_strips_response_format_before_generation_config.
 
-    version_info is a plain tuple, matching lmdeploy's real attribute --
-    `version < (0, 6, 0)` works natively without a fake comparable object.
-
-    Returns the dict FakeGenerationConfig populates with its kwargs.
-    """
-    captured_gen_config_kwargs: dict = {}
-
-    class FakeGenerationConfig:
-        def __init__(self, **kwargs):
-            captured_gen_config_kwargs.update(kwargs)
-
-    async def fake_generate(*_args, **_kwargs):
-        yield SimpleNamespace(response="{}", finish_reason="stop")
-
-    monkeypatch.setattr(
-        "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
-        lambda **_kwargs: SimpleNamespace(generate=fake_generate),
-    )
-    version_info = (0, 5, 3) if less_than_0_6_0 else (0, 6, 1)
-    monkeypatch.setitem(
-        sys.modules,
-        "lmdeploy",
-        SimpleNamespace(
-            __version__=".".join(map(str, version_info)),
-            version_info=version_info,
-            GenerationConfig=FakeGenerationConfig,
+@pytest.mark.parametrize(
+    ("call_kwargs", "expected_gen_config", "expected_warnings"),
+    [
+        pytest.param({}, {"do_sample": False}, [], id="defaults"),
+        pytest.param(
+            {"do_sample": True}, {"do_sample": True}, [], id="do-sample-forwarded"
         ),
-    )
-    return captured_gen_config_kwargs
-
-
-@pytest.mark.parametrize(
-    "call_kwargs,expected_do_sample",
-    [
-        pytest.param({}, False, id="omitted-defaults-to-false"),
-        pytest.param({"do_sample": False}, False, id="explicit-false-preserved"),
-        pytest.param({"do_sample": True}, True, id="explicit-true-preserved"),
-    ],
-)
-async def test_do_sample_forwarded_unchanged_on_modern_lmdeploy(
-    monkeypatch, call_kwargs, expected_do_sample
-):
-    """On lmdeploy >= 0.6.0, do_sample must reach GenerationConfig exactly
-    as the caller passed it (or its documented False default), not be
-    silently overwritten to True."""
-    captured = _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
-
-    result = await lmdeploy_model_if_cache(
-        model="lmdeploy-model",
-        prompt="hello",
-        **call_kwargs,
-    )
-
-    assert result == "{}"
-    assert captured["do_sample"] is expected_do_sample
-    # No token-limit option is passed here, so the 512 default applies and the
-    # generic alias never reaches GenerationConfig.
-    assert captured["max_new_tokens"] == 512
-    assert "max_tokens" not in captured
-
-
-@pytest.mark.parametrize(
-    ("generation_kwargs", "expected_max_new_tokens"),
-    [
-        pytest.param({"max_tokens": 37}, 37, id="generic-max-tokens"),
+        pytest.param(
+            {"max_tokens": 37},
+            {"do_sample": False, "max_new_tokens": 37},
+            [],
+            id="generic-max-tokens",
+        ),
         pytest.param(
             {"max_tokens": 37, "max_new_tokens": 41},
-            41,
-            id="native-value-takes-precedence",
+            {"do_sample": False, "max_new_tokens": 41},
+            [],
+            id="native-max-new-tokens-wins",
+        ),
+        pytest.param(
+            {
+                "hashing_kv": object(),
+                "response_format": {"type": "json_object"},
+                "keyword_extraction": True,
+                "entity_extraction": True,
+            },
+            {"do_sample": False},
+            ["entity_extraction=True", "keyword_extraction=True"],
+            id="lightrag-only-kwargs-dropped",
         ),
     ],
 )
-async def test_generation_token_limit_precedence(
-    monkeypatch, generation_kwargs, expected_max_new_tokens
+async def test_generation_config_kwargs(
+    fake_lmdeploy, call_kwargs, expected_gen_config, expected_warnings
 ):
-    """The native setting wins over LightRAG's generic alias."""
-    captured = _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
-
-    result = await lmdeploy_model_if_cache(
-        model="lmdeploy-model",
-        prompt="hello",
-        **generation_kwargs,
-    )
-
-    assert result == "{}"
-    assert captured["max_new_tokens"] == expected_max_new_tokens
-    assert "max_tokens" not in captured
-
-
-@pytest.mark.parametrize(
-    "do_sample_kwarg",
-    [
-        pytest.param({}, id="omitted"),
-        pytest.param({"do_sample": False}, id="explicit-false"),
-        pytest.param({"do_sample": True}, id="explicit-true"),
-    ],
-)
-async def test_pre_0_6_0_version_guard_still_raises(monkeypatch, do_sample_kwarg):
-    """Control: the pre-existing version guard for lmdeploy < 0.6.0 must be
-    unaffected by the do_sample fix -- it should still refuse to proceed,
-    exactly as before, regardless of what (if anything) do_sample was set
-    to."""
-    _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=True)
-
-    with pytest.raises(RuntimeError, match="do_sample.*not supported"):
-        await lmdeploy_model_if_cache(
-            model="lmdeploy-model",
-            prompt="hello",
-            **do_sample_kwarg,
+    """GenerationConfig receives exactly the generation settings; LightRAG's
+    own kwargs never reach it, and the deprecated extraction flags warn."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = await lmdeploy_model_if_cache(
+            model="lmdeploy-model", prompt="hello", **call_kwargs
         )
 
+    assert result == "generated text"
+    assert fake_lmdeploy.gen_config == _DEFAULT_GEN_CONFIG | expected_gen_config
+    messages = [
+        str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)
+    ]
+    assert len(messages) == len(expected_warnings), messages
+    for fragment in expected_warnings:
+        assert any(fragment in message for message in messages), messages
+
+
+async def test_pre_0_6_0_version_guard_raises(fake_lmdeploy):
+    """lmdeploy < 0.6.0 cannot take do_sample, which is always set."""
+    fake_lmdeploy.module.version_info = (0, 5, 3)
+
+    with pytest.raises(RuntimeError, match="do_sample.*not supported"):
+        await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
+
 
 @pytest.mark.parametrize(
-    ("finish_reason", "expected_type"),
+    ("output", "expected_type", "expected_text"),
     [
-        pytest.param("stop", str, id="natural-stop"),
-        pytest.param("length", TruncatedResponse, id="token-limit"),
+        pytest.param(
+            {"text": "natural stop", "finish_reason": "stop"},
+            str,
+            "natural stop",
+            id="natural-stop",
+        ),
+        pytest.param(
+            {"text": "cut off", "finish_reason": "length"},
+            TruncatedResponse,
+            "cut off",
+            id="token-limit-truncated",
+        ),
+        pytest.param(
+            {"response": "legacy text", "finish_reason": "stop"},
+            str,
+            "legacy text",
+            id="legacy-response-attribute",
+        ),
     ],
 )
-async def test_generation_finish_reason_controls_truncation_marker(
-    monkeypatch, finish_reason, expected_type
-):
+async def test_generated_output(fake_lmdeploy, output, expected_type, expected_text):
     async def fake_generate(*_args, **_kwargs):
-        yield SimpleNamespace(text="generated text", finish_reason=finish_reason)
+        yield SimpleNamespace(**output)
 
-    _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
-    monkeypatch.setattr(
-        "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
-        lambda **_kwargs: SimpleNamespace(generate=fake_generate),
-    )
+    fake_lmdeploy.generate = fake_generate
 
     result = await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
 
     assert type(result) is expected_type
-    assert result == "generated text"
-
-
-async def test_legacy_response_attribute_remains_supported(monkeypatch):
-    async def fake_generate(*_args, **_kwargs):
-        yield SimpleNamespace(response="legacy text", finish_reason="stop")
-
-    _install_fake_lmdeploy(monkeypatch, less_than_0_6_0=False)
-    monkeypatch.setattr(
-        "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
-        lambda **_kwargs: SimpleNamespace(generate=fake_generate),
-    )
-
-    result = await lmdeploy_model_if_cache(model="lmdeploy-model", prompt="hello")
-
-    assert type(result) is str
-    assert result == "legacy text"
+    assert result == expected_text
