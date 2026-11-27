@@ -337,3 +337,13 @@ A split also breaks the agreement between extraction paths in a fresh graph: an 
 ### Accepted residue
 
 An object stored under a name the current rules no longer produce (`Acme\nCorp`, `Acme  Corp`) is not migrated: a new extraction of the same entity lands on the merged name, a second node next to the old one. Harmless in direction (an extra node, nothing deleted). Manual edits and merges still reach the old node because `aedit_entity` / `amerge_entities` try the exact spelling before the normalized one, which is also the way to fold the two together.
+
+### Accepted split: JSON identifiers that are not strings
+
+The JSON extraction parser (`_json_extraction_field_text` in `lightrag/operate.py`) once read every identifier with `str()`, so a JSON `null` name or endpoint became `None` and an array became its Python repr (`["Marie Curie"]` → `['Marie Curie']`). It now drops a `null`, a several-item array and an object, and reads a one-item array as its item. That splits two pairs that used to be equal: `null` and the string `"None"`, and `["Marie Curie"]` and the string `"['Marie Curie']"`. The string forms are kept as written, because a string is the model's own text and nothing says it was a repr.
+
+The split was accepted once, against the rule above, because the alternatives were worse for good: keeping the old rules stores a `None` entity and repr-named entities for every such reply from now on, and making the new rules a function of the old result would drop a real entity named `None` and rewrite bracketed strings, turning an old `str()` artifact into a permanent naming rule.
+
+- **What is affected**: only a stored node named `None` or named like a Python list or dict repr, and only when its cached replies contain both the JSON form and the string form. A deletion rebuild of such a node keeps the string-form records alone, so the facts of the JSON-form records are dropped from its description. Any other node is unaffected.
+- **Recovery**: reprocess the documents behind the node as in [Recovery from name drift](#recovery-from-name-drift), or fold the node into the correctly named one with `amerge_entities`.
+- **Not a precedent**: later changes to identifier parsing follow the rule above.

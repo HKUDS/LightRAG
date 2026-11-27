@@ -994,7 +994,10 @@ def _json_extraction_field_text(
     a one-item array is that item, and any other array or an object is read
     as empty, so the caller drops the record instead of storing a repr as a
     name. Joining or picking one of several names would invent an entity or
-    guess the wrong one. ``context`` names the field in that warning.
+    guess the wrong one. ``context`` names the field in that warning. This
+    split old names that used to be equal, an accepted one-time residue: see
+    docs/design/PurgeRecoveryContract.md, "Accepted split: JSON identifiers
+    that are not strings".
     """
     if value is None:
         return ""
