@@ -56,6 +56,22 @@ def _walk_live_view(view, method: str):
         yield item
 
 
+def _graph_edge_id(source: str, target: str) -> str:
+    r"""Edge id for a ``get_knowledge_graph`` result: ``source-target``.
+
+    A ``-`` or ``\`` inside an entity name is escaped with ``\``, so one id
+    names exactly one endpoint pair. Joined without escaping, ``("A", "B-C")``
+    and ``("A-B", "C")`` both gave ``A-B-C``, and the duplicate check below
+    dropped the second edge from the result. Names without either character
+    keep their plain ``A-B`` id.
+    """
+
+    def escape(name: str) -> str:
+        return name.replace("\\", "\\\\").replace("-", "\\-")
+
+    return f"{escape(source)}-{escape(target)}"
+
+
 @final
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
@@ -1374,7 +1390,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Esure unique edge_id for undirect graph
             if str(source) > str(target):
                 source, target = target, source
-            edge_id = f"{source}-{target}"
+            edge_id = _graph_edge_id(str(source), str(target))
             if edge_id in seen_edges:
                 continue
 
