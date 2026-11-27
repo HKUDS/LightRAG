@@ -301,7 +301,7 @@ const EditablePropertyRow = ({
   return (
     <div className="flex items-center gap-1 overflow-hidden">
       <PropertyName name={name} />
-      {!pipelineBusy && <EditIcon onClick={handleEditClick} />}:
+      {!pipelineBusy && <EditIcon onClick={handleEditClick} propertyName={name} />}:
       <PropertyValue
         value={currentValue}
         onClick={onClick}

@@ -2,6 +2,15 @@ import { PencilIcon } from 'lucide-react'
 import Text from '@/components/ui/Text'
 import { useTranslation } from 'react-i18next'
 
+// Shared by the visible label and the edit button's accessible name (and
+// mirrored by PropertyEditDialog's title) so a screen reader announces the
+// same translated name the user sees. Unknown names fall back to the raw key.
+const getPropertyNameTranslation = (t: (key: string) => string, propName: string): string => {
+  const translationKey = `graphPanel.propertiesView.node.propertyNames.${propName}`
+  const translation = t(translationKey)
+  return translation === translationKey ? propName : translation
+}
+
 interface PropertyNameProps {
   name: string
 }
@@ -9,31 +18,36 @@ interface PropertyNameProps {
 export const PropertyName = ({ name }: PropertyNameProps) => {
   const { t } = useTranslation()
 
-  const getPropertyNameTranslation = (propName: string) => {
-    const translationKey = `graphPanel.propertiesView.node.propertyNames.${propName}`
-    const translation = t(translationKey)
-    return translation === translationKey ? propName : translation
-  }
-
   return (
     <span className="text-primary/60 tracking-wide whitespace-nowrap">
-      {getPropertyNameTranslation(name)}
+      {getPropertyNameTranslation(t, name)}
     </span>
   )
 }
 
 interface EditIconProps {
   onClick: () => void
+  propertyName: string
 }
 
-export const EditIcon = ({ onClick }: EditIconProps) => (
-  <div>
-    <PencilIcon
-      className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+export const EditIcon = ({ onClick, propertyName }: EditIconProps) => {
+  const { t } = useTranslation()
+
+  // A native button is the keyboard path into property editing: Enter/Space
+  // activate it and Tab reaches it, none of which a clickable svg offers.
+  return (
+    <button
+      type="button"
       onClick={onClick}
-    />
-  </div>
-)
+      aria-label={t('graphPanel.propertiesView.editProperty', {
+        property: getPropertyNameTranslation(t, propertyName)
+      })}
+      className="inline-flex appearance-none rounded-sm border-0 bg-transparent p-0 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+    >
+      <PencilIcon className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer" />
+    </button>
+  )
+}
 
 interface PropertyValueProps {
   value: any

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -22,6 +23,37 @@ const GraphLabels = () => {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
+
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // A shared graph link carries the selected label in the hash query
+  // (?label=...). On first load the URL outranks the persisted store value,
+  // so opening the link shows the graph it names, not the last local one.
+  useEffect(() => {
+    const urlLabel = searchParams.get('label')
+    if (urlLabel) {
+      useSettingsStore.getState().setQueryLabel(urlLabel)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Mount only: later URL edits are driven by the store, not re-read.
+
+  // Keep the URL shareable: every label change (dropdown selection, rename,
+  // merge refresh) is mirrored into the hash query. `replace` keeps label
+  // switching out of the browser history.
+  useEffect(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (label) {
+          next.set('label', label)
+        } else {
+          next.delete('label')
+        }
+        return next
+      },
+      { replace: true }
+    )
+  }, [label, setSearchParams])
 
   // Pipeline state monitoring
   const pipelineBusy = useBackendState.use.pipelineBusy()
