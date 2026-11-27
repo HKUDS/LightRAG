@@ -17,13 +17,17 @@ from openai import (
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
+    InternalServerError,
 )
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception,
     retry_if_exception_type,
 )
+
+from lightrag.llm.openai import _is_transient_status_error
 
 from lightrag.utils import (
     embedding_timeout,
@@ -40,9 +44,12 @@ import numpy as np
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
+    # The client runs with max_retries=0, so this predicate must cover
+    # everything the SDK's own loop retried: 429, >= 500, 408 and 409.
     retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
+        (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError)
+    )
+    | retry_if_exception(_is_transient_status_error),
     reraise=True,
 )
 async def nvidia_openai_embed(
@@ -73,7 +80,10 @@ async def nvidia_openai_embed(
     if input_type is None:
         input_type = "query" if context == "query" else "passage"
 
-    client_kwargs = {}
+    # @retry above owns retries. The SDK defaults to max_retries=2, which
+    # would turn each of its attempts into up to three requests. This also
+    # drops the SDK's Retry-After handling, as in ``openai.py``.
+    client_kwargs = {"max_retries": 0}
     if base_url is not None:
         client_kwargs["base_url"] = base_url
     if api_key:

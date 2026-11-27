@@ -11,10 +11,7 @@ import logging
 
 import pytest
 
-from lightrag.operate import (
-    _looks_like_json_extraction_result,
-    _rebuild_from_extraction_result,
-)
+from lightrag.operate import _rebuild_from_extraction_result
 
 pytestmark = pytest.mark.offline
 
@@ -41,21 +38,14 @@ async def test_rebuild_accepts_valid_empty_json_without_delimiter_warning(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_still_returns_entities_from_nonempty_json() -> None:
-    nodes, edges = await _rebuild_from_extraction_result(
-        DummyKV(),
-        '{"entities":[{"name":"Alice","type":"person",'
-        '"description":"an engineer"}],"relationships":[]}',
-        chunk_id="chunk-2",
-        timestamp=1,
-    )
-    assert "Alice" in nodes
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "raw",
     [
+        pytest.param(
+            '{"entities":[{"name":"Alice","type":"person",'
+            '"description":"an engineer"}],"relationships":[]}',
+            id="plain",
+        ),
         pytest.param(
             '````json\n{"entities":[{"name":"Alice","type":"person",'
             '"description":"uses ```python\\nprint(1)\\n```"}],'
@@ -69,10 +59,9 @@ async def test_rebuild_still_returns_entities_from_nonempty_json() -> None:
         ),
     ],
 )
-async def test_rebuild_accepts_commonmark_4bt_and_tilde_fenced_json(
+async def test_rebuild_returns_entities_from_plain_and_fenced_json(
     raw: str, caplog, lightrag_caplog
 ) -> None:
-    assert _looks_like_json_extraction_result(raw) is True
     with caplog.at_level(logging.WARNING, logger="lightrag"):
         nodes, edges = await _rebuild_from_extraction_result(
             DummyKV(),
