@@ -11,6 +11,7 @@ driver/session style in ``test_workspace_label_injection.py``.
 """
 
 import pytest
+from neo4j.exceptions import ClientError
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
@@ -50,13 +51,15 @@ class _FakeResult:
 
 
 class _FakeSession:
-    """Routes ``run`` calls by query shape: start-node lookup vs neighbor scan."""
+    """Simulates missing APOC and serves plain-Cypher node and edge queries."""
 
     def __init__(self, node_docs: dict, edges_by_node: dict):
         self._node_docs = node_docs
         self._edges_by_node = edges_by_node
 
     async def run(self, query, entity_id=None, **kwargs):
+        if "CALL apoc.path.subgraphAll" in query:
+            raise ClientError("APOC procedure not found")
         if "RETURN id(n) as node_id, n" in query:
             node = self._node_docs.get(entity_id)
             return _FakeResult([{"n": node, "node_id": 1}] if node else [])
@@ -127,3 +130,31 @@ async def test_robust_fallback_duplicate_queue_entries_not_falsely_truncated():
 
     assert {n.id for n in result.nodes} == {"A", "B", "C", "D"}
     assert result.is_truncated is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("leaf_count", "is_truncated"),
+    [(1000, False), (1001, True)],
+    ids=["at-scan-limit", "over-scan-limit"],
+)
+async def test_get_knowledge_graph_reports_neighbor_scan_truncation(
+    leaf_count, is_truncated
+):
+    storage = _make_storage(
+        {"Hub": _FakeNode("Hub")},
+        {
+            "Hub": [_edge(f"e{i}", f"L{i}") for i in range(leaf_count)],
+            **{f"L{i}": [_edge(f"e{i}", "Hub")] for i in range(leaf_count)},
+        },
+    )
+    storage.global_config["max_graph_nodes"] = 5000
+
+    graph = await storage.get_knowledge_graph("Hub", max_depth=1, max_nodes=5000)
+    payload = graph.model_dump()
+
+    assert (len(payload["nodes"]), len(payload["edges"]), payload["is_truncated"]) == (
+        1001,
+        1000,
+        is_truncated,
+    )

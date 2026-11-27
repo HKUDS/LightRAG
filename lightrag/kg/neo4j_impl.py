@@ -1382,7 +1382,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
-            indicating whether the graph was truncated due to max_nodes limit
+            indicating whether the node cap or the fallback's neighbor scan limit was exceeded.
         """
         # Get max_nodes from global_config if not provided
         if max_nodes is None:
@@ -1622,6 +1622,7 @@ class Neo4JStorage(BaseGraphStorage):
         # Initialize queue for BFS with (node, edge, depth) tuples
         # edge is None for the starting node
         queue = deque([(start_node, None, 0)])
+        max_neighbor_records = 1000
 
         # True BFS implementation using a queue
         while queue:
@@ -1639,9 +1640,8 @@ class Neo4JStorage(BaseGraphStorage):
                 continue
 
             # This is a real, not-yet-visited, in-depth-limit node that cannot
-            # be added because the cap is already full -- that's the only
-            # condition that proves truncation. Checking the cap here (rather
-            # than after appending, or via the while-loop condition) means a
+            # be added because the node cap is already full. Checking the cap
+            # here (rather than after appending or in the while condition) means a
             # queue that runs dry exactly at max_nodes never reaches this
             # check and is never falsely reported as truncated.
             if len(visited_nodes) >= max_nodes:
@@ -1672,9 +1672,12 @@ class Neo4JStorage(BaseGraphStorage):
                 """
                 results = await session.run(query, entity_id=current_node.id)
 
-                # Get all records and release database connection
-                records = await results.fetch(1000)  # Max neighbor nodes we can handle
+                # Probe one extra row to distinguish an exact fit from an incomplete scan.
+                records = await results.fetch(max_neighbor_records + 1)
                 await results.consume()  # Ensure results are consumed
+                if len(records) > max_neighbor_records:
+                    result.is_truncated = True
+                    records.pop()
 
                 # Process all neighbors - capture all edges but only queue unvisited nodes
                 for record in records:
