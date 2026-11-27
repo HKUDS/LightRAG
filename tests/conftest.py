@@ -258,7 +258,8 @@ def _refuse_package_installs(config) -> None:
 
     Provider modules install a missing SDK when they are imported
     (``if not pm.is_installed(...): pm.install(...)``), and collection imports
-    them: two test modules import ``lightrag.llm.lmdeploy`` at module level.
+    them: the ``tests/llm/lmdeploy_impl`` modules import ``lightrag.llm.lmdeploy``
+    at module level.
     CI's ``uv sync`` venv has no pip, so there the install fails on its own.
     An environment that ships pip (the README's ``pip install -e``, conda,
     ``python -m venv``) really installs, and ``lmdeploy[all]`` brings torch.
