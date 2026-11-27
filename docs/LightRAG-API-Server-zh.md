@@ -832,7 +832,7 @@ lightrag-server --embedding-binding gemini --help
 
 > **全部 provider 参数速查：** `--help` 只显示当前所选 binding 的参数组，既不显示默认值也不显示对应的环境变量名。[LLM and Embedding Provider Options Reference](./LLMProviderOptions.md)（英文技术参考）完整列出 `OPENAI_LLM_*`、`OLLAMA_LLM_*`、`GEMINI_LLM_*`、`BEDROCK_LLM_*`、`OLLAMA_EMBEDDING_*`、`GEMINI_EMBEDDING_*` 的每一个变量及其类型与含义，并说明取值规则（未设置即“不下发”、取值语法、各驱动实际转发哪些参数、以及为什么修改 provider 参数不会让 LLM 缓存失效）。
 >
-> 请使用openai兼容方式访问OpenRouter、[OrcaRouter](https://www.orcarouter.ai)、vLLM或SGLang部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给这些提供商传递额外的参数，实现推理模式的关闭或者其它个性化控制。
+> 请使用openai兼容方式访问OpenRouter、[OrcaRouter](https://www.orcarouter.ai)、用于 Apple Silicon 本地服务的 [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX)、vLLM或SGLang部署的LLM。可以通过 `OPENAI_LLM_EXTRA_BODY` 环境变量给这些提供商传递额外的参数，实现推理模式的关闭或者其它个性化控制。
 
 设置 `max_tokens` 参数旨在**防止在实体关系提取阶段出现LLM 响应输出过长或无休止的循环输出的问题**。设置 `max_tokens` 参数的目的是在超时发生之前截断 LLM 输出，从而防止文档提取失败。这解决了某些包含大量实体和关系的文本块（例如表格或引文）可能导致 LLM 产生过长甚至无限循环输出的问题。此设置对于本地部署的小参数模型尤为重要。`max_tokens` 值可以通过以下公式计算：`LLM_TIMEOUT * llm_output_tokens/second`（例如 `240s * 50 tokens/s = 12000`，此时 max_tokens 应小于 12000）。
 
@@ -1058,6 +1058,17 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
+
+对于在 Apple Silicon 上使用 [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) 本地部署的 reranker，使用 Cohere 兼容端点，并将 `RERANK_MODEL` 设置为 `--rerank-model` 指定的模型 ID：
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=mlx-community/Qwen3-Reranker-0.6B-4bit
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=not-needed
+```
+
+未使用 `--api-key` 启动 Rapid-MLX 时可使用占位密钥；否则请填写该密钥。LightRAG 在 Docker 中运行时，请将 `localhost` 替换为可访问宿主机的地址，例如 `host.docker.internal`。聊天和嵌入模型的配置见 `env.example` 中的 Rapid-MLX 示例。
 
 以下是使用阿里云提供的 Reranker 服务的示例配置（`gte-rerank-*` 和 `qwen3-vl-rerank`，它们使用嵌套的 `input`/`parameters` 报文格式）：
 
