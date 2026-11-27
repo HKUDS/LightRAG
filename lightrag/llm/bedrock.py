@@ -470,6 +470,8 @@ async def bedrock_complete_if_cache(
             content = "".join(text_blocks) if text_blocks else None
 
             stop_reason = response.get("stopReason")
+            hit_context_limit = stop_reason == "model_context_window_exceeded"
+            truncated = stop_reason == "max_tokens" or hit_context_limit
 
             usage = response.get("usage") or {}
             if token_tracker is not None and usage:
@@ -503,7 +505,11 @@ async def bedrock_complete_if_cache(
                     outputTokens=usage.get("outputTokens"),
                     reasoning_content_len=reasoning_len,
                 )
-                if stop_reason == "max_tokens":
+                if hit_context_limit:
+                    hint = (
+                        "shorten the input or use a model with a larger context window"
+                    )
+                elif stop_reason == "max_tokens":
                     hint = empty_length_truncated_hint(
                         "consider raising BEDROCK_LLM_MAX_TOKENS or disabling "
                         "thinking mode",
@@ -524,11 +530,12 @@ async def bedrock_complete_if_cache(
                 raise BedrockError(error_message)
 
             # Flag token-limit truncation (Converse API stopReason ==
-            # "max_tokens") so the cache layer skips persisting partial output.
-            if stop_reason == "max_tokens":
+            # "max_tokens" or "model_context_window_exceeded") so the cache
+            # layer skips persisting partial output.
+            if truncated:
                 logger.warning(
                     "Bedrock response truncated by token limit "
-                    f"(stopReason=max_tokens, content_len={len(content)}), returning partial content"
+                    f"(stopReason={stop_reason}, content_len={len(content)}), returning partial content"
                 )
                 content = TruncatedResponse(content)
 
