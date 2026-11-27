@@ -974,7 +974,7 @@ def _looks_like_json_extraction_result(result: str) -> bool:
     if stripped.startswith(("{", "[")):
         return True
 
-    if stripped.startswith("```"):
+    if stripped.startswith(("```", "~~~")):
         return strip_markdown_code_fence(stripped).strip().startswith(("{", "["))
 
     return False

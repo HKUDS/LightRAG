@@ -86,17 +86,22 @@ def test_parse_keywords_payload_extracts_json_from_wrapped_text():
     [
         '```json\n{"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]}\n```',
         '```json {"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]}```',
+        '````json\n{"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]}\n````',
+        '~~~json\n{"high_level_keywords":"AI, Agents","low_level_keywords":["RAG","LightRAG"]}\n~~~',
     ],
-    ids=["multiline-fence", "single-line-fence"],
+    ids=["multiline-fence", "single-line-fence", "4bt-fence", "tilde-fence"],
 )
 def test_parse_keywords_payload_strips_markdown_fence(result):
-    """Keyword parsing shares utils.strip_markdown_code_fence; both multi-line
-    and single-line (no interior newline) fences must be stripped."""
-    is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
+    """Keyword parsing shares utils.strip_markdown_code_fence; every fence it
+    recognises is stripped before json.loads, so json_repair (and its warning)
+    is never needed."""
+    with patch("lightrag.operate.logger.warning") as mocked_warning:
+        is_valid, hl_keywords, ll_keywords = _parse_keywords_payload(result)
 
     assert is_valid is True
     assert hl_keywords == ["AI", "Agents"]
     assert ll_keywords == ["RAG", "LightRAG"]
+    mocked_warning.assert_not_called()
 
 
 @pytest.mark.offline
