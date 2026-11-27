@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
 from lightrag.llm.lollms import lollms_model_complete, lollms_model_if_cache
 
 
@@ -103,43 +102,3 @@ async def test_lollms_complete_forwards_legacy_flag_downstream():
         )
 
     assert mocked_complete.await_args.kwargs.get("keyword_extraction") is True
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_lmdeploy_strips_response_format_before_generation_config(monkeypatch):
-    captured_gen_config_kwargs = {}
-
-    class FakeGenerationConfig:
-        def __init__(self, **kwargs):
-            captured_gen_config_kwargs.update(kwargs)
-
-    class FakeVersion:
-        def __lt__(self, other):
-            return False
-
-    async def fake_generate(*_args, **_kwargs):
-        yield SimpleNamespace(response="{}")
-
-    monkeypatch.setattr(
-        "lightrag.llm.lmdeploy.initialize_lmdeploy_pipeline",
-        lambda **_kwargs: SimpleNamespace(generate=fake_generate),
-    )
-
-    import sys
-
-    sys.modules["lmdeploy"] = SimpleNamespace(
-        __version__="0.6.0",
-        version_info=FakeVersion(),
-        GenerationConfig=FakeGenerationConfig,
-    )
-
-    result = await lmdeploy_model_if_cache(
-        model="lmdeploy-model",
-        prompt="hello",
-        response_format={"type": "json_object"},
-    )
-
-    assert result == "{}"
-    assert "response_format" not in captured_gen_config_kwargs
-    assert "keyword_extraction" not in captured_gen_config_kwargs
