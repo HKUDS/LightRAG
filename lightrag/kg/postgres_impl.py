@@ -7450,7 +7450,13 @@ class PGDocStatusStorage(DocStatusStorage):
         # that the LIMIT/OFFSET slice boundary and the display order are identical.
         # Without it, DESC defaults to NULLS FIRST: nulls land on earlier pages but
         # are re-sorted to the end by the outer ORDER BY, dropping non-null rows.
-        order_clause = f"ORDER BY {sort_field} {sort_direction.upper()} NULLS LAST"
+        # The unique id breaks ties: documents written in one batch share a
+        # timestamp, and LIMIT/OFFSET over a non-unique order is not stable
+        # across pages, so pages would repeat some documents and skip others.
+        direction = sort_direction.upper()
+        tie_break = "" if sort_field == "id" else f", id {direction}"
+        outer_tie_break = "" if sort_field == "id" else f", p.id {direction}"
+        order_clause = f"ORDER BY {sort_field} {direction} NULLS LAST{tie_break}"
 
         # Two-CTE query: total count + page data in a single round-trip.
         #
@@ -7489,7 +7495,7 @@ class PGDocStatusStorage(DocStatusStorage):
             SELECT p.*, t._total_count
             FROM total t
             LEFT JOIN paged p ON true
-            ORDER BY p.{sort_field} {sort_direction.upper()} NULLS LAST
+            ORDER BY p.{sort_field} {direction} NULLS LAST{outer_tie_break}
         """
         query_timing_label = f"{self.workspace} PGDocStatusStorage.get_docs_paginated"
         result = await self.db.query(
