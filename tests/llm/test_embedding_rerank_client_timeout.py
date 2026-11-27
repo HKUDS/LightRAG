@@ -229,7 +229,7 @@ async def _probe_bedrock(monkeypatch, url, extra):
         await module.bedrock_embed.func(["a"], aws_region="us-east-1", **extra)
     assert len(calls) == 1
     config = calls[0].get("config")
-    if config is None:
+    if config is None or "read_timeout" not in config._user_provided_options:
         return _OMITTED
     assert config.connect_timeout == config.read_timeout
     return config.read_timeout

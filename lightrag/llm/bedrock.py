@@ -85,12 +85,17 @@ def _bedrock_client_kwargs(
     aws_secret_access_key: str | None = None,
     aws_session_token: str | None = None,
     timeout: int | None = None,
+    sdk_retries: bool = True,
 ) -> dict:
     """Build kwargs for aioboto3 ``session.client("bedrock-runtime", ...)``.
 
     ``timeout`` (seconds) maps to botocore ``connect_timeout``/``read_timeout``,
     mirroring how the OpenAI driver applies one scalar timeout to every request
     phase. When None, botocore's defaults (60s each) stay in effect.
+
+    Pass ``sdk_retries=False`` for a call made inside ``@retry``: that decorator
+    owns retries, and botocore's own (up to 5 attempts by default) would
+    multiply them. A streamed response runs outside ``@retry`` and keeps them.
     """
     client_kwargs: dict = {"region_name": region}
     if endpoint_url is not None:
@@ -101,13 +106,16 @@ def _bedrock_client_kwargs(
         client_kwargs["aws_secret_access_key"] = aws_secret_access_key
     if aws_session_token:
         client_kwargs["aws_session_token"] = aws_session_token
+    config_kwargs: dict = {}
     # <= 0 or unset keeps botocore's defaults (60s each).
     timeout = provider_timeout(timeout)
     if timeout is not None:
-        client_kwargs["config"] = BotocoreConfig(
-            connect_timeout=timeout,
-            read_timeout=timeout,
-        )
+        config_kwargs["connect_timeout"] = timeout
+        config_kwargs["read_timeout"] = timeout
+    if not sdk_retries:
+        config_kwargs["retries"] = {"total_max_attempts": 1}
+    if config_kwargs:
+        client_kwargs["config"] = BotocoreConfig(**config_kwargs)
     return client_kwargs
 
 
@@ -143,6 +151,12 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
         elif error_code in ["ServiceUnavailableException", "InternalServerException"]:
             logging.error(f"{operation} connection error: {error_msg}")
             raise BedrockConnectionError(f"Service error: {error_msg}")
+
+        # Any other 429 (ModelNotReadyException, ...): botocore retries every
+        # 429, so a call that turns its retries off must retry these here.
+        elif e.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 429:
+            logging.error(f"{operation} rate limit error: {error_msg}")
+            raise BedrockRateLimitError(f"Rate limit error: {error_msg}")
 
         # Check for 5xx HTTP status codes (retryable)
         elif e.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) >= 500:
@@ -442,6 +456,7 @@ async def bedrock_complete_if_cache(
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
             timeout=timeout,
+            sdk_retries=False,
         ),
     ) as bedrock_async_client:
         try:
@@ -642,6 +657,7 @@ async def bedrock_embed(
             aws_secret_access_key=aws_secret_access_key,
             aws_session_token=aws_session_token,
             timeout=embedding_timeout(timeout),
+            sdk_retries=False,
         ),
     ) as bedrock_async_client:
         try:
