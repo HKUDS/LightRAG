@@ -1128,7 +1128,7 @@ RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
 RERANK_BINDING_API_KEY=not-needed
 ```
 
-A placeholder key works unless Rapid-MLX is started with `--api-key`; then use that key. If LightRAG runs in Docker, replace `localhost` with a host-reachable address such as `host.docker.internal`. See the Rapid-MLX example in `env.example` for chat and embedding configuration.
+A placeholder key works while Rapid-MLX authentication is off; if it was started with `--api-key` or `RAPID_MLX_API_KEY`, use that key instead. See the Rapid-MLX example in `env.example` for chat and embedding configuration.
 
 Here is an example configuration for utilizing the Reranker service provided by Aliyun (`gte-rerank-*` and `qwen3-vl-rerank`, which use the nested `input`/`parameters` payload format):
 

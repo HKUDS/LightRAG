@@ -1068,7 +1068,7 @@ RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
 RERANK_BINDING_API_KEY=not-needed
 ```
 
-未使用 `--api-key` 启动 Rapid-MLX 时可使用占位密钥；否则请填写该密钥。LightRAG 在 Docker 中运行时，请将 `localhost` 替换为可访问宿主机的地址，例如 `host.docker.internal`。聊天和嵌入模型的配置见 `env.example` 中的 Rapid-MLX 示例。
+Rapid-MLX 未开启鉴权时可使用占位密钥；若通过 `--api-key` 或 `RAPID_MLX_API_KEY` 设置了密钥，请填写该密钥。聊天和嵌入模型的配置见 `env.example` 中的 Rapid-MLX 示例。
 
 以下是使用阿里云提供的 Reranker 服务的示例配置（`gte-rerank-*` 和 `qwen3-vl-rerank`，它们使用嵌套的 `input`/`parameters` 报文格式）：
 
