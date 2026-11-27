@@ -21,7 +21,7 @@ from anthropic import (
     RateLimitError,
     APITimeoutError,
 )
-from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.exceptions import ContentPolicyViolationError, EmptyTruncatedResponseError
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     empty_length_truncated_hint,
@@ -64,6 +64,10 @@ class InvalidResponseError(Exception):
 # permanent spend-stop 429s fast, which the body-blind SDK loop cannot. This
 # binding has no such classification to protect, and the SDK's
 # ``x-should-retry`` / ``retry-after`` handling is worth keeping.
+#
+# ContentPolicyViolationError is deliberately absent from every retry path: the
+# SDK only retries transport/status failures, never a successful response, so
+# the post-response moderation verdicts classified below fail once by design.
 _DEFAULT_MAX_RETRIES = 4
 
 
@@ -299,6 +303,14 @@ async def anthropic_complete_if_cache(
             ]
             content = "".join(text_blocks) if text_blocks else None
             stop_reason = getattr(response, "stop_reason", None)
+            if stop_reason == "refusal":
+                # The model declined on safety grounds. Raised regardless of
+                # any text that survived: flagged partial output must never be
+                # returned or cached as a complete answer.
+                raise ContentPolicyViolationError(
+                    "Anthropic API refused to generate a response "
+                    f"(stop_reason={stop_reason})"
+                )
             hit_context_limit = stop_reason == "model_context_window_exceeded"
             truncated = stop_reason == "max_tokens" or hit_context_limit
             if content is None or (truncated and not content.strip()):
@@ -367,6 +379,17 @@ async def anthropic_complete_if_cache(
                         value = getattr(usage, field, None)
                         if value is not None:
                             usage_counts[field] = value
+                # ``message_delta`` carries the terminal stop_reason. Raise
+                # before yielding more text: a refusal must reach the consumer
+                # as an error, never as a completed stream.
+                if (
+                    getattr(getattr(event, "delta", None), "stop_reason", None)
+                    == "refusal"
+                ):
+                    raise ContentPolicyViolationError(
+                        "Anthropic API refused to generate a response "
+                        "(stop_reason=refusal)"
+                    )
                 content = (
                     event.delta.text
                     if hasattr(event, "delta")
