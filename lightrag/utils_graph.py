@@ -3154,6 +3154,12 @@ async def _merge_entities_impl(
                     continue
                 seen_edges.add(edge_key)
                 edge_data = await chunk_entity_relation_graph.get_edge(src, tgt)
+                if edge_data is None:
+                    # Removed since get_node_edges listed it -- by a document
+                    # deletion, which takes no per-entity lock. Nothing left to
+                    # redirect, and its vector and tracking rows are that
+                    # deletion's to remove.
+                    continue
                 all_relations.append((src, tgt, edge_data))
 
     # 5. Create or update the target entity. A missing target is intentional:

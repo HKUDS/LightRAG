@@ -100,3 +100,25 @@ async def test_concurrent_edits_of_adjacent_entities_keep_their_edge(rag, kind, 
     stored = await graph.get_edge(*edge)
     assert stored is not None, await graph.get_all_edges()
     assert stored["description"] == "Alice met Carol"
+
+
+@pytest.mark.asyncio
+async def test_merge_skips_an_edge_removed_after_it_was_listed(rag, monkeypatch):
+    """A document deletion takes no per-entity lock and may remove an edge
+    between the merge's ``get_node_edges`` and ``get_edge``; the merge used to
+    crash with ``AttributeError`` after it had already written the target."""
+    graph = rag.chunk_entity_relation_graph
+    real_get_edge = graph.get_edge
+
+    async def vanished(src, tgt):
+        if {src, tgt} == {"Alice", "Carol"}:
+            return None
+        return await real_get_edge(src, tgt)
+
+    monkeypatch.setattr(graph, "get_edge", vanished)
+    result = await rag.amerge_entities(["Alice"], "Bob")
+    monkeypatch.setattr(graph, "get_edge", real_get_edge)
+
+    assert result["entity_name"] == "Bob"
+    assert not await graph.has_node("Alice")
+    assert await graph.get_edge("Bob", "Carol") is None
