@@ -1,4 +1,4 @@
-"""Regression tests for ``Neo4JStorage._robust_fallback`` truncation reporting.
+"""Regression tests for truncation in the Neo4j plain-Cypher fallback.
 
 This is the pure-Cypher BFS fallback used when the APOC plugin is unavailable.
 It used to set ``is_truncated = True`` unconditionally the instant the node
@@ -11,6 +11,7 @@ driver/session style in ``test_workspace_label_injection.py``.
 """
 
 import pytest
+from neo4j.exceptions import ClientError
 
 from lightrag.kg.neo4j_impl import Neo4JStorage
 
@@ -50,13 +51,15 @@ class _FakeResult:
 
 
 class _FakeSession:
-    """Routes ``run`` calls by query shape: start-node lookup vs neighbor scan."""
+    """Simulates missing APOC and serves the fallback's start node and neighbors."""
 
     def __init__(self, node_docs: dict, edges_by_node: dict):
         self._node_docs = node_docs
         self._edges_by_node = edges_by_node
 
     async def run(self, query, entity_id=None, **kwargs):
+        if "apoc.path.subgraphAll" in query:
+            raise ClientError("apoc.path.subgraphAll is unavailable")
         if "RETURN id(n) as node_id, n" in query:
             node = self._node_docs.get(entity_id)
             return _FakeResult([{"n": node, "node_id": 1}] if node else [])
@@ -92,8 +95,7 @@ def _edge(edge_id: str, target_entity_id: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_robust_fallback_reports_truncated_over_cap():
-    """Star graph (A + 5 leaves) with max_nodes=3 must be flagged truncated
-    and must never return more than max_nodes nodes."""
+    """A capped star graph keeps only the edges between its returned nodes."""
     leaves = ["B", "C", "D", "E", "F"]
     node_docs = {n: _FakeNode(n) for n in ["A"] + leaves}
     edges_by_node = {"A": [_edge(f"e{i}", leaf) for i, leaf in enumerate(leaves)]}
@@ -101,10 +103,14 @@ async def test_robust_fallback_reports_truncated_over_cap():
         edges_by_node[leaf] = [_edge(f"e{i}", "A")]
     storage = _make_storage(node_docs, edges_by_node)
 
-    result = await storage._robust_fallback("A", max_depth=5, max_nodes=3)
+    result = await storage.get_knowledge_graph("A", max_depth=1, max_nodes=3)
 
     assert result.is_truncated is True
-    assert len(result.nodes) <= 3
+    assert {node.id for node in result.nodes} == {"A", "B", "C"}
+    assert sorted((edge.source, edge.target) for edge in result.edges) == [
+        ("A", "B"),
+        ("A", "C"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -127,3 +133,4 @@ async def test_robust_fallback_duplicate_queue_entries_not_falsely_truncated():
 
     assert {n.id for n in result.nodes} == {"A", "B", "C", "D"}
     assert result.is_truncated is False
+    assert sorted(edge.id for edge in result.edges) == ["e1", "e2", "e3", "e4"]
