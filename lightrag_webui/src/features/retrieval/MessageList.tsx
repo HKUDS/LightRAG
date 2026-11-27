@@ -290,6 +290,13 @@ export default function MessageList({
     <div className="relative grow">
       <div
         ref={messagesContainerRef}
+        // One polite log region for the whole conversation: screen readers
+        // announce appended messages and streamed answer text without the
+        // user going looking for them. Polite (not assertive) so a streaming
+        // answer never interrupts; a single region so tokens are not
+        // announced twice.
+        role="log"
+        aria-live="polite"
         // Vertical scrolling only. The list must NEVER scroll horizontally:
         // its children legitimately paint outside the content box (the copy
         // buttons' ::after touch targets extend 10px past the message row),

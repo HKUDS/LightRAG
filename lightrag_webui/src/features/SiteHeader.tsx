@@ -135,15 +135,28 @@ export default function SiteHeader() {
               </Tooltip>
             </TooltipProvider>
           )}
+          {/* asChild makes the ANCHOR the single interactive control — a
+              <button> wrapping an <a> is invalid nested interactive content.
+              The aria-label names the link itself, not only its tooltip. */}
           {apiDocsCapability === 'available' && (
-            <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.apiDocs')}>
-              <a href={apiDocsUrl} target="_blank" rel="noopener noreferrer">
+            <Button asChild variant="ghost" size="icon" side="bottom" tooltip={t('header.apiDocs')}>
+              <a
+                href={apiDocsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={t('header.apiDocs')}
+              >
                 <BookOpenIcon className="size-4" aria-hidden="true" />
               </a>
             </Button>
           )}
-          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
-            <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
+          <Button asChild variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
+            <a
+              href={SiteInfo.github}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={t('header.projectRepository')}
+            >
               <GithubIcon className="size-4" />
             </a>
           </Button>

@@ -211,7 +211,16 @@ export const ChatMessage = ({
   // pushing the row past a phone-width bubble.
   const timingRow =
     message.role === 'assistant' && typeof responseTime === 'number' ? (
-      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      // The response-time text ticks every 100ms while the query runs (the
+      // session timer republishes the messages array). Inside the message
+      // list's polite live region that would announce the stopwatch 10x a
+      // second and drown the streamed answer, so hide the row from the a11y
+      // tree while querying; the final static time is exposed once it ends
+      // (historical messages carry isQuerying=false and stay readable).
+      <div
+        aria-hidden={isQuerying}
+        className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground"
+      >
         <span className="flex items-center gap-1 tabular-nums">
           <ClockIcon className={cn('size-3', isQuerying && 'animate-spin')} />
           {t('retrievePanel.chatMessage.responseTime', { time: responseTime.toFixed(1) })}

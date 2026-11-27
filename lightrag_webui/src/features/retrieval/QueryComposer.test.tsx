@@ -1,9 +1,12 @@
 /// <reference types="bun" />
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { readdirSync, readFileSync } from 'fs'
+import { join } from 'path'
 import { cleanup, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
+import en from '@/locales/en.json'
 import QueryComposer from './QueryComposer'
 
 /**
@@ -386,5 +389,90 @@ describe('query composer validation notice', () => {
     // Dismissing is not sending: the draft is still the user's to fix.
     expect((input() as HTMLInputElement).value).toBe('/nope hello')
     expect(sent).toEqual(['/nope hello'])
+  })
+})
+
+/**
+ * Clear is destructive and irreversible: it drops the messages AND the
+ * persisted history. The gate is the behavior — a click on Clear must ask
+ * first, and only the confirm action may run `onClear`.
+ */
+describe('query composer clear confirmation', () => {
+  const strings = en.retrievePanel.retrieval
+  let cleared: number
+
+  const renderWithClear = () =>
+    renderWithProviders(
+      <QueryComposer
+        isLoading={false}
+        stopDisabled={false}
+        onSend={onSend}
+        onStop={() => {}}
+        onClear={() => {
+          cleared += 1
+        }}
+      />
+    )
+
+  beforeEach(() => {
+    cleared = 0
+  })
+
+  test('Clear asks first and runs only after the confirm action', async () => {
+    const user = userEvent.setup()
+    renderWithClear()
+
+    await user.click(screen.getByRole('button', { name: strings.clear }))
+
+    // Opening the dialog is not clearing: nothing has run yet.
+    expect(cleared).toBe(0)
+    const dialog = screen.getByRole('alertdialog')
+    expect(
+      within(dialog).getByRole('heading', { name: strings.clearConfirmTitle })
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText(strings.clearConfirmDescription)).toBeInTheDocument()
+
+    await user.click(
+      within(dialog).getByRole('button', { name: strings.clearConfirmButton })
+    )
+
+    expect(cleared).toBe(1)
+    expect(screen.queryAllByRole('alertdialog')).toHaveLength(0)
+  })
+
+  test('Cancel closes the confirmation without clearing', async () => {
+    const user = userEvent.setup()
+    renderWithClear()
+
+    await user.click(screen.getByRole('button', { name: strings.clear }))
+    const dialog = screen.getByRole('alertdialog')
+    await user.click(
+      within(dialog).getByRole('button', { name: strings.clearConfirmCancel })
+    )
+
+    expect(cleared).toBe(0)
+    expect(screen.queryAllByRole('alertdialog')).toHaveLength(0)
+  })
+
+  test('every interface language ships the clear confirmation strings', () => {
+    const localesDir = join(import.meta.dir, '..', '..', 'locales')
+    const files = readdirSync(localesDir).filter((name) => name.endsWith('.json'))
+    expect(files.length).toBeGreaterThan(1)
+
+    const keys = [
+      'clearConfirmTitle',
+      'clearConfirmDescription',
+      'clearConfirmCancel',
+      'clearConfirmButton'
+    ] as const
+
+    const missing = files.flatMap((name) => {
+      const bundle = JSON.parse(readFileSync(join(localesDir, name), 'utf-8'))
+      const panel = bundle?.retrievePanel?.retrieval
+      return keys
+        .filter((key) => typeof panel?.[key] !== 'string' || panel[key].trim().length === 0)
+        .map((key) => `${name}:${key}`)
+    })
+    expect(missing).toEqual([])
   })
 })

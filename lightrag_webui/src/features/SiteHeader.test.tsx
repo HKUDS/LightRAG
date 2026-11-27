@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event'
 
 import { renderWithProviders } from '@/test/render'
 import { Tabs } from '@/components/ui/Tabs'
-import { useAuthStore } from '@/stores/state'
+import { useAuthStore, useBackendState } from '@/stores/state'
+import { SiteInfo, backendBaseUrl } from '@/lib/constants'
 import SiteHeader from './SiteHeader'
 
 const DESCRIPTION = 'Production cluster — read only'
@@ -32,6 +33,7 @@ afterEach(() => {
   // The store is a module singleton shared by every test file in the run,
   // so it is reset rather than left dirty.
   setDeployment(null, null)
+  useBackendState.setState({ apiDocsCapability: 'unknown' })
 })
 
 describe('admin header deployment identity', () => {
@@ -97,5 +99,55 @@ describe('admin header deployment identity', () => {
     // file-per-entry layout this still resolves to THIS entry (entryHomeHref).
     const link = screen.getByRole('link', { name: /LightRAG/ })
     expect(link.getAttribute('href')).toBe('./')
+  })
+})
+
+/**
+ * The external entries must be ONE interactive element each: a <button>
+ * wrapping an <a> is invalid nested interactive content, and the anchor
+ * itself needs an accessible name — a tooltip alone names nothing for a
+ * screen reader or a keyboard user.
+ */
+describe('header external links', () => {
+  test('the API docs entry is a single named link a keyboard user can reach', async () => {
+    useBackendState.setState({ apiDocsCapability: 'available' })
+    const user = userEvent.setup()
+    renderHeader()
+
+    const links = screen.getAllByRole('link', { name: 'API Documentation' })
+    expect(links).toHaveLength(1)
+    const link = links[0]
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')?.startsWith(`${backendBaseUrl}/docs?theme=`)).toBe(true)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+
+    // No nested interactive control in either direction.
+    expect(within(link).queryAllByRole('button')).toHaveLength(0)
+    expect(link.closest('button') === null).toBe(true)
+
+    // The anchor itself is a tab stop: walk the header's focus order until
+    // focus lands on it (bounded, so a regression fails instead of hanging).
+    let reached = false
+    for (let i = 0; i < 12 && !reached; i++) {
+      await user.tab()
+      reached = document.activeElement === link
+    }
+    expect(reached).toBe(true)
+  })
+
+  test('the repository entry is a single named link, not a button wrapping a link', () => {
+    renderHeader()
+
+    const links = screen.getAllByRole('link', { name: 'Project Repository' })
+    expect(links).toHaveLength(1)
+    const link = links[0]
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe(SiteInfo.github)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+
+    expect(within(link).queryAllByRole('button')).toHaveLength(0)
+    expect(link.closest('button') === null).toBe(true)
   })
 })

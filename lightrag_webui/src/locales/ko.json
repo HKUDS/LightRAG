@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "잘못된 쿼리 모드 접두사입니다. 사용법: /<모드> [공백] 질문",
       "queryEmpty": "보내기 전에 질문을 입력하세요.",
       "queryTooShort": "질문이 너무 짧습니다. 영문 3자 이상 또는 이에 해당하는 조합을 입력하세요. 한국어·중국어·일본어는 글자당 영문 2자로 계산됩니다.",
-      "dismissError": "오류 메시지 닫기"
+      "dismissError": "오류 메시지 닫기",
+      "clearConfirmTitle": "대화를 지우시겠습니까?",
+      "clearConfirmDescription": "모든 메시지와 저장된 대화 기록이 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+      "clearConfirmCancel": "취소",
+      "clearConfirmButton": "대화 지우기"
     },
     "querySettings": {
       "parametersTitle": "매개변수",

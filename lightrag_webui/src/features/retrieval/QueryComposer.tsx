@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Textarea from '@/components/ui/Textarea'
 import Input from '@/components/ui/Input'
-import Button from '@/components/ui/Button'
+import Button, { buttonVariants } from '@/components/ui/Button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
+} from '@/components/ui/AlertDialog'
 import { CircleAlertIcon, EraserIcon, SendIcon, SquareIcon, XIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { isImeComposing } from '@/lib/utils'
@@ -12,6 +23,10 @@ import { isImeComposing } from '@/lib/utils'
  * navigation. Request preparation lives in `onSend`, provided by the page
  * composition layer: it returns an error string to show above the composer,
  * or null to accept (which clears the draft).
+ *
+ * Clear is destructive and irreversible (it drops the messages AND the
+ * persisted history), so it is gated behind a confirmation dialog: `onClear`
+ * runs only after the user confirms.
  */
 export interface QueryComposerProps {
   isLoading: boolean
@@ -225,17 +240,43 @@ export default function QueryComposer({
           </button>
         </div>
       )}
-      <Button
-        type="button"
-        variant="outline"
-        onClick={onClear}
-        disabled={isLoading}
-        size="sm"
-        className="min-h-11"
-      >
-        <EraserIcon />
-        {t('retrievePanel.retrieval.clear')}
-      </Button>
+      {/* Clear drops the messages AND the persisted history with no undo, so
+          it asks first; onClear runs only from the dialog's confirm action. */}
+      <AlertDialog>
+        <AlertDialogTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={isLoading}
+            size="sm"
+            className="min-h-11"
+          >
+            <EraserIcon />
+            {t('retrievePanel.retrieval.clear')}
+          </Button>
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('retrievePanel.retrieval.clearConfirmTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('retrievePanel.retrieval.clearConfirmDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>
+              {t('retrievePanel.retrieval.clearConfirmCancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={onClear}
+              className={buttonVariants({ variant: 'destructive' })}
+            >
+              {t('retrievePanel.retrieval.clearConfirmButton')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="relative flex-1">
         <label htmlFor="query-input" className="sr-only">
           {t('retrievePanel.retrieval.placeholder')}

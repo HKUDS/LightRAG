@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "Prefix mode query tidak valid. Gunakan: /<mode> [spasi] query Anda",
       "queryEmpty": "Masukkan pertanyaan sebelum mengirim.",
       "queryTooShort": "Query Anda terlalu pendek. Masukkan setidaknya 3 karakter bahasa Inggris atau kombinasi yang setara; setiap karakter Mandarin, Jepang, atau Korea dihitung sebagai 2.",
-      "dismissError": "Tutup error"
+      "dismissError": "Tutup error",
+      "clearConfirmTitle": "Bersihkan Percakapan?",
+      "clearConfirmDescription": "Tindakan ini akan menghapus semua pesan dan riwayat percakapan yang tersimpan. Tindakan ini tidak dapat dibatalkan.",
+      "clearConfirmCancel": "Batal",
+      "clearConfirmButton": "Bersihkan Percakapan"
     },
     "querySettings": {
       "parametersTitle": "Parameter",

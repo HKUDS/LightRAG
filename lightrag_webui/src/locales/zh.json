@@ -447,7 +447,11 @@
       "queryModePrefixInvalid": "无效的查询模式前缀。请使用：/<模式> [空格] 查询内容",
       "queryEmpty": "发送前请先输入问题。",
       "queryTooShort": "查询内容太短。请至少输入 3 个英文字符或等效组合；每个中日韩字符按 2 个英文字符计算。",
-      "dismissError": "关闭错误提示"
+      "dismissError": "关闭错误提示",
+      "clearConfirmTitle": "清空对话？",
+      "clearConfirmDescription": "此操作将删除所有消息和已保存的聊天历史，且无法撤销。",
+      "clearConfirmCancel": "取消",
+      "clearConfirmButton": "清空对话"
     },
     "querySettings": {
       "parametersTitle": "参数",
