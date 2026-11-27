@@ -243,6 +243,9 @@ async def test_node_merge_keeps_distinct_descriptions():
         ),
         # A relation-endpoint placeholder is not a vote.
         pytest.param("UNKNOWN", ["person"], "person", id="placeholder-yields"),
+        # With no other vote the stored placeholder is kept, not an empty
+        # Counter that raises IndexError.
+        pytest.param("UNKNOWN", [], "UNKNOWN", id="placeholder-alone-kept"),
     ],
 )
 async def test_node_merge_entity_type_vote(stored_type, new_types, expected):
