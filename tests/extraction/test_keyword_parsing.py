@@ -364,14 +364,18 @@ async def test_json_mode_auto_does_not_retry_unrelated_errors():
 @pytest.mark.offline
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("json_mode", "expected_format"),
-    [("json_object", {"type": "json_object"}), ("none", None)],
+    ("json_mode", "expected"),
+    [
+        ("json_object", {"response_format": {"type": "json_object"}}),
+        # Absent, not None: adapters forward every supplied kwarg to the SDK.
+        ("none", {}),
+    ],
 )
-async def test_explicit_json_mode_sets_response_format(json_mode, expected_format):
+async def test_explicit_json_mode_sets_response_format(json_mode, expected):
     calls = []
 
     async def keyword_model(*_args, **kwargs):
-        calls.append(kwargs.get("response_format"))
+        calls.append({k: v for k, v in kwargs.items() if k == "response_format"})
         return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
 
     global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
@@ -381,7 +385,7 @@ async def test_explicit_json_mode_sets_response_format(json_mode, expected_forma
         "hello", QueryParam(), global_config, hashing_kv=None
     )
 
-    assert calls == [expected_format]
+    assert calls == [expected]
     # The tolerant parser reads plain JSON text as well as a JSON-mode response.
     assert (hl_keywords, ll_keywords) == (["AI"], ["RAG"])
 
