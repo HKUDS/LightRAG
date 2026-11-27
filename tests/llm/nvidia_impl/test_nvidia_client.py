@@ -13,7 +13,13 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import openai._base_client as openai_base_client
 import pytest
-from openai import AsyncOpenAI, RateLimitError
+from openai import (
+    APIStatusError,
+    AsyncOpenAI,
+    ConflictError,
+    InternalServerError,
+    RateLimitError,
+)
 from tenacity import wait_none
 
 from lightrag.llm import nvidia_openai
@@ -55,15 +61,25 @@ async def test_exhausted_retries_reraise_the_sdk_error(monkeypatch):
     assert fake.close.await_count == 3
 
 
-async def test_each_retry_attempt_sends_one_request(monkeypatch):
-    """@retry owns retries, so the SDK must not retry inside each attempt."""
+@pytest.mark.parametrize(
+    "status, error_type",
+    [
+        (429, RateLimitError),
+        (503, InternalServerError),
+        (408, APIStatusError),
+        (409, ConflictError),
+    ],
+)
+async def test_each_retry_attempt_sends_one_request(monkeypatch, status, error_type):
+    """@retry owns retries: the SDK must not retry inside an attempt, and the
+    predicate must still retry every status the SDK's own loop retried."""
     monkeypatch.setattr(nvidia_openai_embed.func.retry, "wait", wait_none())
     monkeypatch.setattr(openai_base_client, "INITIAL_RETRY_DELAY", 0.001)
     requests = []
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(429, json={"error": {"message": "rate limited"}})
+        return httpx.Response(status, json={"error": {"message": "unavailable"}})
 
     def create_client(**kwargs):
         transport = httpx.MockTransport(respond)
@@ -71,7 +87,7 @@ async def test_each_retry_attempt_sends_one_request(monkeypatch):
 
     monkeypatch.setattr(nvidia_openai, "AsyncOpenAI", create_client)
 
-    with pytest.raises(RateLimitError):
+    with pytest.raises(error_type):
         await nvidia_openai_embed(texts=["hello"], api_key="k")
 
     assert len(requests) == 3
