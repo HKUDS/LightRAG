@@ -308,29 +308,6 @@ async def test_extract_keywords_only_partitions_cache_by_keyword_llm_identity():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_json_mode_auto_sends_response_format_by_default():
-    """Supported providers must not be downgraded: the first attempt carries the
-    API-enforced JSON constraint unless the policy says otherwise."""
-    captured_kwargs = {}
-
-    async def keyword_model(*_args, **kwargs):
-        captured_kwargs.update(kwargs)
-        return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
-
-    hl_keywords, ll_keywords = await extract_keywords_only(
-        "hello",
-        QueryParam(),
-        _keyword_global_config("model-a", keyword_func=keyword_model),
-        hashing_kv=None,
-    )
-
-    assert captured_kwargs["response_format"] == {"type": "json_object"}
-    assert hl_keywords == ["AI"]
-    assert ll_keywords == ["RAG"]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 async def test_json_mode_auto_retries_once_without_response_format_on_compat_error():
     """The regression for servers such as LM Studio that reject response_format.
 
@@ -386,41 +363,53 @@ async def test_json_mode_auto_does_not_retry_unrelated_errors():
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_json_mode_object_always_sends_response_format():
-    captured_kwargs = {}
+@pytest.mark.parametrize(
+    ("json_mode", "expected"),
+    [
+        ("json_object", {"response_format": {"type": "json_object"}}),
+        # Absent, not None: adapters forward every supplied kwarg to the SDK.
+        ("none", {}),
+    ],
+)
+async def test_explicit_json_mode_sets_response_format(json_mode, expected):
+    calls = []
 
     async def keyword_model(*_args, **kwargs):
-        captured_kwargs.update(kwargs)
-        return '{"high_level_keywords":[],"low_level_keywords":[]}'
-
-    global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
-    global_config["keyword_extraction_json_mode"] = "json_object"
-
-    await extract_keywords_only("hello", QueryParam(), global_config, hashing_kv=None)
-
-    assert captured_kwargs["response_format"] == {"type": "json_object"}
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_json_mode_none_never_sends_response_format():
-    captured_kwargs = {}
-
-    async def keyword_model(*_args, **kwargs):
-        captured_kwargs.update(kwargs)
+        calls.append({k: v for k, v in kwargs.items() if k == "response_format"})
         return '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
 
     global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
-    global_config["keyword_extraction_json_mode"] = "none"
+    global_config["keyword_extraction_json_mode"] = json_mode
 
     hl_keywords, ll_keywords = await extract_keywords_only(
         "hello", QueryParam(), global_config, hashing_kv=None
     )
 
-    assert "response_format" not in captured_kwargs
+    assert calls == [expected]
     # The tolerant parser reads plain JSON text as well as a JSON-mode response.
-    assert hl_keywords == ["AI"]
-    assert ll_keywords == ["RAG"]
+    assert (hl_keywords, ll_keywords) == (["AI"], ["RAG"])
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_json_mode_object_does_not_retry_on_compat_error():
+    """Only ``auto`` may drop the constraint: an explicit ``json_object`` policy
+    surfaces the provider's rejection instead of silently degrading."""
+    calls = []
+
+    async def keyword_model(*_args, **kwargs):
+        calls.append(kwargs.get("response_format"))
+        raise RuntimeError("'response_format.type' must be 'json_schema' or 'text'")
+
+    global_config = _keyword_global_config("model-a", keyword_func=keyword_model)
+    global_config["keyword_extraction_json_mode"] = "json_object"
+
+    with pytest.raises(RuntimeError, match="response_format"):
+        await extract_keywords_only(
+            "hello", QueryParam(), global_config, hashing_kv=None
+        )
+
+    assert calls == [{"type": "json_object"}]
 
 
 @pytest.mark.offline
