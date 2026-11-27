@@ -11,7 +11,10 @@ import logging
 
 import pytest
 
-from lightrag.operate import _rebuild_from_extraction_result
+from lightrag.operate import (
+    _looks_like_json_extraction_result,
+    _rebuild_from_extraction_result,
+)
 
 pytestmark = pytest.mark.offline
 
@@ -47,3 +50,36 @@ async def test_rebuild_still_returns_entities_from_nonempty_json() -> None:
         timestamp=1,
     )
     assert "Alice" in nodes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(
+            '````json\n{"entities":[{"name":"Alice","type":"person",'
+            '"description":"uses ```python\\nprint(1)\\n```"}],'
+            '"relationships":[]}\n````',
+            id="4bt-nested-fence",
+        ),
+        pytest.param(
+            '~~~json\n{"entities":[{"name":"Alice","type":"person",'
+            '"description":"an engineer"}],"relationships":[]}\n~~~',
+            id="tilde-fence",
+        ),
+    ],
+)
+async def test_rebuild_accepts_commonmark_4bt_and_tilde_fenced_json(
+    raw: str, caplog, lightrag_caplog
+) -> None:
+    assert _looks_like_json_extraction_result(raw) is True
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        nodes, edges = await _rebuild_from_extraction_result(
+            DummyKV(),
+            raw,
+            chunk_id="chunk-cm-fence",
+            timestamp=1,
+        )
+    assert "Alice" in nodes
+    assert edges == {}
+    assert "Complete delimiter can not be found" not in caplog.text
