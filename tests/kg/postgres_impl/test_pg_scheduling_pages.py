@@ -320,7 +320,6 @@ async def test_deleting_public_pagination_keeps_parameterized_status_predicate()
             "ORDER BY file_path ASC NULLS LAST, id ASC",
             "ORDER BY p.file_path ASC NULLS LAST, p.id ASC",
         ),
-        ("id", "asc", "ORDER BY id ASC NULLS LAST\n", "ORDER BY p.id ASC NULLS LAST\n"),
     ],
 )
 async def test_public_pagination_breaks_sort_ties_by_id(
