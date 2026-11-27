@@ -1,4 +1,4 @@
-"""Bedrock dimension settings must reach the real SDK request boundary."""
+"""Bedrock embedding requests and responses through the real SDK boundary."""
 
 import sys
 from collections.abc import AsyncIterator
@@ -35,8 +35,19 @@ async def bedrock_endpoint(
                 "session_token": request.headers.get("X-Amz-Security-Token"),
             }
         )
-        if model.startswith("cohere."):
-            response = {"embeddings": [[0.1] * 1024 for _ in body["texts"]]}
+        if model.endswith("cohere.embed-v4:0"):
+            vectors = [
+                [0.25 * index] * 1536 for index, _ in enumerate(body["texts"], 1)
+            ]
+            response = {
+                "embeddings": {"float": vectors},
+                "response_type": "embeddings_by_type",
+            }
+        elif model == "cohere.embed-english-v3":
+            vectors = [
+                [0.25 * index] * 1024 for index, _ in enumerate(body["texts"], 1)
+            ]
+            response = {"embeddings": vectors, "response_type": "embeddings_floats"}
         else:
             dimension = 1536 if "v1" in model else body.get("dimensions", 1024)
             vector = [0.1] * dimension
@@ -57,17 +68,35 @@ async def bedrock_endpoint(
 
 
 @pytest.mark.parametrize(
-    ("model", "dimension", "send_dimensions"),
+    ("model", "dimension", "send_dimensions", "text_count"),
     [
         # v2 forwards ``dimensions`` unchanged; there is no allowed-value check.
-        ("amazon.titan-embed-text-v2:0", 256, True),
-        ("amazon.titan-embed-text-v2:0", 1024, False),
-        ("amazon.titan-embed-text-v1", 1536, True),
-        ("cohere.embed-english-v3", 1024, True),
+        ("amazon.titan-embed-text-v2:0", 256, True, 2),
+        ("amazon.titan-embed-text-v2:0", 1024, False, 2),
+        ("amazon.titan-embed-text-v1", 1536, True, 2),
+        ("cohere.embed-english-v3", 1024, True, 2),
+        pytest.param("cohere.embed-v4:0", 1536, False, 1, id="cohere-v4-single"),
+        pytest.param("cohere.embed-v4:0", 1536, False, 2, id="cohere-v4-batch"),
+        pytest.param("us.cohere.embed-v4:0", 1536, False, 2, id="cohere-v4-us"),
+        pytest.param("global.cohere.embed-v4:0", 1536, False, 2, id="cohere-v4-global"),
+        pytest.param(
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.cohere.embed-v4:0",
+            1536,
+            False,
+            2,
+            id="cohere-v4-profile-arn",
+        ),
+        pytest.param(
+            "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0",
+            1024,
+            False,
+            1,
+            id="titan-v2-foundation-arn",
+        ),
     ],
 )
 async def test_server_embedding_dimension(
-    bedrock_endpoint, model: str, dimension: int, send_dimensions: bool
+    bedrock_endpoint, model: str, dimension: int, send_dimensions: bool, text_count: int
 ):
     with patch.object(sys, "argv", ["lightrag-server"]):
         from lightrag.api.lightrag_server import create_embedding_function_from_args
@@ -95,10 +124,18 @@ async def test_server_embedding_dimension(
     )
     embedding = create_embedding_function_from_args(args)
 
-    result = await embedding(["a document", "another document"])
+    texts = ["a document", "another document"][:text_count]
+    result = await embedding(texts)
 
-    assert result.shape == (2, dimension)
-    assert len(requests) == (1 if model.startswith("cohere.") else 2)
+    assert result.shape == (text_count, dimension)
+    if "cohere." in model:
+        assert [r["body"] for r in requests] == [
+            {"texts": texts, "input_type": "search_document", "truncate": "NONE"}
+        ]
+        assert result[:, 0].tolist() == [0.25, 0.5][:text_count]
+    else:
+        assert [r["body"]["inputText"] for r in requests] == texts
+        assert result[:, 0].tolist() == [0.1] * text_count
     assert all(r["model"] == model for r in requests)
     if "v2" in model and send_dimensions:
         assert all(r["body"]["dimensions"] == dimension for r in requests)
