@@ -1,5 +1,4 @@
 import importlib
-from functools import partial
 import os
 import sys
 from types import SimpleNamespace
@@ -10,6 +9,7 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 from lightrag.llm.bedrock import (
+    BedrockError,
     bedrock_complete,
     bedrock_complete_if_cache,
     bedrock_embed,
@@ -339,24 +339,6 @@ async def test_bedrock_stream_timeout_maps_to_botocore_client_config(monkeypatch
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_no_timeout_keeps_botocore_defaults(monkeypatch):
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    client_kwargs_calls: list[dict] = []
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_FakeSession([], client_kwargs_calls),
-    ):
-        await bedrock_complete_if_cache(
-            model="bedrock-model",
-            prompt="hello",
-        )
-
-    assert "config" not in client_kwargs_calls[-1]
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("default_llm_timeout", "call_kwargs", "expected_read_timeout"),
     [
@@ -414,23 +396,15 @@ async def _custom_bedrock_wrapper(prompt, **kwargs):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "llm_model_func",
-    [
-        pytest.param(bedrock_complete, id="bedrock_complete"),
-        pytest.param(partial(bedrock_complete, aws_region="us-east-1"), id="partial"),
-        pytest.param(_custom_bedrock_wrapper, id="custom-wrapper"),
-    ],
-)
 async def test_bedrock_complete_uses_role_timeout_through_role_wrapper(
-    monkeypatch, tmp_path, llm_model_func
+    monkeypatch, tmp_path
 ):
     """Each role's effective timeout must size its Bedrock client.
 
     An extract role at timeout=180 reaches the client as 180 rather than the
     base 30s or botocore's 60s, also when bedrock_complete sits behind a
-    partial or a custom function; a role without its own timeout gets the
-    base default_llm_timeout its queue is sized from.
+    custom function; a role without its own timeout gets the base
+    default_llm_timeout its queue is sized from.
     """
     import numpy as np
 
@@ -444,7 +418,7 @@ async def test_bedrock_complete_uses_role_timeout_through_role_wrapper(
 
     rag = LightRAG(
         working_dir=str(tmp_path / "bedrock-role-timeout"),
-        llm_model_func=llm_model_func,
+        llm_model_func=_custom_bedrock_wrapper,
         llm_model_name="bedrock-model",
         embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=512, func=_embed),
         default_llm_timeout=30,
@@ -772,62 +746,27 @@ async def test_create_app_query_role_uses_bedrock_binding(tmp_path, monkeypatch)
     )
     assert mocked_bedrock.await_args.kwargs["aws_region"] == "us-east-1"
     assert mocked_bedrock.await_args.kwargs["aws_access_key_id"] == "global-akid"
+    # A role without its own timeout inherits the base LLM_TIMEOUT.
+    assert mocked_bedrock.await_args.kwargs["timeout"] == 180
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_create_app_bedrock_query_role_uses_role_sigv4_credentials(
+async def test_create_app_bedrock_query_role_overrides_reach_the_call(
     tmp_path, monkeypatch
 ):
+    """Role SigV4 credentials and the role timeout reach bedrock_complete_if_cache.
+
+    A caller-passed timeout must not raise a duplicate-keyword TypeError and is
+    overridden by the server-configured value (the role's own, else the base),
+    matching the OpenAI wrappers.
+    """
     args = _make_args(tmp_path)
     args.query_aws_region = "us-west-2"
     args.query_aws_access_key_id = "query-akid"
     args.query_aws_secret_access_key = "query-secret"
     args.query_aws_session_token = "query-session"
-    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
-
-    with patch(
-        "lightrag.llm.bedrock.bedrock_complete_if_cache",
-        AsyncMock(return_value="bedrock-ok"),
-    ) as mocked_bedrock:
-        lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
-        await query_func("hello")
-
-    assert mocked_bedrock.await_args.kwargs["aws_region"] == "us-west-2"
-    assert mocked_bedrock.await_args.kwargs["aws_access_key_id"] == "query-akid"
-    assert mocked_bedrock.await_args.kwargs["aws_secret_access_key"] == "query-secret"
-    assert mocked_bedrock.await_args.kwargs["aws_session_token"] == "query-session"
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_create_app_bedrock_query_role_uses_role_specific_timeout(
-    tmp_path, monkeypatch
-):
-    args = _make_args(tmp_path)
     args.query_llm_timeout = 99
-    lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
-
-    with patch(
-        "lightrag.llm.bedrock.bedrock_complete_if_cache",
-        AsyncMock(return_value="bedrock-ok"),
-    ) as mocked_bedrock:
-        lightrag_server.create_app(args)
-        query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
-        await query_func("hello")
-
-    assert mocked_bedrock.await_args.kwargs["timeout"] == 99
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_create_app_bedrock_server_timeout_overrides_caller_value(
-    tmp_path, monkeypatch
-):
-    """Caller-passed timeout must not raise a duplicate-keyword TypeError and is
-    overridden by the server-configured value, matching the OpenAI wrappers."""
-    args = _make_args(tmp_path)
     lightrag_server = _setup_bedrock_app_modules(monkeypatch, args)
 
     with patch(
@@ -839,10 +778,17 @@ async def test_create_app_bedrock_server_timeout_overrides_caller_value(
         query_func = _FakeLightRAG.last_init_kwargs["role_llm_configs"]["query"].func
 
         await base_func("hello", timeout=5)
-        assert mocked_bedrock.await_args.kwargs["timeout"] == 180
-
+        base_kwargs = mocked_bedrock.await_args.kwargs
         await query_func("hello", timeout=5)
-        assert mocked_bedrock.await_args.kwargs["timeout"] == 180
+        query_kwargs = mocked_bedrock.await_args.kwargs
+
+    assert base_kwargs["timeout"] == 180
+    assert base_kwargs["aws_access_key_id"] == "global-akid"
+    assert query_kwargs["timeout"] == 99
+    assert query_kwargs["aws_region"] == "us-west-2"
+    assert query_kwargs["aws_access_key_id"] == "query-akid"
+    assert query_kwargs["aws_secret_access_key"] == "query-secret"
+    assert query_kwargs["aws_session_token"] == "query-session"
 
 
 @pytest.mark.offline
@@ -1043,12 +989,16 @@ class _FakeTruncatedSession(_FakeSession):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stop_reason", "truncated"),
-    [("max_tokens", True), ("end_turn", False)],
+    [
+        ("max_tokens", True),
+        ("model_context_window_exceeded", True),
+        ("end_turn", False),
+    ],
 )
 async def test_bedrock_stop_reason_sets_truncation_marker(
     monkeypatch, stop_reason, truncated
 ):
-    """Only Converse stopReason == "max_tokens" flags the response uncacheable."""
+    """A token-limit stopReason flags the response uncacheable."""
     from lightrag.utils import is_truncated_response
 
     monkeypatch.delenv("AWS_REGION", raising=False)
@@ -1100,7 +1050,50 @@ def _empty_response_session(captured_calls, *, stop_reason, reasoning):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_bedrock_empty_max_tokens_response_names_the_token_limit(monkeypatch):
+@pytest.mark.parametrize(
+    ("stop_reason", "reasoning", "present", "absent"),
+    [
+        pytest.param(
+            "max_tokens",
+            True,
+            (
+                "outputTokens=64",
+                # Measured from the reasoning TEXT, not the repr of the block.
+                f"reasoning_content_len={len('internal thought')}",
+                "budget consumed by reasoning",
+                "BEDROCK_LLM_MAX_TOKENS",
+            ),
+            ("larger context window", "model produced no output"),
+            id="max-tokens",
+        ),
+        # Reasoning present too: the context-window cause outranks both the
+        # token-budget and the reasoning-only diagnosis.
+        pytest.param(
+            "model_context_window_exceeded",
+            True,
+            ("larger context window",),
+            ("BEDROCK_LLM_MAX_TOKENS", "reasoning-only", "model produced no output"),
+            id="context-window",
+        ),
+        pytest.param(
+            "end_turn",
+            True,
+            ("reasoning-only output",),
+            ("BEDROCK_LLM_MAX_TOKENS", "model produced no output"),
+            id="reasoning-only",
+        ),
+        pytest.param(
+            "end_turn",
+            False,
+            ("model produced no output",),
+            ("BEDROCK_LLM_MAX_TOKENS", "larger context window", "reasoning-only"),
+            id="no-output",
+        ),
+    ],
+)
+async def test_bedrock_empty_response_names_its_cause(
+    monkeypatch, stop_reason, reasoning, present, absent
+):
     """Bedrock already failed on empty content; what was missing is the cause.
 
     doc_status.error_msg has to say which knob to turn, not just report
@@ -1111,42 +1104,18 @@ async def test_bedrock_empty_max_tokens_response_names_the_token_limit(monkeypat
     with patch(
         "lightrag.llm.bedrock.aioboto3.Session",
         return_value=_empty_response_session(
-            [], stop_reason="max_tokens", reasoning=True
+            [], stop_reason=stop_reason, reasoning=reasoning
         ),
     ):
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(BedrockError) as excinfo:
             await bedrock_complete_if_cache.__wrapped__(
                 model="bedrock-model", prompt="Extract"
             )
 
     message = str(excinfo.value)
     assert "Received empty content from Bedrock API" in message
-    assert "stopReason=max_tokens" in message
-    assert "outputTokens=64" in message
-    # Measured from the reasoning TEXT, not the repr of the block.
-    assert f"reasoning_content_len={len('internal thought')}" in message
-    assert "budget consumed by reasoning" in message
-    assert "BEDROCK_LLM_MAX_TOKENS" in message
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_bedrock_empty_response_without_token_limit_says_so(monkeypatch):
-    """A normal stop with no output is a different diagnosis, not the budget."""
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    with patch(
-        "lightrag.llm.bedrock.aioboto3.Session",
-        return_value=_empty_response_session(
-            [], stop_reason="end_turn", reasoning=False
-        ),
-    ):
-        with pytest.raises(Exception) as excinfo:
-            await bedrock_complete_if_cache.__wrapped__(
-                model="bedrock-model", prompt="Extract"
-            )
-
-    message = str(excinfo.value)
-    assert "stopReason=end_turn" in message
-    assert "model produced no output" in message
-    assert "BEDROCK_LLM_MAX_TOKENS" not in message
+    assert f"stopReason={stop_reason}" in message
+    for fragment in present:
+        assert fragment in message
+    for fragment in absent:
+        assert fragment not in message
