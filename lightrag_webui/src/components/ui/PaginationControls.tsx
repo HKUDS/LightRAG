@@ -140,6 +140,8 @@ export default function PaginationControls({
           <div className="flex items-center gap-1">
             <Input
               type="text"
+              inputMode="numeric"
+              aria-label={t('pagination.page')}
               value={inputPage}
               onChange={(e) => handlePageInputChange(e.target.value)}
               onBlur={handlePageInputSubmit}
@@ -166,7 +168,7 @@ export default function PaginationControls({
           onValueChange={handlePageSizeChange}
           disabled={isLoading}
         >
-          <SelectTrigger className="h-8 w-16">
+          <SelectTrigger className="h-8 w-16" aria-label={t('pagination.pageSize')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -219,6 +221,8 @@ export default function PaginationControls({
             <span className="text-sm">{t('pagination.page')}</span>
             <Input
               type="text"
+              inputMode="numeric"
+              aria-label={t('pagination.page')}
               value={inputPage}
               onChange={(e) => handlePageInputChange(e.target.value)}
               onBlur={handlePageInputSubmit}
@@ -259,7 +263,7 @@ export default function PaginationControls({
             onValueChange={handlePageSizeChange}
             disabled={isLoading}
           >
-            <SelectTrigger className="h-8 w-16">
+            <SelectTrigger className="h-8 w-16" aria-label={t('pagination.pageSize')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

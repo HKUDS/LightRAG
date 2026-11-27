@@ -395,13 +395,22 @@ function FileUploader(props: FileUploaderProps) {
 
 interface ProgressProps {
   value: number
+  fileName: string
   error?: boolean
   showIcon?: boolean  // New property to control icon display
 }
 
-function Progress({ value, error }: ProgressProps) {
+function Progress({ value, fileName, error }: ProgressProps) {
+  const { t } = useTranslation()
   return (
-    <div className="relative h-2 w-full">
+    <div
+      className="relative h-2 w-full"
+      role="progressbar"
+      aria-label={t('documentPanel.uploadDocuments.fileUploader.uploadProgress', { name: fileName })}
+      aria-valuenow={value}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
       <div className="h-full w-full overflow-hidden rounded-full bg-secondary">
         <div
           className={cn(
@@ -440,12 +449,12 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
           {error ? (
             <div className="text-red-400 text-sm">
               <div className="relative mb-2">
-                <Progress value={100} error={true} />
+                <Progress value={100} fileName={file.name} error={true} />
               </div>
               <p>{error}</p>
             </div>
           ) : (
-            progress ? <Progress value={progress} /> : null
+            progress ? <Progress value={progress} fileName={file.name} /> : null
           )}
         </div>
       </div>

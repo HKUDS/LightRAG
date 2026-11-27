@@ -109,6 +109,7 @@
       "generalError": "Échec du téléchargement\n{{error}}",
       "fileTypes": "Types pris en charge : {{types}}",
       "fileUploader": {
+        "uploadProgress": "Progression du téléchargement de {{name}}",
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
         "fileRejected": "Le fichier {{name}} a été rejeté",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "Sélectionner le document {{name}}",
       "title": "Gestion des documents",
       "scanButton": "Scanner/Retraiter",
       "scanTooltip": "Scanner et traiter les documents dans le dossier d'entrée, et retraiter également tous les documents échoués",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "Aligner à gauche",
+      "positionCenter": "Centrer",
+      "positionRight": "Aligner à droite",
       "title": "État du Pipeline",
       "busy": "Pipeline Occupé",
       "cancellationRequested": "Annulation Demandée",

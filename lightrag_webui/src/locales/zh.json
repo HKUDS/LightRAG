@@ -109,6 +109,7 @@
       "generalError": "上传失败\n{{error}}",
       "fileTypes": "支持的文件类型：{{types}}",
       "fileUploader": {
+        "uploadProgress": "{{name}} 的上传进度",
         "singleFileLimit": "一次只能上传一个文件",
         "maxFilesLimit": "最多只能上传 {{count}} 个文件",
         "fileRejected": "文件 {{name}} 被拒绝",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "选择文档 {{name}}",
       "title": "文档管理",
       "scanButton": "扫描/重试",
       "scanTooltip": "扫描处理输入目录中的文档，同时重新处理所有失败的文档",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "左对齐",
+      "positionCenter": "居中对齐",
+      "positionRight": "右对齐",
       "title": "流水线状态",
       "busy": "流水线忙碌",
       "cancellationRequested": "取消请求",

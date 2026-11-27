@@ -109,6 +109,7 @@
       "generalError": "فشل الرفع\n{{error}}",
       "fileTypes": "الأنواع المدعومة: {{types}}",
       "fileUploader": {
+        "uploadProgress": "تقدّم رفع {{name}}",
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
         "fileRejected": "تم رفض الملف {{name}}",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "تحديد المستند {{name}}",
       "title": "إدارة المستندات",
       "scanButton": "مسح/إعادة محاولة",
       "scanTooltip": "مسح ومعالجة المستندات في مجلد الإدخال، وإعادة معالجة جميع المستندات الفاشلة أيضًا",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "محاذاة إلى اليسار",
+      "positionCenter": "محاذاة إلى الوسط",
+      "positionRight": "محاذاة إلى اليمين",
       "title": "حالة خط الأنابيب",
       "busy": "خط الأنابيب مشغول",
       "cancellationRequested": "طلب الإلغاء",

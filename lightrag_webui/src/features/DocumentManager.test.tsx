@@ -200,6 +200,10 @@ const rowFor = (docId: string) => {
 
 beforeEach(() => {
   resetBackend()
+  // The panel now mirrors filter/sort/page into the URL, and the DOM is
+  // process-wide: a hash left by an earlier test would deep-link this render
+  // into a different view.
+  window.location.hash = ''
   __setAxiosAdapterForTests(backendAdapter)
   useSettingsStore.getState().setCurrentTab('documents')
   useBackendState.setState({
@@ -213,9 +217,12 @@ afterEach(() => {
   // Before any store reset: a file-local afterEach runs BEFORE the preload's
   // cleanup(), so resetting first would land on a still-mounted component.
   cleanup()
+  // Real timers BEFORE the hash reset: happy-dom dispatches hashchange through
+  // setTimeout, and a reset queued on the fake clock leaks into the next test.
+  if (jest.isFakeTimers()) jest.useRealTimers()
+  window.location.hash = ''
   useBackendState.getState().clearHealthCheckTimer()
   __resetPaginatedDocumentRequestsForTests()
-  if (jest.isFakeTimers()) jest.useRealTimers()
 })
 
 afterAll(() => {

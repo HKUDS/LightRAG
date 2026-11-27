@@ -109,6 +109,7 @@
       "generalError": "업로드 실패\n{{error}}",
       "fileTypes": "지원되는 유형: {{types}}",
       "fileUploader": {
+        "uploadProgress": "{{name}} 업로드 진행률",
         "singleFileLimit": "한 번에 1개의 파일만 업로드할 수 있습니다",
         "maxFilesLimit": "{{count}}개 이상의 파일은 업로드할 수 없습니다",
         "fileRejected": "{{name}} 파일이 거부되었습니다",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "{{name}} 문서 선택",
       "title": "문서 관리",
       "scanButton": "스캔/재시도",
       "scanTooltip": "문서 관리의 목록을 스캔하고, 실패한 모든 문서를 재처리합니다",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "왼쪽 정렬",
+      "positionCenter": "가운데 정렬",
+      "positionRight": "오른쪽 정렬",
       "title": "파이프라인 상태",
       "busy": "파이프라인 작업 중",
       "cancellationRequested": "취소 요청됨",

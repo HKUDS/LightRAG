@@ -109,6 +109,7 @@
       "generalError": "Unggahan Gagal\n{{error}}",
       "fileTypes": "Tipe yang didukung: {{types}}",
       "fileUploader": {
+        "uploadProgress": "Progres unggahan {{name}}",
         "singleFileLimit": "Tidak dapat mengunggah lebih dari 1 file sekaligus",
         "maxFilesLimit": "Tidak dapat mengunggah lebih dari {{count}} file",
         "fileRejected": "File {{name}} ditolak",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "Pilih dokumen {{name}}",
       "title": "Manajemen Dokumen",
       "scanButton": "Pindai/Coba Lagi",
       "scanTooltip": "Pindai dan proses dokumen di folder input, serta proses ulang semua dokumen yang gagal",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "Rata kiri",
+      "positionCenter": "Rata tengah",
+      "positionRight": "Rata kanan",
       "title": "Status Pipeline",
       "busy": "Pipeline Sibuk",
       "cancellationRequested": "Pembatalan Diminta",

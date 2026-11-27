@@ -109,6 +109,7 @@
       "generalError": "アップロード失敗\n{{error}}",
       "fileTypes": "サポートされている形式: {{types}}",
       "fileUploader": {
+        "uploadProgress": "{{name}} のアップロード進捗",
         "singleFileLimit": "一度に1つ以上のファイルをアップロードできません",
         "maxFilesLimit": "{{count}}個を超えるファイルをアップロードできません",
         "fileRejected": "ファイル {{name}} は拒否されました",
@@ -122,6 +123,7 @@
       }
     },
     "documentManager": {
+      "selectDocument": "ドキュメント {{name}} を選択",
       "title": "ドキュメント管理",
       "scanButton": "スキャン/再試行",
       "scanTooltip": "入力フォルダ内のドキュメントをスキャンして処理し、失敗したすべてのドキュメントも再処理します",
@@ -188,6 +190,9 @@
       }
     },
     "pipelineStatus": {
+      "positionLeft": "左揃え",
+      "positionCenter": "中央揃え",
+      "positionRight": "右揃え",
       "title": "パイプラインステータス",
       "busy": "パイプラインがビジー",
       "cancellationRequested": "キャンセル要求済み",
