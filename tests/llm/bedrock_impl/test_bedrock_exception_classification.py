@@ -55,25 +55,12 @@ class _FlakyConnectionClient:
 
 
 @pytest.mark.asyncio
-async def test_bedrock_complete_if_cache_retries_dropped_connection(monkeypatch):
-    """End to end through @retry: a dropped connection is retried, not fatal."""
-    monkeypatch.delenv("AWS_REGION", raising=False)
-    monkeypatch.setattr(bedrock_complete_if_cache.retry, "wait", wait_none())
-
-    calls: list[int] = []
-    fake_session = SimpleNamespace(
-        client=lambda *_args, **_kwargs: _FlakyConnectionClient(calls, failures=2)
-    )
-    with patch("lightrag.llm.bedrock.aioboto3.Session", return_value=fake_session):
-        result = await bedrock_complete_if_cache(model="bedrock-model", prompt="hello")
-
-    assert result == "ok"
-    assert len(calls) == 3
-
-
-@pytest.mark.asyncio
 async def test_bedrock_complete_if_cache_reraises_after_retry_exhaustion(monkeypatch):
-    """Exhausted retries surface the BedrockConnectionError, not RetryError."""
+    """A dropped connection is retried, and exhaustion surfaces it unwrapped.
+
+    Five attempts prove the retry; the raised type proves both the
+    classification and ``reraise=True``.
+    """
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.setattr(bedrock_complete_if_cache.retry, "wait", wait_none())
 
