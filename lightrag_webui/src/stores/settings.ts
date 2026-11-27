@@ -12,7 +12,7 @@ import { createFutureGuardedStorage } from '@/lib/guardedStorage'
 import { withoutLegacyApiKey } from '@/migrations/removeLegacyApiKey'
 
 type Theme = 'dark' | 'light' | 'system'
-type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi' | 'id'
+type Language = 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW' | 'ru' | 'ja' | 'de' | 'uk' | 'ko' | 'vi' | 'id' | 'az'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
 
 // NOTE: `querySettings` and `retrievalHistory` were split out of this store
