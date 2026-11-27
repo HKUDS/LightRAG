@@ -1,14 +1,15 @@
 """Shared fake lmdeploy for the lmdeploy binding tests.
 
 The tests import only ``lightrag.llm.lmdeploy``; the real SDK is never needed.
+This conftest must not import it at module level: pytest loads a directory's
+conftest before ``tests/conftest.py::pytest_configure`` refuses
+``pipmaster.install``, so the provider's install guard would run unrefused.
 """
 
 import sys
 from types import SimpleNamespace
 
 import pytest
-
-from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
 
 
 class FakeRequestError(RuntimeError):
@@ -69,5 +70,7 @@ def fake_lmdeploy(monkeypatch):
             generate=lambda *args, **kwargs: fake.generate(*args, **kwargs)
         ),
     )
+    from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
+
     monkeypatch.setattr(lmdeploy_model_if_cache.retry, "sleep", _instant_sleep)
     return fake
