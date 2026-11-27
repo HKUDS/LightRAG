@@ -184,6 +184,7 @@ async def hf_model_if_cache(
     def _run_generate():
         hf_model, hf_tokenizer = initialize_hf_model(model_name)
         input_prompt = None
+        templated = True
         try:
             input_prompt = hf_tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
@@ -210,9 +211,17 @@ async def hf_model_if_cache(
                     f"<{message['role']}>{message['content']}</{message['role']}>\n"
                     for message in messages
                 )
+                templated = False
 
+        # A rendered chat template already contains its special tokens (such
+        # as BOS); adding them again would duplicate them. Only the raw
+        # fallback prompt relies on the tokenizer to add them.
         input_ids = hf_tokenizer(
-            input_prompt, return_tensors="pt", padding=True, truncation=True
+            input_prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            add_special_tokens=not templated,
         )
         # Move to wherever the model actually is, rather than assuming CUDA.
         # hf_model is loaded with device_map="auto" (see initialize_hf_model),

@@ -115,7 +115,14 @@ class FakeTokenizer:
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
         return "<rendered-prompt>"
 
-    def __call__(self, text, return_tensors="pt", padding=True, truncation=True):
+    def __call__(
+        self,
+        text,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        add_special_tokens=True,
+    ):
         # A real HF tokenizer call with no `.to(...)` chained returns
         # tensors on CPU by default -- so does this fake.
         return {

@@ -177,7 +177,14 @@ async def test_hf_model_if_cache_runs_generate_off_the_event_loop_thread(
         ):
             return "<prompt>"
 
-        def __call__(self, text, return_tensors="pt", padding=True, truncation=True):
+        def __call__(
+            self,
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            add_special_tokens=True,
+        ):
             return {
                 "input_ids": FakeTensor([[1, 2, 3]]),
                 "attention_mask": FakeTensor([[1, 1, 1]]),
@@ -238,7 +245,14 @@ async def test_hf_model_if_cache_serializes_concurrent_generate_calls(
         ):
             return "<prompt>"
 
-        def __call__(self, text, return_tensors="pt", padding=True, truncation=True):
+        def __call__(
+            self,
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            add_special_tokens=True,
+        ):
             return {
                 "input_ids": FakeTensor([[1, 2, 3]]),
                 "attention_mask": FakeTensor([[1, 1, 1]]),
@@ -310,7 +324,14 @@ async def test_hf_model_if_cache_logs_and_repropagates_cancellation(
         ):
             return "<prompt>"
 
-        def __call__(self, text, return_tensors="pt", padding=True, truncation=True):
+        def __call__(
+            self,
+            text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            add_special_tokens=True,
+        ):
             return {
                 "input_ids": FakeTensor([[1, 2, 3]]),
                 "attention_mask": FakeTensor([[1, 1, 1]]),
