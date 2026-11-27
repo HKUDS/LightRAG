@@ -6979,17 +6979,11 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
     return obj
 
 
-_CODE_FENCE_PATTERN = re.compile(
-    r"^\s*(?:"
-    r"(?P<bfence>`{3,})(?!`)(?:[jJ][sS][oO][nN](?![A-Za-z0-9_]))?[ \t]*\r?\n?"
-    r"(?P<bbody>.*?)"
-    r"\r?\n?[ \t]*(?<!`)(?P=bfence)`*"
-    r"|"
-    r"(?P<tfence>~{3,})(?!~)(?:[jJ][sS][oO][nN](?![A-Za-z0-9_]))?[ \t]*\r?\n?"
-    r"(?P<tbody_>.*?)"
-    r"\r?\n?[ \t]*(?<!~)(?P=tfence)~*"
-    r")\s*$",
-    re.DOTALL,
+# Opening fence only: CommonMark backtick or tilde fence (3+), optional json
+# tag. Possessive quantifiers keep the match linear; the closing fence is found
+# with rstrip in strip_markdown_code_fence, never by a backtracking body group.
+_CODE_FENCE_OPEN_PATTERN = re.compile(
+    r"\s*+(?P<fence>`{3,}+|~{3,}+)(?:[jJ][sS][oO][nN](?![A-Za-z0-9_]))?[ \t]*+(?:\r?\n)?"
 )
 
 
@@ -7000,16 +6994,29 @@ def strip_markdown_code_fence(text: str) -> str:
     blocks, so providers routinely wrap responses despite explicit instructions
     to the contrary (including 4+ backtick fences when values embed triple
     backticks, or CommonMark tilde fences). Stripping here avoids relying on
-    ``json_repair`` and the noisy warning it emits. The ``\\r?\\n?`` make the
-    interior newlines optional so single-line fences (```` ```json {...}``` ````)
-    are handled too.
+    ``json_repair`` and the noisy warning it emits.
+
+    Rules: the closing fence must use the opening character and be at least as
+    long; single-line fences (```` ```json {...}``` ````) are handled. Anything
+    else -- no fence, a shorter or mismatched closer, trailing prose -- returns
+    ``text`` itself (callers test ``is``). Runs in linear time: this sees raw
+    LLM output on the event loop, including degenerate whitespace runs.
     """
 
-    match = _CODE_FENCE_PATTERN.match(text)
+    match = _CODE_FENCE_OPEN_PATTERN.match(text)
     if not match:
         return text
-    bbody = match.group("bbody")
-    return bbody if bbody is not None else match.group("tbody_")
+    fence = match.group("fence")
+    rest = text[match.end() :].rstrip()
+    closer_len = len(rest) - len(rest.rstrip(fence[0]))
+    if closer_len < len(fence):
+        return text
+    body = rest[: len(rest) - closer_len].rstrip(" \t")
+    if body.endswith("\n"):
+        body = body[:-1]
+    if body.endswith("\r"):
+        body = body[:-1]
+    return body
 
 
 def _first_structural_opener(text: str) -> tuple[str | None, int]:
