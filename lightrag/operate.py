@@ -980,21 +980,34 @@ def _looks_like_json_extraction_result(result: str) -> bool:
     return False
 
 
-def _json_extraction_field_text(value: Any, list_separator: str | None) -> str:
+def _json_extraction_field_text(
+    value: Any, list_separator: str | None, context: str = ""
+) -> str:
     """Read one JSON extraction field as the text the record parsers expect.
 
     A JSON ``null`` is an empty field, never the string ``"None"``. With a
     ``list_separator``, an array (``"keywords": ["a", "b"]``) is joined into
     the separated string the delimited text format carries, so it is not
-    stored as its Python repr. Without one, an array stays ``str()``.
+    stored as its Python repr; ``null`` and blank items are skipped.
+
+    Without one the field is an identifier (entity name, relation endpoint):
+    a one-item array is that item, and any other array or an object is read
+    as empty, so the caller drops the record instead of storing a repr as a
+    name. Joining or picking one of several names would invent an entity or
+    guess the wrong one. ``context`` names the field in that warning.
     """
     if value is None:
         return ""
-    if list_separator is not None and isinstance(value, (list, tuple)):
-        return list_separator.join(
-            str(item) for item in value if item is not None and str(item).strip()
-        )
-    return str(value)
+    if isinstance(value, (list, tuple)):
+        items = [item for item in value if item is not None and str(item).strip()]
+        if list_separator is not None:
+            return list_separator.join(str(item) for item in items)
+        if len(items) == 1 and not isinstance(items[0], (list, tuple, dict)):
+            return str(items[0])
+    elif list_separator is not None or not isinstance(value, dict):
+        return str(value)
+    logger.warning(f"{context}: JSON identifier is not a single name, dropped")
+    return ""
 
 
 async def _process_json_extraction_result(
@@ -1066,7 +1079,9 @@ async def _process_json_extraction_result(
 
         try:
             entity_name = normalize_entity_name(
-                _json_extraction_field_text(entity_data.get("name"), None),
+                _json_extraction_field_text(
+                    entity_data.get("name"), None, f"{chunk_key}: entity name"
+                ),
                 final_space_pass=False,
             )
             if not entity_name or not entity_name.strip():
@@ -1131,11 +1146,15 @@ async def _process_json_extraction_result(
 
         try:
             source = normalize_entity_name(
-                _json_extraction_field_text(rel_data.get("source"), None),
+                _json_extraction_field_text(
+                    rel_data.get("source"), None, f"{chunk_key}: relation source"
+                ),
                 final_space_pass=False,
             )
             target = normalize_entity_name(
-                _json_extraction_field_text(rel_data.get("target"), None),
+                _json_extraction_field_text(
+                    rel_data.get("target"), None, f"{chunk_key}: relation target"
+                ),
                 final_space_pass=False,
             )
 
