@@ -1772,14 +1772,16 @@ deletion is always the recovery step:
 
 #### Concurrent admin writes
 
-On a graph storage that declares `requires_single_writer` (`NetworkXStorage`,
-the only one), or when chunk tracking sits on a KV storage that buffers writes
-per process (`OpenSearchKVStorage`, the only one), every public admin graph writer (`acreate_entity`,
+Every public admin graph writer (`acreate_entity`,
 `acreate_relation`, `aedit_entity`, `aedit_relation`, `adelete_by_entity`,
 `adelete_by_relation`, `amerge_entities`, `ainsert_custom_kg`, and therefore
 every `/graph/*` mutation endpoint) runs inside `LightRAG._admin_write_gate`
-(issue #3899), which serializes it in two directions for the whole
-mutate-and-commit body, embedding round-trip included:
+(issue #3899). On a graph storage that declares `requires_single_writer`
+(`NetworkXStorage`, the only one), or when chunk tracking sits on a KV storage
+that buffers writes per process (`OpenSearchKVStorage`, the only one), the gate
+serializes it in two directions for the whole mutate-and-commit body, embedding
+round-trip included; elsewhere only renames, merges and entity deletions, and
+only in the first:
 
 - **Against other admin writes**, through a workspace-wide admin lock
   (`{workspace}:GraphAdmin`, key `admin`; cross-process). A second admin write
@@ -1872,12 +1874,28 @@ has to act on it and does not read server logs. Every other failure on those
 endpoints keeps the sanitized body.
 
 Server-backed graph stores (Neo4j, PostgreSQL, Memgraph, MongoDB, OpenSearch)
-never take the gate, whatever the KV or vector storage beside them: only the
+take no reservation and no hold ceiling, whatever the vector storage beside them
+(chunk tracking on `OpenSearchKVStorage` is the exception above): only the
 graph storage can lose an uncommitted mutation to a peer commit
 (`NanoVectorDBStorage` / `FaissVectorDBStorage` replay their pending buffers over
-a reloaded snapshot, and `JsonKVStorage` has no reload path at all). There, two
-admin writes for different keys still run concurrently under per-entity keyed
-locks, as they always did.
+a reloaded snapshot, and `JsonKVStorage` has no reload path at all), so the
+pipeline runs beside an admin write as before. A rename (`edit_entity` with a new
+`entity_name`, with or without `allow_merge`), `merge_entities` and
+`delete_by_entity` still take the admin lock there. Renaming or merging an entity
+rewrites every incident edge without locking the edge's other endpoint and then
+deletes the old node, which removes its edges, so two concurrent edits of
+adjacent entities used to delete each other's rewritten edge and both report
+success. The other admin writes lock both endpoints of every edge they write, so
+the per-entity keyed locks order them, and they still run concurrently.
+
+Two consequences on these backends. A rename or merge stuck in a backend call
+holds the admin lock with no ceiling, so the next rename, merge or entity
+deletion in the workspace gets the 409 below after
+`ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT` until it returns. And a rename or merge racing
+a document deletion is still not serialized (the deletion takes no per-entity
+lock): the moved object can keep the deleted document's chunk ids, the same
+retaining residue as deleting the document after the edit (see
+[Merge and rename failure model](design/PurgeRecoveryContract.md#merge-and-rename-failure-model)).
 
 **Two 409s, told apart by the `detail` text.** The graph endpoints return
 HTTP 409 for two different reasons, and the retry semantics differ, so the
@@ -2004,8 +2022,9 @@ Concurrency is handled separately and per storage: when the graph backend
 declares `requires_single_writer` (`NetworkXStorage`, the only one), or chunk
 tracking sits on `OpenSearchKVStorage`, public admin
 graph writes run inside `LightRAG._admin_write_gate` — a workspace-wide admin
-lock plus the pipeline `busy` reservation. Other backend combinations do not take that
-gate and rely on the per-entity keyed locks. See
+lock plus the pipeline `busy` reservation. Other backend combinations take only its
+admin lock, and only for a rename, a merge or an entity deletion; every other
+admin write relies on the per-entity keyed locks. See
 [Concurrent admin writes](#concurrent-admin-writes) for the supported boundaries
 and recovery behavior.
 

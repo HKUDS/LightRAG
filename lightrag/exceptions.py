@@ -253,22 +253,24 @@ class PipelineReservationConflictError(RuntimeError):
 class AdminWriteGateRefusedError(PipelineReservationConflictError):
     """The workspace admin-write gate refused an admin graph write (→ HTTP 409).
 
-    Raised by ``LightRAG._admin_write_gate`` where the gate applies (a
-    ``requires_single_writer`` graph storage, or chunk tracking on a KV storage
-    that buffers per process), in exactly two situations, each
+    Raised by ``LightRAG._admin_write_gate`` in exactly two situations, each
     with its own stable leading phrase so a client can tell them apart from the
     ``detail`` text alone (text, not a machine-readable code,
     is the contract):
 
     * ``ADMIN_WRITE_LOCK_BUSY_PREFIX`` -- another admin write held the
       workspace admin lock for longer than ``ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT``.
-      Clears when that peer admin write finishes; retry the same request.
-      ``fence`` is ``"admin_lock"`` and ``conflict`` is ``None`` (no
-      ``pipeline_status`` flag refused).
+      Every writer where the reservation applies; elsewhere a rename, a merge
+      or an entity deletion. Clears when that peer admin write finishes; retry
+      the same request. ``fence`` is ``"admin_lock"`` and ``conflict`` is ``None``
+      (no ``pipeline_status`` flag refused).
     * ``ADMIN_WRITE_PIPELINE_BUSY_PREFIX`` -- the pipeline ``busy`` reservation
       was refused because a processing run, a destructive job or a scan holds
-      the workspace. Clears when ingestion finishes. ``conflict`` and
-      ``fence`` carry the refusing ``pipeline_status`` flag, as for the parent.
+      the workspace. Only where the reservation applies (a
+      ``requires_single_writer`` graph storage, or chunk tracking on a KV
+      storage that buffers per process). Clears when ingestion finishes.
+      ``conflict`` and ``fence`` carry the refusing ``pipeline_status`` flag,
+      as for the parent.
 
     A fenced workspace (``recovery_required``) is reported through the parent's
     ``recovery_required`` property and maps to 503, as everywhere else.

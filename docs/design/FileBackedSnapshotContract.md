@@ -550,7 +550,10 @@ entry points are **not** serialized by it and must be guarded externally:
   Admin-vs-pipeline is guarded by `check_pipeline_busy_or_raise`. Admin-vs-admin
   is not, and deliberately stays that way: these backends replay rather than
   decline, so an overlapping pair loses nothing, which is why the workspace-wide
-  admin lock that `NetworkXStorage` requires is not requested here. See
+  admin lock that `NetworkXStorage` requires is not requested here. (A rename,
+  a merge and an entity deletion take it on every backend anyway, for a graph
+  reason unrelated to these classes: see *Admin graph writes* in
+  [PipelineConcurrencyContract.md](PipelineConcurrencyContract.md).) See
   [the admin write paths](NetworkXSingleWriterContract.md#admin-write-paths).
 
 A flush here publishes every pending upsert buffered in this instance, not only

@@ -1423,7 +1423,7 @@ def test_an_explicit_ceiling_below_the_embedding_timeout_is_refused(tmp_path):
 def test_the_startup_check_is_scoped_to_storages_that_take_the_gate(
     tmp_path, monkeypatch
 ):
-    """A server-backed graph store never takes the gate, so it is never refused.
+    """A server-backed graph store never takes the hold ceiling, so it is never refused.
 
     Same misconfiguration as the case above; only the storage's
     ``requires_single_writer`` declaration differs.
