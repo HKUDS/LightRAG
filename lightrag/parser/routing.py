@@ -380,12 +380,14 @@ def slim_chunk_options(
 
 
 def _env_optional_str(key: str) -> str | None:
-    """Return the env value as a string, collapsing empty / 'None' to None."""
+    """Return the env value as a string, collapsing empty / 'None' to None.
+
+    A whitespace-only value is returned as is: it is a separator such as
+    ``"\\n\\n"`` (written ``CHUNK_F_SPLIT_BY_CHARACTER="\\n\\n"`` in ``.env``),
+    not a blank slot. An unquoted blank slot reaches the process as ``""``.
+    """
     raw = os.getenv(key)
-    if raw is None:
-        return None
-    stripped = raw.strip()
-    if not stripped or stripped.lower() == "none":
+    if not raw or raw.strip().lower() == "none":
         return None
     return raw
 

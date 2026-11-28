@@ -216,3 +216,28 @@ def test_an_install_guard_run_under_pytest_never_reaches_pip(tmp_path, monkeypat
     # The guard must actually have fired, or the second assertion proves nothing.
     assert attempted == [absent]
     assert ran == [], f"an install guard ran pip install under pytest: {ran}"
+
+
+def test_no_conftest_imports_a_provider_module_at_module_level():
+    """pytest loads a directory's conftest before ``tests/conftest.py``'s
+    ``pytest_configure`` refuses ``pipmaster.install``, so a provider module
+    imported there runs its install guard unrefused. Import it inside the
+    fixture instead."""
+    conftests = sorted((_REPO_ROOT / "tests").rglob("conftest.py"))
+    offenders: list[str] = []
+    for path in conftests:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                continue
+            for name in names:
+                if name.startswith("lightrag.llm."):
+                    rel = path.relative_to(_REPO_ROOT)
+                    offenders.append(f"{rel}:{node.lineno} imports {name}")
+
+    assert len(conftests) >= 2, "the conftest scan found nothing to check"
+    assert not offenders, "\n".join(offenders)

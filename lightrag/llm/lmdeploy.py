@@ -1,3 +1,4 @@
+import itertools
 import warnings
 
 import pipmaster as pm  # Pipmaster for dynamic library install
@@ -17,6 +18,14 @@ from lightrag.utils import TruncatedResponse
 
 
 from functools import lru_cache
+
+# Every generate() call needs its own lmdeploy session: LightRAG runs LLM calls
+# concurrently, and lmdeploy refuses (409 REQUEST_CONFLICT) or, in older
+# releases, serializes a request on a session that is already generating.
+# lmdeploy 0.18 drops a session when its request finishes. lmdeploy 0.6 keeps
+# a small per-id entry (id2step, id2generator) for every id it has seen, the
+# same cost its own batch_infer pays with an unbounded session counter.
+_session_ids = itertools.count(1)
 
 
 @lru_cache(maxsize=1)
@@ -202,7 +211,7 @@ async def lmdeploy_model_if_cache(
         gen_config=gen_config,
         do_preprocess=do_preprocess,
         stream_response=False,
-        session_id=1,
+        session_id=next(_session_ids),
     ):
         response += getattr(res, "text", getattr(res, "response", ""))
         if getattr(res, "finish_reason", None) is not None:

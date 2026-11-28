@@ -1110,6 +1110,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             A list of (source_id, target_id) tuples representing edges,
             or None if the node doesn't exist
 
+        **The queried node is not guaranteed to come first.** NetworkX, Neo4j
+        and PostgreSQL list it first; MongoDB, Memgraph and OpenSearch return
+        each edge in its stored direction. Relations are undirected, so a
+        caller must match the queried node on either side of the tuple.
+
         Three outcomes, three answers — implementations must not merge them:
 
         * ``[]``   — the node exists and has no relations.
