@@ -59,10 +59,11 @@ DRAWING_MARKER_RE = re.compile(r'<mddrawing ref="([^"]+)"/>')
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 # Trailing closing-hash run of an ATX heading (``## Foo ##`` → ``Foo``).
 _HEADING_TRAILING_HASHES_RE = re.compile(r"\s+#+\s*$")
-# A fence opener or closer. As in CommonMark, the info string after a backtick
+# A fence opener or closer may have up to three leading spaces.
+# As in CommonMark, the info string after a backtick
 # run may not contain a backtick: a line holding only an inline code span such
 # as ```pip install x``` is text, not a fence that swallows the rest of the file.
-_FENCE_RE = re.compile(r"^(`{3,}(?=[^`]*$)|~{3,})(.*)$")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}(?=[^`]*$)|~{3,})(.*)$")
 # A GFM delimiter row: one or more ``---`` cells with optional ``:`` alignment.
 _DELIMITER_ROW_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 # A single delimiter cell (after splitting on ``|``): ``---`` with optional
@@ -754,7 +755,7 @@ def extract_markdown(
         stripped = line.strip()
 
         # --- fenced code blocks: verbatim, suppress all detection ----------
-        fence_match = _FENCE_RE.match(stripped)
+        fence_match = _FENCE_RE.match(line.rstrip())
         if fence is not None:
             cur_lines.append(line)
             if fence_match:
