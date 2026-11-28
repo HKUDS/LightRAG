@@ -30,6 +30,8 @@ from lightrag.parser.external._common import (
     download_deadline_seconds,
     download_max_bytes,
     download_timeout,
+    env_float,
+    env_int,
     raise_for_status_with_detail,
     stream_capped_get,
 )
@@ -56,6 +58,8 @@ else:
 CONTENT_LIST_FILENAME = "content_list.json"
 DEFAULT_MINERU_API_MODE = "local"
 DEFAULT_MINERU_OFFICIAL_ENDPOINT = "https://mineru.net"
+DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+DEFAULT_MAX_POLLS = 600
 VALID_MINERU_API_MODES = {"official", "local"}
 OFFICIAL_DONE_STATES = {"done"}
 OFFICIAL_FAILED_STATES = {"failed"}
@@ -164,9 +168,12 @@ class MinerURawClient:
                 ("/tasks", "/file_parse", "/health"),
             )
             self.endpoint = self.local_endpoint
-        self.poll_interval = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "2"))
+        self.poll_interval = env_float(
+            "MINERU_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS
+        )
         # 600 * 2s client-side sleep ≈ 20 min worst case; raise for very large PDFs.
-        self.max_polls = int(os.getenv("MINERU_MAX_POLLS", "600"))
+        max_polls = env_int("MINERU_MAX_POLLS", DEFAULT_MAX_POLLS)
+        self.max_polls = max_polls if max_polls > 0 else DEFAULT_MAX_POLLS
         self.engine_version = os.getenv("MINERU_ENGINE_VERSION", "").strip()
 
         options = MinerUParserOptions.from_env(
