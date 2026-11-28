@@ -106,6 +106,34 @@ def test_valid_chunk_f_size_is_honored(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.offline
 @pytest.mark.parametrize(
+    ("env_value", "expected", "warn_keys"),
+    [
+        pytest.param("ture", False, {"CHUNK_F_SPLIT_BY_CHARACTER_ONLY"}),
+        pytest.param("T", True, set()),
+    ],
+)
+def test_split_by_character_only_env_bool(
+    env_value: str,
+    expected: bool,
+    warn_keys: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+    lightrag_log_records,
+) -> None:
+    monkeypatch.setenv("CHUNK_F_SPLIT_BY_CHARACTER_ONLY", env_value)
+
+    actual = default_chunker_config()["fixed_token"]["split_by_character_only"]
+
+    assert actual is expected
+    bool_warnings = [
+        record
+        for record in lightrag_log_records
+        if "is not a recognized boolean" in record.msg
+    ]
+    assert {record.args[0] for record in bool_warnings} == warn_keys
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
     ("env_key", "strategy", "field", "expected", "env_value"),
     _one_spelling_per_env(_MALFORMED),
 )

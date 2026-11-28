@@ -550,7 +550,19 @@ def _env_bool(key: str, default: bool = False) -> bool:
     raw = os.getenv(key)
     if raw is None:
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on", "t", "y")
+    if not raw.strip():
+        return False
+    parsed = _parse_bool(raw)
+    if parsed is not None:
+        return parsed
+    logger.warning(
+        "Environment variable %s=%r is not a recognized boolean "
+        "(expected one of 1/true/yes/on/t/y/0/false/no/off/f/n), using default %r",
+        key,
+        raw,
+        default,
+    )
+    return default
 
 
 def default_chunker_config() -> dict[str, Any]:
