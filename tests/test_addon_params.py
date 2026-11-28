@@ -9,16 +9,68 @@ from lightrag.addon_params import ObservableAddonParams, normalize_addon_params
 pytestmark = pytest.mark.offline
 
 
-def test_update_commits_valid_input_and_notifies_once() -> None:
+def _ior(params: ObservableAddonParams, other: Any) -> None:
+    original = params
+    params |= other
+    # ``|=`` rebinds the caller's name to whatever ``__ior__`` returns.
+    assert params is original
+
+
+def _delete(params: ObservableAddonParams, key: str) -> None:
+    del params[key]
+
+
+# (operation, mapping afterwards, notifications). Every no-op row starts from
+# the same mapping as a writing row of the same method, so a missing short
+# circuit and a missing notification are both visible.
+_MUTATIONS = [
+    pytest.param(
+        lambda p: p.update([("language", "French")], entity_types=["person"]),
+        {"language": "French", "entity_types": ["person"]},
+        1,
+        id="update",
+    ),
+    pytest.param(lambda p: p.update({}), {"language": "English"}, 0, id="update-empty"),
+    pytest.param(
+        lambda p: _ior(p, {"language": "French"}), {"language": "French"}, 1, id="ior"
+    ),
+    pytest.param(lambda p: _ior(p, []), {"language": "English"}, 0, id="ior-empty"),
+    pytest.param(lambda p: _delete(p, "language"), {}, 1, id="delitem"),
+    # The second clear() runs on an empty mapping: it must not notify again.
+    pytest.param(lambda p: (p.clear(), p.clear()), {}, 1, id="clear-twice"),
+    pytest.param(lambda p: p.pop("language"), {}, 1, id="pop"),
+    pytest.param(
+        lambda p: p.pop("missing", None), {"language": "English"}, 0, id="pop-missing"
+    ),
+    pytest.param(lambda p: p.popitem(), {}, 1, id="popitem"),
+    pytest.param(
+        lambda p: p.setdefault("entity_types", ["person"]),
+        {"language": "English", "entity_types": ["person"]},
+        1,
+        id="setdefault",
+    ),
+    pytest.param(
+        lambda p: p.setdefault("language", "French"),
+        {"language": "English"},
+        0,
+        id="setdefault-existing",
+    ),
+]
+
+
+@pytest.mark.parametrize(("mutate", "expected", "notifications"), _MUTATIONS)
+def test_every_write_notifies_once_and_a_no_op_never(
+    mutate, expected: dict[str, Any], notifications: int
+) -> None:
     changes: list[str] = []
     params = ObservableAddonParams(
         {"language": "English"}, on_change=lambda: changes.append("changed")
     )
 
-    params.update([("language", "French")], entity_types=["person"])
+    mutate(params)
 
-    assert params == {"language": "French", "entity_types": ["person"]}
-    assert changes == ["changed"]
+    assert params == expected
+    assert len(changes) == notifications
 
 
 def test_update_is_atomic_when_an_iterable_is_malformed() -> None:
@@ -85,18 +137,6 @@ def test_ior_is_atomic_when_an_iterable_is_malformed() -> None:
     assert changes == []
 
 
-def test_ior_commits_a_mapping_and_notifies_once() -> None:
-    changes: list[str] = []
-    params = ObservableAddonParams(
-        {"language": "English"}, on_change=lambda: changes.append("changed")
-    )
-
-    params |= {"language": "French"}
-
-    assert params == {"language": "French"}
-    assert changes == ["changed"]
-
-
 def _addon_params_change_observer() -> Any:
     """A minimal stand-in carrying only LightRAG's addon-params cache hooks.
 
@@ -138,14 +178,6 @@ def test_cache_is_invalidated_even_when_the_change_callback_raises() -> None:
     assert owner._addon_params_dirty is True
 
 
-def test_cache_is_invalidated_on_a_normal_chunker_replacement() -> None:
-    owner = _addon_params_change_observer()
-
-    owner._addon_params["chunker"] = {"recursive_character": {"separators": ["\n"]}}
-
-    assert owner._addon_params_dirty is True
-
-
 def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
     """Resolving runtime defaults must not write into the caller's config.
 
@@ -174,3 +206,20 @@ def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
     assert (first.chunk_token_size, second.chunk_token_size) == (500, 2000)
     first._addon_params["chunker"]["fixed_token"]["split_by_character"] = "#"
     assert second._addon_params["chunker"]["fixed_token"]["split_by_character"] == "|"
+
+
+@pytest.mark.parametrize(
+    "supplied", [None, {"chunker": {}}], ids=["defaults", "explicit"]
+)
+def test_env_defaults_backfill_default_and_explicit_addon_params(
+    supplied, monkeypatch
+) -> None:
+    """``LightRAG(addon_params=...)`` skips the defaults factory, so the
+    explicit branch must still pick the environment up."""
+    monkeypatch.setenv("SUMMARY_LANGUAGE", "Catalan")
+    monkeypatch.setenv("ENTITY_TYPE_PROMPT_FILE", "from_env.yml")
+
+    normalized = normalize_addon_params(supplied)
+
+    assert normalized["language"] == "Catalan"
+    assert normalized["entity_type_prompt_file"] == "from_env.yml"

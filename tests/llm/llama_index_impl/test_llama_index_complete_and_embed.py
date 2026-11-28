@@ -40,8 +40,10 @@ class _FakeLLM:
     def __init__(self, content: str = "answer") -> None:
         self.content = content
         self.received_kwargs = None
+        self.received_messages = None
 
     async def achat(self, messages, **kwargs):
+        self.received_messages = messages
         self.received_kwargs = kwargs
         return _FakeChatResponse(self.content)
 
@@ -54,12 +56,34 @@ async def test_llama_index_complete_accepts_llm_instance_kwarg():
     wrapper, not through llama_index_complete. Before the fix, kwargs.get()
     left it in kwargs here too, so it was forwarded a second time into
     llama_index_complete_if_cache, which has no such parameter -- always
-    raising TypeError."""
-    llm = _FakeLLM(content="hello back")
+    raising TypeError.
 
-    result = await llama_index_complete("hi", llm_instance=llm)
+    History messages keep their roles and order: a system message in the
+    history used to reach the model as an assistant message."""
+    llm = _FakeLLM(content="hello back")
+    history = [
+        {"role": "system", "content": "Conversation-specific instructions"},
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+    result = await llama_index_complete(
+        "hi",
+        system_prompt="Base instructions",
+        history_messages=history,
+        llm_instance=llm,
+    )
 
     assert result == "hello back"
+    assert [
+        (message.role.value, message.content) for message in llm.received_messages
+    ] == [
+        ("system", "Base instructions"),
+        ("system", "Conversation-specific instructions"),
+        ("user", "Earlier question"),
+        ("assistant", "Earlier answer"),
+        ("user", "hi"),
+    ]
 
 
 @pytest.mark.asyncio

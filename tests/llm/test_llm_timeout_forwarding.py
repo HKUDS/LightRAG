@@ -186,6 +186,10 @@ def test_openai_client_config_timeout_survives_without_top_level_timeout():
     [
         pytest.param({}, id="no-hashing-kv"),
         pytest.param({"hashing_kv": object()}, id="hashing-kv-without-config"),
+        pytest.param(
+            {"hashing_kv": SimpleNamespace(global_config={"llm_model_name": "m"})},
+            id="config-without-default-key",
+        ),
     ],
 )
 def test_apply_llm_timeout_outside_role_without_config_sets_nothing(kwargs):

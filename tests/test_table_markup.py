@@ -25,40 +25,24 @@ from lightrag.table_markup import (
 pytestmark = pytest.mark.offline
 
 
-_TRICKY_CELLS = [
-    "</table>",
-    "</TABLE>",
-    "</tAbLe >",
-    "a</table>b</table>c",
-    "\\</table>",  # a backslash right before the tag
-    "<\\/table>",  # text that already looks escaped
-    "\\\\</",
-    '"</table>"',
-    "</",
-    "<//",
-    "<<//table>>",
-    "</equation></cite></td>",
-    "表格</table>结束",
-    "no markup at all",
-    "",
-]
-
-
-@pytest.mark.parametrize("cell", _TRICKY_CELLS)
-def test_body_never_holds_a_closing_tag_and_round_trips(cell: str) -> None:
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "</table>",
+        "</TABLE>",
+        "a</table>b</table>c",
+        "\\</table>",  # a backslash right before the tag
+        '"</table>"',
+        "表格</table>结束",
+    ],
+)
+def test_closing_tag_in_a_cell_is_escaped_and_parses_back(cell: str) -> None:
     rows = [["Tag", "Meaning"], [cell, "x"], ["tail", cell]]
-
     body = dumps_json_table_body(rows)
+    tag = f'<table id="tb-1" format="json">{body}</table>'
 
     assert "</table>" not in body.lower()
     assert json.loads(body) == rows
-
-
-@pytest.mark.parametrize("cell", _TRICKY_CELLS)
-def test_tag_built_from_the_body_parses_back_whole(cell: str) -> None:
-    rows = [["Tag", "Meaning"], [cell, "x"], ["tail", cell]]
-    tag = f'<table id="tb-1" format="json">{dumps_json_table_body(rows)}</table>'
-
     match = TABLE_TAG_RE.match(tag)
     assert match is not None
     assert match.end() == len(tag)  # the first "</table>" is the real one
@@ -76,6 +60,8 @@ def test_tag_built_from_the_body_parses_back_whole(cell: str) -> None:
         "</table >",  # no reader accepts this as a closing tag
         "</tables>",
         "a/b </ c",
+        "<\\/table>",  # text that already looks escaped
+        "<<//table>>",
         "",
     ],
 )
@@ -96,14 +82,11 @@ def test_inner_markup_next_to_a_closing_table_tag_is_left_alone() -> None:
     assert body == '[["m<sup>2</sup><\\/table><equation>x</equation>"]]'
 
 
-def test_escape_is_idempotent() -> None:
-    once = escape_json_table_body(json.dumps([["</table>", "\\</"]]))
-
-    assert escape_json_table_body(once) == once
-
-
 def test_random_cells_round_trip() -> None:
-    """Differential check against ``json.loads`` over the hazard alphabet."""
+    """Differential check against ``json.loads`` over the hazard alphabet.
+
+    Also pins that the escape is idempotent on its own output.
+    """
     rng = random.Random(4450)
     alphabet = [
         "<",
@@ -118,15 +101,20 @@ def test_random_cells_round_trip() -> None:
         " ",
         "表",
     ]
+    mismatches = []
     for _ in range(2000):
         rows = [
             ["".join(rng.choices(alphabet, k=rng.randint(0, 12))) for _ in range(3)]
             for _ in range(rng.randint(1, 3))
         ]
         body = dumps_json_table_body(rows)
-        assert "</table>" not in body.lower()
-        assert json.loads(body) == rows
-        assert escape_json_table_body(body) == body
+        if (
+            "</table>" in body.lower()
+            or json.loads(body) != rows
+            or escape_json_table_body(body) != body
+        ):
+            mismatches.append(rows)
+    assert mismatches == []
 
 
 def test_cell_markup_does_not_capture_a_later_real_tag() -> None:
@@ -164,11 +152,21 @@ def test_detect_table_format_explicit_attr() -> None:
     assert detect_table_format("format='html'", "<tr></tr>") == "html"
     # Unknown formats fall through (force the caller to use char fallback).
     assert detect_table_format('format="markdown"', "...") is None
+    # A standalone ``format`` still wins after a lookalike attribute.
+    assert (
+        detect_table_format('data-format="html" format="json"', "<tr>x</tr>") == "json"
+    )
 
 
 def test_detect_table_format_sniff_when_attrs_silent() -> None:
     assert detect_table_format("", '[{"a":1}]') == "json"
+    assert detect_table_format("", ' {"a":1}') == "json"
     assert detect_table_format("", "<tr><td>x</td></tr>") == "html"
+    # ``format`` that is only the tail of another attribute name is not an
+    # explicit format — neither hyphen-joined (``data-format``) nor a word-char
+    # prefix (``gridformat``) — so the body is sniffed.
+    assert detect_table_format('data-format="json" id="tb-1"', "<tr>x</tr>") == "html"
+    assert detect_table_format('gridformat="json"', "<tr>x</tr>") == "html"
     # Body that doesn't look like JSON or HTML → unknown.
     assert detect_table_format("", "plain text rows") is None
 

@@ -42,6 +42,12 @@ losing what they pinned. Every rule below names the defect it prevents.
   import did not touch X" evaluates nothing and cannot fail. Run the import in
   a subprocess or remove the module from `sys.modules` first, and assert that
   it really was evaluated.
+- **Assert what the code under test produces, not what a consumer makes of
+  it.** A downstream object that normalizes its input hides the defect the
+  test is meant to catch: `TokenTracker` drops a `None` cached-token count
+  itself, so a test that reads `tracker.get_usage()` cannot see a binding that
+  sends the key unconditionally. Record the raw call (a stub with
+  `add_usage=recorded.append`) and assert on that.
 - **Break the guarded line once and watch the test go red**, then restore it.
   This is the only way to tell a test that pins a guard from one that passes
   because the setup never reaches it.
@@ -121,13 +127,27 @@ and every full local run, so a test that adds no protection is a cost, not a
 safety margin. Reviews apply these rules to each test a PR adds or changes
 (AGENTS.md *PR Review Guidelines*); the same rules apply when writing one.
 
+- **Extend before you add.** Covering a change starts in the tests that
+  already call the changed code: search its mirror directory and grep for
+  the function's name. Take the first step that fits:
+  1. a test already runs your scenario (same setup, same call) → add your
+     assertion to it;
+  2. a test drives the same function with other inputs → add a
+     `parametrize` case to it;
+  3. a fake, fixture or helper already builds your input → reuse it rather
+     than writing a second one.
+
+  A new test function is for a scenario no existing test builds, and the PR
+  says which existing test was considered and why it could not take the case.
+  A fix to a function that already has tests rarely needs a new function.
 - **Necessity: it pins a behavior no existing test pins.** Before adding a
   test, search the mirror directory for one that already drives the same path
-  to the same assertion. A regression test pins the defect's trigger, not
-  every neighbouring input. A test of a private helper that a test of its
-  public caller already covers, of a dependency's own behavior, or of an
-  implementation detail no docstring or contract promises, is removed rather
-  than kept "just in case".
+  to the same assertion, or builds the same scenario and asserts another
+  field (that one is extended, per the rule above). A regression test pins
+  the defect's trigger, not every neighbouring input. A test of a private
+  helper that a test of its public caller already covers, of a dependency's
+  own behavior, or of an implementation detail no docstring or contract
+  promises, is removed rather than kept "just in case".
 - **Merge tests that share one scenario.** Three tests that each build the same
   storage, run the same operation and then assert a different field are one
   test with three assertions: the setup, which is most of the cost, runs once.

@@ -39,7 +39,8 @@ TABLE_TAG_RE = re.compile(
 _CLOSING_TABLE_TAG_RE = re.compile(r"<(/table>)", re.IGNORECASE)
 
 # Format detection regex inside the attrs string, e.g. format="json".
-_TABLE_FORMAT_RE = re.compile(r"""format\s*=\s*["'](?P<fmt>[^"']+)["']""")
+# Reject lookalikes such as data-format="json" or gridformat="json" (mirror _TABLE_ID_RE).
+_TABLE_FORMAT_RE = re.compile(r"""(?<![\w-])format\s*=\s*["'](?P<fmt>[^"']+)["']""")
 
 # ``id`` attribute extractor inside the attrs string, e.g. id="tb-…". Used to
 # trace a (possibly row-split) ``<table>`` fragment back to its tables.json

@@ -38,12 +38,37 @@ async def test_rebuild_accepts_valid_empty_json_without_delimiter_warning(
 
 
 @pytest.mark.asyncio
-async def test_rebuild_still_returns_entities_from_nonempty_json() -> None:
-    nodes, edges = await _rebuild_from_extraction_result(
-        DummyKV(),
-        '{"entities":[{"name":"Alice","type":"person",'
-        '"description":"an engineer"}],"relationships":[]}',
-        chunk_id="chunk-2",
-        timestamp=1,
-    )
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(
+            '{"entities":[{"name":"Alice","type":"person",'
+            '"description":"an engineer"}],"relationships":[]}',
+            id="plain",
+        ),
+        pytest.param(
+            '````json\n{"entities":[{"name":"Alice","type":"person",'
+            '"description":"uses ```python\\nprint(1)\\n```"}],'
+            '"relationships":[]}\n````',
+            id="4bt-nested-fence",
+        ),
+        pytest.param(
+            '~~~json\n{"entities":[{"name":"Alice","type":"person",'
+            '"description":"an engineer"}],"relationships":[]}\n~~~',
+            id="tilde-fence",
+        ),
+    ],
+)
+async def test_rebuild_returns_entities_from_plain_and_fenced_json(
+    raw: str, caplog, lightrag_caplog
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="lightrag"):
+        nodes, edges = await _rebuild_from_extraction_result(
+            DummyKV(),
+            raw,
+            chunk_id="chunk-cm-fence",
+            timestamp=1,
+        )
     assert "Alice" in nodes
+    assert edges == {}
+    assert "Complete delimiter can not be found" not in caplog.text

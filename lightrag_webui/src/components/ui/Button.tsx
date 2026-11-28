@@ -39,6 +39,24 @@ interface ButtonProps
   tooltip?: string
 }
 
+// Derive a name from the tooltip only for icon-only buttons: a visible-text button
+// must keep its text as the name so the name still contains the label (WCAG 2.5.3).
+// Only text reachable through `children` is seen: a child component that renders
+// its own text (`<Label />`) reads as icon-only, so such a button needs an
+// explicit `aria-label`.
+const hasVisibleText = (node: React.ReactNode): boolean => {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node).trim().length > 0
+  }
+  if (Array.isArray(node)) {
+    return node.some(hasVisibleText)
+  }
+  if (React.isValidElement(node)) {
+    return hasVisibleText((node.props as { children?: React.ReactNode }).children)
+  }
+  return false
+}
+
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, tooltip, size, side = 'right', asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button'
@@ -60,6 +78,9 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
               className={cn(buttonVariants({ variant, size, className }), 'cursor-pointer')}
               ref={ref}
               {...props}
+              aria-label={
+                props['aria-label'] ?? (hasVisibleText(props.children) ? undefined : tooltip)
+              }
             />
           </TooltipTrigger>
           <TooltipContent side={side}>{tooltip}</TooltipContent>

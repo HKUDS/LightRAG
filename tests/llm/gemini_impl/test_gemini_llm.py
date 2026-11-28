@@ -149,44 +149,31 @@ def _make_fake_gemini_response(regular_text="", thought_text="", finish_reason=N
     )
 
 
+_ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+}
+
+
 @pytest.mark.offline
+@pytest.mark.parametrize(
+    "response_format",
+    [
+        pytest.param(_ANSWER_SCHEMA, id="bare-schema"),
+        pytest.param(
+            {
+                "type": "json_schema",
+                "json_schema": {"name": "answer_payload", "schema": _ANSWER_SCHEMA},
+            },
+            id="openai-json-schema-wrapper",
+        ),
+    ],
+)
 def test_gemini_maps_schema_response_format_to_response_json_schema(
-    monkeypatch, request
+    monkeypatch, request, response_format
 ):
     gemini_module = _load_gemini_module(monkeypatch, request)
-
-    schema = {
-        "type": "object",
-        "properties": {"answer": {"type": "string"}},
-        "required": ["answer"],
-    }
-    config = gemini_module._build_generation_config(
-        base_config=None,
-        system_prompt=None,
-        response_format=schema,
-    )
-
-    assert config.kwargs["response_mime_type"] == "application/json"
-    assert config.kwargs["response_json_schema"] == schema
-    assert "response_schema" not in config.kwargs
-
-
-@pytest.mark.offline
-def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch, request):
-    gemini_module = _load_gemini_module(monkeypatch, request)
-
-    schema = {
-        "type": "object",
-        "properties": {"answer": {"type": "string"}},
-        "required": ["answer"],
-    }
-    response_format = {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "answer_payload",
-            "schema": schema,
-        },
-    }
 
     config = gemini_module._build_generation_config(
         base_config=None,
@@ -195,7 +182,8 @@ def test_gemini_unwraps_openai_json_schema_wrapper(monkeypatch, request):
     )
 
     assert config.kwargs["response_mime_type"] == "application/json"
-    assert config.kwargs["response_json_schema"] == schema
+    assert config.kwargs["response_json_schema"] == _ANSWER_SCHEMA
+    assert "response_schema" not in config.kwargs
 
 
 @pytest.mark.offline
@@ -277,40 +265,32 @@ def test_gemini_rejects_typed_response_format(monkeypatch, request):
 
 
 @pytest.mark.offline
-def test_gemini_default_service_root_is_not_treated_as_custom_base_url(
-    monkeypatch, request
+@pytest.mark.parametrize(
+    ("base_url", "expected_http_options"),
+    [
+        pytest.param(
+            "https://generativelanguage.googleapis.com",
+            {"timeout": 1234},
+            id="default-service-root-is-not-a-custom-base-url",
+        ),
+        pytest.param(
+            "https://proxy.example.com",
+            {"base_url": "https://proxy.example.com", "timeout": 1234},
+            id="custom-base-url-is-preserved",
+        ),
+    ],
+)
+def test_gemini_client_http_options(
+    monkeypatch, request, base_url, expected_http_options
 ):
     gemini_module = _load_gemini_module(monkeypatch, request)
     gemini_module._get_gemini_client.cache_clear()
     monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
 
-    client = gemini_module._get_gemini_client(
-        "test-key",
-        "https://generativelanguage.googleapis.com",
-        1234,
-    )
+    client = gemini_module._get_gemini_client("test-key", base_url, 1234)
 
     assert client.kwargs["api_key"] == "test-key"
-    assert "http_options" in client.kwargs
-    assert client.kwargs["http_options"].kwargs == {"timeout": 1234}
-
-
-@pytest.mark.offline
-def test_gemini_custom_base_url_is_preserved(monkeypatch, request):
-    gemini_module = _load_gemini_module(monkeypatch, request)
-    gemini_module._get_gemini_client.cache_clear()
-    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
-
-    client = gemini_module._get_gemini_client(
-        "test-key",
-        "https://proxy.example.com",
-        1234,
-    )
-
-    assert client.kwargs["http_options"].kwargs == {
-        "base_url": "https://proxy.example.com",
-        "timeout": 1234,
-    }
+    assert client.kwargs["http_options"].kwargs == expected_http_options
 
 
 @pytest.mark.offline
@@ -360,6 +340,7 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, requ
         regular_text='{"answer":"ok"}',
         thought_text="this should not be included",
     )
+    fake_stream_response.usage_metadata.cached_content_token_count = 5
 
     async def _single_chunk_stream(response):
         yield response
@@ -376,6 +357,8 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, requ
     )
 
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+    recorded: list[dict] = []
+    tracker = SimpleNamespace(add_usage=recorded.append)
 
     stream = await gemini_module.gemini_complete_if_cache(
         model="gemini-model",
@@ -384,12 +367,73 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, requ
         enable_cot=True,
         response_format={"type": "json_object"},
         api_key="test-key",
+        token_tracker=tracker,
     )
     chunks = []
     async for chunk in stream:
         chunks.append(chunk)
 
     assert "".join(chunks) == '{"answer":"ok"}'
+    # The streamed usage reaches the tracker, cached prompt tokens included.
+    assert recorded == [
+        {
+            "prompt_tokens": 1,
+            "completion_tokens": 2,
+            "total_tokens": 3,
+            "cached_prompt_tokens": 5,
+        }
+    ]
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_streaming_decodes_escapes_split_across_chunks(
+    monkeypatch, request
+):
+    # Thoughts and answer are two texts; the thought's open escape is flushed
+    # before </think>, the answer's at the end of the stream.
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    responses = [
+        _make_fake_gemini_response(thought_text=r"think \ud83d"),
+        _make_fake_gemini_response(thought_text=r"\ude00 \u4f"),
+        _make_fake_gemini_response(regular_text=r"ans\u00"),
+        _make_fake_gemini_response(regular_text=r"41 \u4f"),
+    ]
+
+    async def _chunks():
+        for response in responses:
+            yield response
+
+    async def _fake_generate_content_stream(**kwargs):
+        return _chunks()
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content_stream=_fake_generate_content_stream
+            )
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    stream = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="hello",
+        stream=True,
+        enable_cot=True,
+        api_key="test-key",
+    )
+
+    assert [chunk async for chunk in stream] == [
+        "<think>",
+        "think ",
+        "😀 ",
+        r"\u4f",
+        "</think>",
+        "ans",
+        "A ",
+        r"\u4f",
+    ]
 
 
 def _make_nonstreaming_client(fake_response):
@@ -405,20 +449,31 @@ def _make_nonstreaming_client(fake_response):
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("reported_total", "expected_total"), [(None, 1), (0, 0)])
+@pytest.mark.parametrize(
+    ("reported", "expected_extra"),
+    [
+        pytest.param(None, {"total_tokens": 1}, id="missing-counts"),
+        pytest.param(
+            0, {"total_tokens": 0, "cached_prompt_tokens": 0}, id="zero-counts"
+        ),
+    ],
+)
 async def test_gemini_returns_text_with_partial_token_counts(
-    monkeypatch, request, reported_total, expected_total
+    monkeypatch, request, reported, expected_extra
 ):
     """google-genai usage counts may be None; the tracker must get ints.
 
-    A plain recording tracker stands in for ``TokenTracker``: the binding
-    accepts any object with ``add_usage(dict)``, so the normalization has to
-    happen before the call, not inside one particular tracker.
+    A reported zero, total or cached, is kept; a missing total is summed and a
+    missing cached count is left out, as in the OpenAI binding. A plain
+    recording tracker stands in for ``TokenTracker``: the binding accepts any
+    object with ``add_usage(dict)``, and ``TokenTracker`` drops a None cached
+    count itself, so only the raw dict shows what the binding sent.
     """
     gemini_module = _load_gemini_module(monkeypatch, request)
     response = _make_fake_gemini_response(regular_text="answer", finish_reason="STOP")
     response.usage_metadata.candidates_token_count = None
-    response.usage_metadata.total_token_count = reported_total
+    response.usage_metadata.total_token_count = reported
+    response.usage_metadata.cached_content_token_count = reported
     fake_client = _make_nonstreaming_client(response)
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
     recorded: list[dict] = []
@@ -432,23 +487,27 @@ async def test_gemini_returns_text_with_partial_token_counts(
     )
 
     assert result == "answer"
-    assert recorded == [
-        {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": expected_total}
-    ]
+    assert recorded == [{"prompt_tokens": 1, "completion_tokens": 0, **expected_extra}]
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_gemini_max_tokens_finish_reason_marks_result_truncated(
-    monkeypatch, request
+@pytest.mark.parametrize(
+    ("finish_reason", "raw_json", "truncated"),
+    [
+        pytest.param("MAX_TOKENS", '{"entities":[{"name":"Ali', True, id="max-tokens"),
+        pytest.param("STOP", '{"entities":[]}', False, id="stop"),
+    ],
+)
+async def test_gemini_finish_reason_sets_truncation_marker(
+    monkeypatch, request, finish_reason, raw_json, truncated
 ):
     """MAX_TOKENS truncation is returned for salvage but flagged uncacheable."""
     gemini_module = _load_gemini_module(monkeypatch, request)
     from lightrag.utils import is_truncated_response
 
-    raw_json = '{"entities":[{"name":"Ali'
     fake_client = _make_nonstreaming_client(
-        _make_fake_gemini_response(regular_text=raw_json, finish_reason="MAX_TOKENS")
+        _make_fake_gemini_response(regular_text=raw_json, finish_reason=finish_reason)
     )
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
 
@@ -459,29 +518,7 @@ async def test_gemini_max_tokens_finish_reason_marks_result_truncated(
     )
 
     assert result == raw_json
-    assert is_truncated_response(result) is True
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_gemini_stop_finish_reason_is_not_marked_truncated(monkeypatch, request):
-    gemini_module = _load_gemini_module(monkeypatch, request)
-    from lightrag.utils import is_truncated_response
-
-    raw_json = '{"entities":[]}'
-    fake_client = _make_nonstreaming_client(
-        _make_fake_gemini_response(regular_text=raw_json, finish_reason="STOP")
-    )
-    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
-
-    result = await gemini_module.gemini_complete_if_cache(
-        model="gemini-model",
-        prompt="Extract entities",
-        api_key="test-key",
-    )
-
-    assert result == raw_json
-    assert is_truncated_response(result) is False
+    assert is_truncated_response(result) is truncated
 
 
 @pytest.mark.offline
@@ -493,6 +530,14 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
     ``<think>...</think>``), so only a check AFTER ``remove_think_tags`` sees
     that nothing usable came back. It used to be returned as an empty —
     truncation-flagged — success.
+
+    The usage is still recorded: the raise used to precede the token
+    accounting, so the request that spent its whole output budget on
+    reasoning was the one missing from usage reporting (Codex review on
+    PR #3607). Such a request's output is almost all thinking, which Gemini
+    reports in ``thoughts_token_count`` outside ``candidates_token_count`` and
+    bills as output, so both count as completion tokens, also in a computed
+    total.
     """
     from lightrag.exceptions import EmptyTruncatedResponseError
 
@@ -503,6 +548,8 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
         thought_text="let me carefully consider the entities",
         finish_reason="MAX_TOKENS",
     )
+    fake_response.usage_metadata.thoughts_token_count = 300
+    fake_response.usage_metadata.total_token_count = None
 
     async def _counting_generate_content(**kwargs):
         calls["n"] += 1
@@ -514,6 +561,8 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
         )
     )
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+    tracked: list[dict] = []
+    tracker = SimpleNamespace(add_usage=tracked.append)
 
     # DECORATED call, deliberately: token-limit exhaustion is deterministic,
     # so it must escape the retry predicate and fail after ONE request —
@@ -525,9 +574,13 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
             prompt="Extract entities",
             api_key="test-key",
             enable_cot=True,
+            token_tracker=tracker,
         )
 
     assert calls["n"] == 1, "a deterministic token-limit failure must not retry"
+    assert tracked == [
+        {"prompt_tokens": 1, "completion_tokens": 302, "total_tokens": 303}
+    ], "the exhausted request's tokens vanished from usage accounting"
     message = str(excinfo.value)
     assert "Received empty content from Gemini API" in message
     assert "finish_reason=MAX_TOKENS" in message
@@ -618,48 +671,6 @@ async def test_gemini_thinking_only_stop_response_stays_retryable(
 
     assert not isinstance(excinfo.value, EmptyTruncatedResponseError)
     assert "model returned reasoning-only output" in str(excinfo.value)
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_gemini_counts_usage_before_the_empty_truncated_raise(
-    monkeypatch, request
-):
-    """Codex review (PR #3607): the thought-only MAX_TOKENS raise happened
-    before the token accounting, so the request that consumed its ENTIRE
-    output budget on reasoning was the one request missing from usage
-    reporting. Usage is now recorded before any validation raise, mirroring
-    the streaming path's finally."""
-    from lightrag.exceptions import EmptyTruncatedResponseError
-
-    gemini_module = _load_gemini_module(monkeypatch, request)
-
-    fake_client = _make_nonstreaming_client(
-        _make_fake_gemini_response(
-            thought_text="let me carefully consider the entities",
-            finish_reason="MAX_TOKENS",
-        )
-    )
-    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
-
-    tracked: list[dict] = []
-    tracker = SimpleNamespace(add_usage=tracked.append)
-
-    with pytest.raises(EmptyTruncatedResponseError):
-        await gemini_module.gemini_complete_if_cache(
-            model="gemini-model",
-            prompt="Extract entities",
-            api_key="test-key",
-            enable_cot=True,
-            token_tracker=tracker,
-        )
-
-    assert tracked == [
-        {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
-    ], (
-        "the exhausted request's tokens vanished from usage accounting "
-        "because the raise preceded token_tracker.add_usage"
-    )
 
 
 def _make_capturing_client(fake_response):

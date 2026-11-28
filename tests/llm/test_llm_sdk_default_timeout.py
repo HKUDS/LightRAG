@@ -8,7 +8,6 @@ reaches the client. The SDK-backed cases build the real client, record what
 it was given, and call a loopback stub with it.
 """
 
-import asyncio
 import contextlib
 
 import openai
@@ -19,10 +18,6 @@ from lightrag.utils import provider_timeout
 
 pytestmark = pytest.mark.offline
 
-# The stub answers after a pause, so a client handed a literal 0 (which
-# httpx-based SDKs treat as "time out at once") fails instead of racing the
-# reply. Any pause does that; a longer one only makes every case wait.
-_DELAY = 0.05
 _CHAT = {
     "id": "x",
     "object": "chat.completion",
@@ -67,7 +62,6 @@ _CASES = [
 @contextlib.asynccontextmanager
 async def _slow_stub():
     async def answer(request: web.Request) -> web.StreamResponse:
-        await asyncio.sleep(_DELAY)
         if request.path.endswith("/messages"):
             return web.json_response(_ANTHROPIC)
         if request.path.endswith("/api/chat"):

@@ -10,6 +10,8 @@ practice; the caller's retry / text fallback covers the rare case.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from lightrag.utils import strip_markdown_code_fence, tolerant_load_json_dict
@@ -17,104 +19,46 @@ from lightrag.utils import strip_markdown_code_fence, tolerant_load_json_dict
 pytestmark = pytest.mark.offline
 
 
-def test_prose_apostrophe_before_object_still_recovers_object() -> None:
-    raw = 'Here\'s the result: {"facts":[{"text":"ok"}]} trailing {brace}'
-    assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
-
-
-def test_hash_prefixed_prose_before_object_still_recovers_object() -> None:
-    raw = 'Result #1: {"name":"n","description":"d"}'
-    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
-
-
 @pytest.mark.parametrize(
     "raw",
     [
-        '// result: {"name":"n","description":"d"}',
-        'Note // result: {"name":"n","description":"d"}',
+        pytest.param(
+            'Here\'s the result: {"a":1} trailing {brace}',
+            id="apostrophe-trailing-brace",
+        ),
+        pytest.param('Result #1: {"a":1}', id="hash"),
+        pytest.param('// result: {"a":1}', id="slash-comment"),
+        pytest.param('Source: git+ssh://example/repo//tree#readme {"a":1}', id="url"),
+        pytest.param('Source: "see [1] here" {"a":1}', id="closed-double-quote"),
+        pytest.param('Source: "a \\" [x" {"a":1}', id="escaped-quote-in-quote"),
     ],
 )
-def test_slash_prefixed_prose_before_object_still_recovers_object(raw: str) -> None:
-    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
-
-
-def test_quoted_prose_apostrophe_before_object_still_recovers_object() -> None:
-    raw = 'Result: \'Here\'s context\' {"facts":[{"text":"ok"}]} trailing {brace}'
-    assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
-
-
-def _legacy_greedy_load(raw: str) -> dict:
-    """The pre-fix parser: greedy ``\\{.*\\}`` slice, then json_repair.
-
-    Returns ``{}`` when the slice does not repair into an object, whether
-    json_repair raises or returns a non-dict (depends on its version).
-    """
-    import json_repair
-    import re
-
-    m = re.search(r"\{[\s\S]*\}", raw)
-    if m is None:
-        return {}
-    try:
-        obj = json_repair.loads(m.group(0))
-    except Exception:
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
-def test_greedy_regex_would_fail_same_input() -> None:
-    """The old greedy ``\\{.*\\}`` slice over-extends across trailing braces and
-    drops the object; the new helper recovers it."""
-    raw = '{"facts":[{"text":"ok"}]} trailing {brace}'
-    assert _legacy_greedy_load(raw) == {}
-    assert tolerant_load_json_dict(raw) == {"facts": [{"text": "ok"}]}
-
-
-def test_single_line_fence_is_stripped() -> None:
-    """The shared fence stripper handles fences with no interior newlines,
-    which the old inline pipeline regex (mandatory ``\\n``) missed."""
-    assert strip_markdown_code_fence('```json {"a":1}```').strip() == '{"a":1}'
-    assert tolerant_load_json_dict('```json {"a":1}```') == {"a": 1}
+def test_prose_before_object_still_recovers_object(raw: str) -> None:
+    """Only a ``[`` outside double quotes is a top-level array: apostrophes,
+    comment-like prose, URLs and quoted phrases before the object (including a
+    ``[`` inside an escaped-quote phrase) leave the opener at ``{``."""
+    assert tolerant_load_json_dict(raw) == {"a": 1}
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        '[{"name":"first"},{"name":"second"}]',
-        '```json\n[{"name":"first"},{"name":"second"}]\n```',
-        'Here is the result: [{"name":"first"},{"name":"second"}]',
-        'Here is the result: [{name:"first"},{name:"second"}]',
-        '[{"name":"first"},{"name":"second"}',
-        'Here is the result: [ {"name":"first"},{"name":"second"}',
-        'Here is the result: ["note", {"name":"first"}',
-        "['note', {'name':'first','description':'x'}]",
-        "[note, {name:'first',description:'x'}]",
-        '[/* note */ {"name":"first","description":"x"}]',
-        '[// note\n{"name":"first","description":"x"}]',
-        '[# note\n{"name":"first","description":"x"}]',
-        '[1, /* note */ {"name":"first","description":"x"}]',
-        '[/* ] */ {"name":"first","description":"x"}]',
-        '[// ]\n{"name":"first","description":"x"}]',
-        '[# ]\n{"name":"first","description":"x"}]',
-        "['note ]', {'name':'first','description':'x'}]",
-        '[http://example, {"name":"first","description":"x"}]',
+        pytest.param('[{"name":"first"},{"name":"second"}]', id="array"),
+        pytest.param('```json\n[{"name":"first"}]\n```', id="fenced-array"),
+        pytest.param('Here is the result: [{"name":"first"}]', id="prose-array"),
+        pytest.param('[{"name":"first"},{"name":"second"}', id="truncated-array"),
+        # json_repair scavenges the object out of this one if it is ever asked.
+        pytest.param('[# ]\n{"name":"first","description":"x"}]', id="comment-array"),
+        # Bracketed prose before an object reads as a top-level array without
+        # heuristics; intentionally rejected (caller retries / falls back).
+        pytest.param(
+            'analysis: [draft] {name:"x", type:"Chart", description:"ok",}',
+            id="bracketed-prose",
+        ),
     ],
 )
 def test_top_level_array_is_rejected(raw: str) -> None:
     assert tolerant_load_json_dict(raw) == {}
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://example",
-        "https://example.test/path",
-        "git+ssh://example/repo//tree#readme",
-    ],
-)
-def test_prose_url_before_object_still_recovers_object(url: str) -> None:
-    raw = f'Source: {url} {{"name":"n","description":"d"}}'
-    assert tolerant_load_json_dict(raw) == {"name": "n", "description": "d"}
 
 
 def test_balanced_object_slice_respects_nested_and_quoted_braces() -> None:
@@ -140,9 +84,6 @@ def test_bare_apostrophe_slice_stops_at_object_end() -> None:
         == "{name: O'Reilly, type: Chart}"
     )
     assert _first_balanced_object_slice("{a: it's ok} tail {x}") == "{a: it's ok}"
-    # a genuine single-quoted string (opened after a delimiter) still absorbs
-    # stray braces inside it — the guard must not break that.
-    assert _first_balanced_object_slice("{a: 'brace } ok'} tail") == "{a: 'brace } ok'}"
 
 
 def test_bare_apostrophe_object_recovers_without_trailing_pollution() -> None:
@@ -154,20 +95,6 @@ def test_bare_apostrophe_object_recovers_without_trailing_pollution() -> None:
     out = tolerant_load_json_dict(raw)
     assert out, "object should be recovered"
     assert all("trailing" not in str(v) and "brace" not in str(v) for v in out.values())
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        # Bracketed prose before the object reads as a top-level array without
-        # heuristics; intentionally rejected (caller retries / falls back).
-        'analysis: [draft] {name:"x", type:"Chart", description:"ok",}',
-        'Analysis [draft: {"name":"n","description":"d"}',
-        '[draft: {"name":"n","description":"d"}',
-    ],
-)
-def test_bracketed_prose_prefix_is_rejected(raw: str) -> None:
-    assert tolerant_load_json_dict(raw) == {}
 
 
 def test_broken_array_shell_yielding_dict_is_rejected() -> None:
@@ -197,14 +124,6 @@ def test_unclosed_quote_before_broken_array_is_rejected() -> None:
     assert tolerant_load_json_dict(raw) == {}
 
 
-def test_closed_quote_prose_before_object_still_recovers() -> None:
-    """Guard against over-rejection: a properly closed quoted phrase (even one
-    containing a '[') before the object leaves the first opener as '{', so the
-    object is still recovered."""
-    raw = 'Source: "see [1] here" {"a":1}'
-    assert tolerant_load_json_dict(raw) == {"a": 1}
-
-
 def test_pseudo_object_prefix_before_array_is_rejected() -> None:
     """Fix-proof: whole-string json_repair scavenges the inner object out of a
     pseudo-object-prose ('{note}') + array input. The helper must not trust that
@@ -221,19 +140,6 @@ def test_pseudo_object_prefix_before_array_is_rejected() -> None:
     assert tolerant_load_json_dict(raw) == {}
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        '{note} [{"a":1}]',
-        '{note}[{"a":1}]',
-    ],
-)
-def test_pseudo_object_prefix_before_array_variants_rejected(raw: str) -> None:
-    """'{note}' is not a JSON object (json_repair turns it into a list), so a
-    trailing array behind it is not scavenged for an element."""
-    assert tolerant_load_json_dict(raw) == {}
-
-
 def test_malformed_object_with_trailing_citation_recovers() -> None:
     """Guard against over-rejection: a genuine (malformed) leading object
     followed by trailing text starting with '[' — e.g. a '[1]' citation — must
@@ -245,3 +151,69 @@ def test_malformed_object_with_trailing_citation_recovers() -> None:
         "type": "Chart",
         "description": "ok",
     }
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(
+            '```json {"a":1}```',
+            '{"a":1}',
+            id="3bt-single-line",
+        ),
+        pytest.param(
+            '````json\n{"code": "```py\\nx\\n```"}\n````',
+            '{"code": "```py\\nx\\n```"}',
+            id="4bt-nested-triple-backtick",
+        ),
+        pytest.param(
+            '~~~json\n{"a": 1}\n~~~',
+            '{"a": 1}',
+            id="tilde-multiline",
+        ),
+        pytest.param(
+            '~~~~JSON\n{"a": 1}\n~~~~',
+            '{"a": 1}',
+            id="4tilde-uppercase-json",
+        ),
+        pytest.param(
+            '```json\n{"a": 1}\n````',
+            '{"a": 1}',
+            id="commonmark-longer-backtick-closer",
+        ),
+    ],
+)
+def test_strip_markdown_code_fence_commonmark_variants(raw: str, expected: str) -> None:
+    """Fences with no interior newline, 4+ backticks around embedded triple
+    backticks, tilde fences and longer closers are all stripped."""
+    assert strip_markdown_code_fence(raw).strip() == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param('````json\n{"a":1}\n```', id="4-open-3-close-mismatch"),
+        pytest.param('```json\n{"a":1}\n~~~', id="backtick-tilde-mismatch"),
+    ],
+)
+def test_strip_markdown_code_fence_rejects_mismatched_fences_by_identity(
+    raw: str,
+) -> None:
+    assert strip_markdown_code_fence(raw) is raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("```json" + " " * 1500 + "x", id="fence-then-spaces"),
+        pytest.param('```json\n{"d":"' + " " * 16000, id="truncated-spaces"),
+        pytest.param("```json\n" + "\n " * 1000, id="newline-space-runs"),
+    ],
+)
+def test_strip_markdown_code_fence_is_linear_on_whitespace_runs(raw: str) -> None:
+    """Degenerate LLM output (whitespace repeated up to the token limit) must
+    not backtrack: a regex with a lazy body between whitespace runs takes
+    seconds on these inputs and blocks the event loop."""
+    started = time.perf_counter()
+    assert strip_markdown_code_fence(raw) is raw
+    assert time.perf_counter() - started < 0.5

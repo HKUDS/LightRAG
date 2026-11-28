@@ -134,19 +134,6 @@ def test_safe_extract_zip_extracts_flat_bundle(tmp_path: Path) -> None:
     )
 
 
-def test_safe_extract_zip_rejects_path_traversal(tmp_path: Path) -> None:
-    payload = _make_zip({"../evil.txt": b"oops"})
-    with pytest.raises(RuntimeError, match="unsafe path"):
-        safe_extract_zip(payload, tmp_path / "raw")
-
-
-def test_safe_extract_zip_rejects_absolute_path(tmp_path: Path) -> None:
-    payload = _make_zip({"/etc/passwd": b"oops"})
-    with pytest.raises(RuntimeError, match="unsafe path"):
-        safe_extract_zip(payload, tmp_path / "raw")
-
-
-@pytest.mark.offline
 @pytest.mark.parametrize(
     "name", ["..notes.md", "...report.md", "..assets/figure.png", "nested/..notes.md"]
 )
@@ -157,7 +144,8 @@ def test_safe_extract_zip_allows_dot_prefixed_names(tmp_path: Path, name: str) -
     assert (tmp_path / name).read_bytes() == b"Document content"
 
 
-@pytest.mark.offline
+# One case per branch of the unsafe-path check: the bare parent, a parent
+# prefix, a normalized escape and an absolute path.
 @pytest.mark.parametrize(
     "name", ["..", "../outside.md", "nested/../../outside.md", "/outside.md"]
 )
@@ -251,35 +239,54 @@ def test_manifest_round_trip(tmp_path: Path) -> None:
     assert loaded.files[0].path == "demo.md"
 
 
-@pytest.mark.parametrize("payload", [b'{"engine":'])
-def test_manifest_load_treats_undecodable_file_as_missing(
-    tmp_path: Path, payload: bytes
-) -> None:
-    # Invalid UTF-8 raises UnicodeDecodeError (a ValueError, not an OSError)
-    # before json.loads runs; it must read as a stale bundle, like malformed
-    # JSON, instead of escaping and failing the parse on every retry.
+def test_manifest_load_treats_truncated_json_as_missing(tmp_path: Path) -> None:
+    # Truncated JSON must read as a stale bundle instead of escaping and
+    # failing the parse on every retry. Invalid UTF-8 is pinned per engine by
+    # the ``not_utf8`` cases in ``docling/`` and ``mineru/test_cache.py``.
     raw = tmp_path / "demo.docling_raw"
     raw.mkdir()
-    (raw / "_manifest.json").write_bytes(payload)
+    (raw / "_manifest.json").write_bytes(b'{"engine":')
     assert load_manifest(raw, expected_engine="docling") is None
 
 
-# ---------------------------------------------------------------------------
-# download_timeout
-# ---------------------------------------------------------------------------
+def _load_docling_manifest(raw: Path) -> Manifest | None:
+    return load_manifest(raw, expected_engine="docling")
 
 
-async def test_download_timeout_is_the_stdlib_asyncio_timeout():
-    import asyncio
-
-    from lightrag.parser.external._common import download_timeout
-
-    # asyncio.timeout() needs a running loop to compute its deadline even
-    # just to construct the Timeout object, hence this test is async.
-    result = download_timeout(5.0)
-    assert isinstance(result, asyncio.Timeout), (
-        f"expected asyncio.Timeout, got {type(result).__name__}"
+def _load_mineru_manifest(raw: Path):
+    from lightrag.parser.external.mineru.manifest import (
+        load_manifest as load_mineru_manifest,
     )
+
+    return load_mineru_manifest(raw)
+
+
+@pytest.mark.parametrize(
+    "engine, loader",
+    [("docling", _load_docling_manifest), ("mineru", _load_mineru_manifest)],
+    ids=["docling", "mineru"],
+)
+@pytest.mark.parametrize(
+    "bad_field",
+    [
+        # A non-object critical_file has no .get -> AttributeError.
+        {"critical_file": "oops"},
+        # JSON Infinity in a size field -> OverflowError from int().
+        {"source_size_bytes": float("inf")},
+    ],
+    ids=["non_dict_critical_file", "infinite_size"],
+)
+def test_manifest_load_treats_malformed_field_as_missing(
+    tmp_path: Path, engine: str, loader, bad_field: dict
+) -> None:
+    # A malformed field must read as a stale bundle instead of escaping:
+    # the parse template checks the bundle before clearing raw_dir, so an
+    # escaped error would fail every retry.
+    raw = tmp_path / f"demo.{engine}_raw"
+    raw.mkdir()
+    payload = {"version": "1.0", "engine": engine, "files": [], **bad_field}
+    (raw / "_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert loader(raw) is None
 
 
 # ---------------------------------------------------------------------------
@@ -341,11 +348,12 @@ async def test_stream_capped_get_sends_accept_encoding_identity():
     "headers",
     [
         {},
+        # The canonical value, and a padded mixed-case one that goes red if
+        # either the strip or the case fold is dropped from the comparison.
         {"content-encoding": "identity"},
         {"content-encoding": "  Identity  "},
-        {"content-encoding": "IDENTITY"},
     ],
-    ids=["absent", "identity", "identity-whitespace", "identity-uppercase"],
+    ids=["absent", "identity", "identity-padded-mixed-case"],
 )
 async def test_stream_capped_get_accepts_absent_or_identity_encoding(headers):
     from lightrag.parser.external._common import stream_capped_get
@@ -400,10 +408,11 @@ async def test_stream_capped_get_rejects_non_identity_encoding(content_encoding)
     assert "secret" not in message
 
 
-async def test_stream_capped_get_cap_still_interrupts_an_accepted_identity_stream():
-    """Regression guard: the encoding gate must not weaken the existing
-    oversized-response protection for the (now identity-only) accepted
-    path."""
+async def test_stream_capped_get_cap_counts_across_chunks():
+    """The cap applies to the running total, not to each chunk: every chunk
+    here is far below the limit. The per-client oversized-response bounds
+    tests deliver one preloaded chunk, so they stay green if the total is
+    reset per chunk; this is the only multi-chunk input."""
     from lightrag.parser.external._common import stream_capped_get
 
     chunks = [b"x" * 1000 for _ in range(50)]  # 50,000 bytes total

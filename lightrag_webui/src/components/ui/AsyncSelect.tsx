@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Check, ChevronsUpDown, Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
@@ -41,8 +41,13 @@ export interface AsyncSelectProps<T> {
   loadingSkeleton?: React.ReactNode
   /** Currently selected value */
   value: string
-  /** Callback when selection changes */
-  onChange: (value: string) => void
+  /**
+   * Callback when selection changes. `viaKeyboard` is true when the option was
+   * chosen with the keyboard; a caller that remounts this component on change
+   * (a new `key`) must then move focus back to the new trigger itself, because
+   * the trigger Radix would return focus to is gone.
+   */
+  onChange: (value: string, meta: { viaKeyboard: boolean }) => void
   /** Callback before opening the dropdown (async supported) */
   onBeforeOpen?: () => void | Promise<void>
   /** Accessibility label for the select field */
@@ -96,6 +101,10 @@ export function AsyncSelect<T>({
   debounceTime = 150
 }: AsyncSelectProps<T>) {
   const [open, setOpen] = useState(false)
+  // Whether the last interaction inside the popover was a pointer press:
+  // focus returns to the trigger only after a keyboard close, because a
+  // focused trigger opens its tooltip and a mouse user would see it pop up.
+  const pointerInteractionRef = useRef(false)
   const [originalOptions, setOriginalOptions] = useState<T[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -153,7 +162,7 @@ export function AsyncSelect<T>({
   const handleSelect = useCallback(
     (currentValue: string) => {
       const newValue = clearable && currentValue === value ? '' : currentValue
-      onChange(newValue)
+      onChange(newValue, { viaKeyboard: !pointerInteractionRef.current })
       setOpen(false)
     },
     [value, onChange, clearable]
@@ -161,8 +170,9 @@ export function AsyncSelect<T>({
 
   const handleOpenChange = useCallback(
     async (newOpen: boolean) => {
-      if (newOpen && onBeforeOpen) {
-        await onBeforeOpen()
+      if (newOpen) {
+        pointerInteractionRef.current = false
+        if (onBeforeOpen) await onBeforeOpen()
       }
       setOpen(newOpen)
     },
@@ -192,7 +202,9 @@ export function AsyncSelect<T>({
       </PopoverTrigger>
       <PopoverContent
         className={cn('p-0', className)}
-        onCloseAutoFocus={(e) => e.preventDefault()}
+        onPointerDownCapture={() => { pointerInteractionRef.current = true }}
+        onKeyDownCapture={() => { pointerInteractionRef.current = false }}
+        onCloseAutoFocus={(e) => { if (pointerInteractionRef.current) e.preventDefault() }}
         align="start"
         sideOffset={8}
         collisionPadding={5}
@@ -225,11 +237,14 @@ export function AsyncSelect<T>({
                 </CommandEmpty>
               ))}
             <CommandGroup>
-              {options.map((option) => {
+              {options.map((option, index) => {
                 const optionValue = getOptionValue(option);
-                // Fix cmdk filtering issue: use empty string when search is empty
-                // This ensures all items are shown when searchTerm is empty
-                const itemValue = searchTerm.trim() === '' ? '' : optionValue;
+                // cmdk only tracks which item is highlighted by this value
+                // (shouldFilter is off, so it never hides an item). It must be
+                // non-empty, or cmdk never highlights the item and the keyboard
+                // cannot pick it, and unique: cmdk trims it, so labels that
+                // differ only in surrounding whitespace would collide.
+                const itemValue = `${index}-${optionValue}`;
 
                 return (
                   <CommandItem

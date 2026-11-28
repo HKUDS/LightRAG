@@ -4853,22 +4853,69 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     await hashing_kv.upsert({flattened_key: cache_entry})
 
 
+_UNICODE_ESCAPE_RUN_PATTERN = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
+_LONE_SURROGATE_PATTERN = re.compile("[\ud800-\udfff]")
+# The longest suffix the next streamed chunk could still extend into another
+# decoding: a high-surrogate escape awaiting its low half, and/or an escape
+# cut before its fourth hex digit (down to a bare backslash).
+_OPEN_ESCAPE_SUFFIX_PATTERN = re.compile(
+    r"(?:\\u[dD][89abAB][0-9a-fA-F]{2})?(?:\\(?:u[0-9a-fA-F]{0,3})?)?\Z"
+)
+
+
 def safe_unicode_decode(content: bytes) -> str:
     r"""Decode complete \uXXXX runs, combining valid UTF-16 surrogate pairs.
 
-    Other escape sequences and already-decoded UTF-8 text are preserved.
+    Other escape sequences and already-decoded UTF-8 text are preserved. An
+    escaped surrogate with no partner in its run is dropped, as
+    ``sanitize_text_for_encoding`` drops surrogates: it cannot be encoded.
+    A streamed response must go through ``StreamingUnicodeDecoder`` instead,
+    or a pair split across two chunks is dropped as two lone halves.
     """
-    unicode_escape_pattern = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
 
     def replace_unicode_escape(match: re.Match[str]) -> str:
-        return json.loads(f'"{match.group(0)}"')
+        decoded = json.loads(f'"{match.group(0)}"')
+        return _LONE_SURROGATE_PATTERN.sub("", decoded)
 
-    # Perform the substitution
-    decoded_content = unicode_escape_pattern.sub(
+    return _UNICODE_ESCAPE_RUN_PATTERN.sub(
         replace_unicode_escape, content.decode("utf-8")
     )
 
-    return decoded_content
+
+class StreamingUnicodeDecoder:
+    r"""Apply ``safe_unicode_decode`` to a text that arrives in chunks.
+
+    ``feed`` returns the decodable part of each chunk and holds back a suffix
+    the next chunk may complete (a high-surrogate escape, a ``\u`` escape cut
+    short), so the joined output of ``feed`` calls plus ``flush`` equals
+    ``safe_unicode_decode`` of the joined input. Call ``flush`` once the text
+    ends, before anything else is emitted after it (such as ``</think>``).
+    Use one decoder per text: a reasoning stream and the answer stream are
+    two texts. A chunk without a backslash passes through unchanged.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        if self._pending:
+            text = self._pending + text
+            self._pending = ""
+        if "\\" not in text:
+            return text
+        match = _OPEN_ESCAPE_SUFFIX_PATTERN.search(text)
+        if match.start() < len(text):
+            self._pending = text[match.start() :]
+            text = text[: match.start()]
+        if r"\u" in text:
+            text = safe_unicode_decode(text.encode("utf-8"))
+        return text
+
+    def flush(self) -> str:
+        text, self._pending = self._pending, ""
+        if r"\u" in text:
+            text = safe_unicode_decode(text.encode("utf-8"))
+        return text
 
 
 def exists_func(obj, func_name: str) -> bool:
@@ -6979,23 +7026,44 @@ def repair_vlm_json_escape_damage_nested(obj: Any, *, context: str = "") -> Any:
     return obj
 
 
-_CODE_FENCE_PATTERN = re.compile(
-    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL
+# Opening fence only: CommonMark backtick or tilde fence (3+), optional json
+# tag. Possessive quantifiers keep the match linear; the closing fence is found
+# with rstrip in strip_markdown_code_fence, never by a backtracking body group.
+_CODE_FENCE_OPEN_PATTERN = re.compile(
+    r"\s*+(?P<fence>`{3,}+|~{3,}+)(?:[jJ][sS][oO][nN](?![A-Za-z0-9_]))?[ \t]*+(?:\r?\n)?"
 )
 
 
 def strip_markdown_code_fence(text: str) -> str:
-    """Strip a surrounding markdown code fence (```json ... ``` or ``` ... ```).
+    """Strip a surrounding markdown code fence (``` / ```` / ~~~, optional json tag).
 
     Why: LLM training priors strongly associate "JSON output" with fenced code
     blocks, so providers routinely wrap responses despite explicit instructions
-    to the contrary. Stripping here avoids relying on ``json_repair`` and the
-    noisy warning it emits. The ``\\n?`` make the interior newlines optional so
-    single-line fences (```` ```json {...}``` ````) are handled too.
+    to the contrary (including 4+ backtick fences when values embed triple
+    backticks, or CommonMark tilde fences). Stripping here avoids relying on
+    ``json_repair`` and the noisy warning it emits.
+
+    Rules: the closing fence must use the opening character and be at least as
+    long; single-line fences (```` ```json {...}``` ````) are handled. Anything
+    else -- no fence, a shorter or mismatched closer, trailing prose -- returns
+    ``text`` itself (callers test ``is``). Runs in linear time: this sees raw
+    LLM output on the event loop, including degenerate whitespace runs.
     """
 
-    match = _CODE_FENCE_PATTERN.match(text)
-    return match.group(1) if match else text
+    match = _CODE_FENCE_OPEN_PATTERN.match(text)
+    if not match:
+        return text
+    fence = match.group("fence")
+    rest = text[match.end() :].rstrip()
+    closer_len = len(rest) - len(rest.rstrip(fence[0]))
+    if closer_len < len(fence):
+        return text
+    body = rest[: len(rest) - closer_len].rstrip(" \t")
+    if body.endswith("\n"):
+        body = body[:-1]
+    if body.endswith("\r"):
+        body = body[:-1]
+    return body
 
 
 def _first_structural_opener(text: str) -> tuple[str | None, int]:

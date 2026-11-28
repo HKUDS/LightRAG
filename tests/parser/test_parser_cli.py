@@ -115,27 +115,6 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_cli_writes_sidecar_from_existing_raw_dir(tmp_path: Path) -> None:
-    source = tmp_path / "demo.pdf"
-    source.write_bytes(b"%PDF-1.4\n")  # never read; presence is the only check
-    _seed_raw_dir(tmp_path / "demo.pdf.docling_raw", with_table=True)
-
-    rc = main([str(source), "--engine", "docling"])
-    assert rc == 0
-
-    parsed_dir = tmp_path / "demo.pdf.parsed"
-    blocks_path = parsed_dir / "demo.blocks.jsonl"
-    assert blocks_path.is_file()
-    assert (parsed_dir / "demo.tables.json").is_file()
-
-    meta = _read_meta(blocks_path)
-    assert meta["parse_engine"] == "docling"
-    assert meta["document_name"] == "demo.pdf"
-    assert meta["table_file"] is True
-    # Source file stays where it was — the CLI mocks the archive step.
-    assert source.is_file()
-
-
 def test_cli_doc_id_default_is_stable_across_runs(tmp_path: Path) -> None:
     source = tmp_path / "demo.pdf"
     source.write_bytes(b"%PDF-1.4\n")
@@ -158,9 +137,11 @@ def test_cli_doc_id_default_is_stable_across_runs(tmp_path: Path) -> None:
     assert first_block_ids and first_block_ids == second_block_ids
 
 
-def test_cli_doc_id_override(tmp_path: Path) -> None:
+def test_cli_writes_sidecar_from_existing_raw_dir_with_doc_id_override(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "demo.pdf"
-    source.write_bytes(b"%PDF-1.4\n")
+    source.write_bytes(b"%PDF-1.4\n")  # never read; presence is the only check
     _seed_raw_dir(tmp_path / "demo.pdf.docling_raw", with_table=True)
 
     override = "doc-" + "a" * 32
@@ -170,6 +151,11 @@ def test_cli_doc_id_override(tmp_path: Path) -> None:
     parsed_dir = tmp_path / "demo.pdf.parsed"
     meta = _read_meta(parsed_dir / "demo.blocks.jsonl")
     assert meta["doc_id"] == override
+    assert meta["parse_engine"] == "docling"
+    assert meta["document_name"] == "demo.pdf"
+    assert meta["table_file"] is True
+    # Source file stays where it was: the CLI mocks the archive step.
+    assert source.is_file()
 
     tables = json.loads((parsed_dir / "demo.tables.json").read_text(encoding="utf-8"))[
         "tables"
@@ -221,11 +207,16 @@ def test_cli_rejects_suffix_engine_mismatch(
 
 
 def test_cli_legacy_engine_prints_raw_summary(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # legacy is registry-selectable and emits plain content with no sidecar
     # (blocks_path=""). The CLI must summarize the content instead of trying
     # to open a non-existent blocks file.
+    # It must also run on a core install: the native DOCX parser needs
+    # python-docx and defusedxml (the ``api`` extra), so make it unimportable.
+    monkeypatch.setitem(sys.modules, "lightrag.parser.docx.parse_document", None)
     source = tmp_path / "notes.txt"
     source.write_text("hello world\nsecond line\n", encoding="utf-8")
 
@@ -240,6 +231,8 @@ def test_cli_legacy_engine_prints_raw_summary(
 def test_cli_direct_script_native_does_not_shadow_python_docx(
     tmp_path: Path,
 ) -> None:
+    # A subprocess (about 2 s) is the cheapest way to get script-mode sys.path,
+    # where Python puts lightrag/parser first and parser/docx shadows python-docx.
     from docx import Document
 
     source = tmp_path / "demo.docx"

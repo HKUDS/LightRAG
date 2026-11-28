@@ -974,10 +974,43 @@ def _looks_like_json_extraction_result(result: str) -> bool:
     if stripped.startswith(("{", "[")):
         return True
 
-    if stripped.startswith("```"):
+    if stripped.startswith(("```", "~~~")):
         return strip_markdown_code_fence(stripped).strip().startswith(("{", "["))
 
     return False
+
+
+def _json_extraction_field_text(
+    value: Any, list_separator: str | None, context: str = ""
+) -> str:
+    """Read one JSON extraction field as the text the record parsers expect.
+
+    A JSON ``null`` is an empty field, never the string ``"None"``. With a
+    ``list_separator``, an array (``"keywords": ["a", "b"]``) is joined into
+    the separated string the delimited text format carries, so it is not
+    stored as its Python repr; ``null`` and blank items are skipped.
+
+    Without one the field is an identifier (entity name, relation endpoint):
+    a one-item array is that item, and any other array or an object is read
+    as empty, so the caller drops the record instead of storing a repr as a
+    name. Joining or picking one of several names would invent an entity or
+    guess the wrong one. ``context`` names the field in that warning. This
+    split old names that used to be equal, an accepted one-time residue: see
+    docs/design/PurgeRecoveryContract.md, "Accepted split: JSON identifiers
+    that are not strings".
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        items = [item for item in value if item is not None and str(item).strip()]
+        if list_separator is not None:
+            return list_separator.join(str(item) for item in items)
+        if len(items) == 1 and not isinstance(items[0], (list, tuple, dict)):
+            return str(items[0])
+    elif list_separator is not None or not isinstance(value, dict):
+        return str(value)
+    logger.warning(f"{context}: JSON identifier is not a single name, dropped")
+    return ""
 
 
 async def _process_json_extraction_result(
@@ -1049,7 +1082,10 @@ async def _process_json_extraction_result(
 
         try:
             entity_name = normalize_entity_name(
-                str(entity_data.get("name", "")), final_space_pass=False
+                _json_extraction_field_text(
+                    entity_data.get("name"), None, f"{chunk_key}: entity name"
+                ),
+                final_space_pass=False,
             )
             if not entity_name or not entity_name.strip():
                 logger.info(
@@ -1058,7 +1094,8 @@ async def _process_json_extraction_result(
                 continue
 
             entity_type = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("type", "")), remove_inner_quotes=True
+                _json_extraction_field_text(entity_data.get("type"), ", "),
+                remove_inner_quotes=True,
             )
             entity_type = _normalize_and_validate_entity_type(
                 entity_type, f"{chunk_key}: entity '{entity_name}'"
@@ -1067,7 +1104,8 @@ async def _process_json_extraction_result(
                 continue
 
             entity_description = sanitize_and_normalize_extracted_text(
-                str(entity_data.get("description", "")), multiline=True
+                _json_extraction_field_text(entity_data.get("description"), "\n"),
+                multiline=True,
             )
             if not entity_description.strip():
                 logger.warning(
@@ -1111,10 +1149,16 @@ async def _process_json_extraction_result(
 
         try:
             source = normalize_entity_name(
-                str(rel_data.get("source", "")), final_space_pass=False
+                _json_extraction_field_text(
+                    rel_data.get("source"), None, f"{chunk_key}: relation source"
+                ),
+                final_space_pass=False,
             )
             target = normalize_entity_name(
-                str(rel_data.get("target", "")), final_space_pass=False
+                _json_extraction_field_text(
+                    rel_data.get("target"), None, f"{chunk_key}: relation target"
+                ),
+                final_space_pass=False,
             )
 
             if not source:
@@ -1132,12 +1176,14 @@ async def _process_json_extraction_result(
                 continue
 
             edge_keywords = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("keywords", "")), remove_inner_quotes=True
+                _json_extraction_field_text(rel_data.get("keywords"), ", "),
+                remove_inner_quotes=True,
             )
             edge_keywords = edge_keywords.replace("，", ",")
 
             edge_description = sanitize_and_normalize_extracted_text(
-                str(rel_data.get("description", "")), multiline=True
+                _json_extraction_field_text(rel_data.get("description"), "\n"),
+                multiline=True,
             )
 
             if not edge_description.strip():

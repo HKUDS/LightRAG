@@ -35,6 +35,7 @@ from lightrag.utils import (
     logger,
     remove_think_tags,
     safe_unicode_decode,
+    StreamingUnicodeDecoder,
     wrap_embedding_func_with_attrs,
 )
 
@@ -292,17 +293,29 @@ def _usage_counts(usage: Any) -> dict[str, int]:
     ``add_usage(dict)``, so the counts are normalized to ints here rather than
     left to the tracker. A missing total is the sum of the components; a
     reported total, including zero, is kept.
+
+    Thinking tokens are reported in ``thoughts_token_count``, outside
+    ``candidates_token_count``, but are generated and billed as output, so
+    they count as completion tokens. ``cached_prompt_tokens`` (a subset of
+    ``prompt_tokens``) is sent only when Gemini reports it; a reported zero
+    is kept.
     """
     prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
-    completion_tokens = getattr(usage, "candidates_token_count", None) or 0
+    completion_tokens = (getattr(usage, "candidates_token_count", None) or 0) + (
+        getattr(usage, "thoughts_token_count", None) or 0
+    )
     total_tokens = getattr(usage, "total_token_count", None)
     if total_tokens is None:
         total_tokens = prompt_tokens + completion_tokens
-    return {
+    counts = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+    cached_tokens = getattr(usage, "cached_content_token_count", None)
+    if cached_tokens is not None:
+        counts["cached_prompt_tokens"] = cached_tokens
+    return counts
 
 
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:
@@ -539,6 +552,8 @@ async def gemini_complete_if_cache(
             cot_started = False
             initial_content_seen = False
             usage_metadata = None
+            regular_decoder = StreamingUnicodeDecoder()
+            thought_decoder = StreamingUnicodeDecoder()
 
             try:
                 # Use native async streaming from genai SDK
@@ -564,15 +579,14 @@ async def gemini_complete_if_cache(
 
                             # Close COT section if it was active
                             if cot_active:
+                                if tail := thought_decoder.flush():
+                                    yield tail
                                 yield "</think>"
                                 cot_active = False
 
                             # Process and yield regular content
-                            if "\\u" in regular_text:
-                                regular_text = safe_unicode_decode(
-                                    regular_text.encode("utf-8")
-                                )
-                            yield regular_text
+                            if text := regular_decoder.feed(regular_text):
+                                yield text
 
                         # Process thought content
                         if thought_text:
@@ -584,22 +598,20 @@ async def gemini_complete_if_cache(
 
                             # Yield thought content if COT is active
                             if cot_active:
-                                if "\\u" in thought_text:
-                                    thought_text = safe_unicode_decode(
-                                        thought_text.encode("utf-8")
-                                    )
-                                yield thought_text
+                                if text := thought_decoder.feed(thought_text):
+                                    yield text
                     else:
                         # COT disabled - only yield regular content
                         if regular_text:
-                            if "\\u" in regular_text:
-                                regular_text = safe_unicode_decode(
-                                    regular_text.encode("utf-8")
-                                )
-                            yield regular_text
+                            if text := regular_decoder.feed(regular_text):
+                                yield text
 
+                if tail := regular_decoder.flush():
+                    yield tail
                 # Ensure COT is properly closed if still active
                 if cot_active:
+                    if tail := thought_decoder.flush():
+                        yield tail
                     yield "</think>"
                     cot_active = False
 

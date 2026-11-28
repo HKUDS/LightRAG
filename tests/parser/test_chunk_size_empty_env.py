@@ -1,8 +1,9 @@
-"""Empty CHUNK_* size/overlap envs must not crash chunker defaults.
+"""Blank and malformed CHUNK_* envs in the chunker defaults.
 
-Follow-up to CHUNK_R_SEPARATORS / empty int field defaults: bare
-``int(os.getenv(...))`` still crashed when size/overlap knobs were present
-but empty (common in ``.env`` / Compose). Route through ``get_env_value``.
+Blank size/overlap knobs (common in ``.env`` / Compose) fall back to their
+defaults and malformed ones raise, both in ``default_chunker_config`` and in
+the ``LightRAG`` init overlay. ``CHUNK_F_SPLIT_BY_CHARACTER`` is the exception
+to "blank means unset": a whitespace-only value is a separator.
 """
 
 from __future__ import annotations
@@ -14,8 +15,6 @@ import pytest
 
 from lightrag.constants import DEFAULT_CHUNK_P_SIZE
 from lightrag.parser.routing import default_chunker_config
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # Every variable is read by the shared ``_chunk_env_int``, so each variable
@@ -30,8 +29,39 @@ _CHUNK_ENVS = [
     ("CHUNK_R_OVERLAP_SIZE", "recursive_character", "chunk_overlap_token_size", None),
     ("CHUNK_P_OVERLAP_SIZE", "paragraph_semantic", "chunk_overlap_token_size", None),
 ]
-_BLANKS = ["", "  ", "\t"]
-_MALFORMED = ["20OO", "1.5", "abc"]
+# One spelling per branch of ``_chunk_env_int``: unset-by-emptiness, blank
+# after ``strip()``; a non-integer word, a float ``int()`` must not round.
+_BLANKS = ["", "  "]
+_MALFORMED = ["20OO", "1.5"]
+
+
+def _new_rag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs):
+    """Build a ``LightRAG`` whose storages are stubbed out."""
+    monkeypatch.setattr(
+        "lightrag.lightrag.verify_storage_implementation", lambda *a: None
+    )
+    monkeypatch.setattr("lightrag.lightrag.check_storage_env_vars", lambda *a: None)
+
+    class DummyStorage:
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(
+        "lightrag.lightrag.get_storage_class", lambda *a, **k: DummyStorage
+    )
+
+    async def emb(texts: list[str]) -> np.ndarray:
+        return np.zeros((len(texts), 8))
+
+    from lightrag.lightrag import LightRAG
+    from lightrag.utils import EmbeddingFunc
+
+    return LightRAG(
+        working_dir=str(tmp_path / "wd"),
+        embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
+        llm_model_func=lambda *a, **k: "ok",
+        **kwargs,
+    )
 
 
 def _one_spelling_per_env(spellings):
@@ -94,41 +124,12 @@ def test_malformed_chunk_size_envs_raise(
 
 
 @pytest.mark.offline
-@pytest.mark.parametrize(
-    "env_value",
-    [
-        "",
-    ],
-)
 def test_empty_chunk_size_env_does_not_crash_lightrag_init(
-    env_value: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("CHUNK_SIZE", env_value)
-    monkeypatch.setenv("CHUNK_OVERLAP_SIZE", env_value)
-    monkeypatch.setattr(
-        "lightrag.lightrag.verify_storage_implementation", lambda *a: None
-    )
-    monkeypatch.setattr("lightrag.lightrag.check_storage_env_vars", lambda *a: None)
-
-    class DummyStorage:
-        def __init__(self, *a, **k):
-            pass
-
-    monkeypatch.setattr(
-        "lightrag.lightrag.get_storage_class", lambda *a, **k: DummyStorage
-    )
-
-    async def emb(texts: list[str]) -> np.ndarray:
-        return np.zeros((len(texts), 8))
-
-    from lightrag.lightrag import LightRAG
-    from lightrag.utils import EmbeddingFunc
-
-    rag = LightRAG(
-        working_dir=str(tmp_path / "wd"),
-        embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
-        llm_model_func=lambda *a, **k: "ok",
-    )
+    monkeypatch.setenv("CHUNK_SIZE", "")
+    monkeypatch.setenv("CHUNK_OVERLAP_SIZE", "")
+    rag = _new_rag(tmp_path, monkeypatch)
     assert rag.chunk_token_size == 1200
     assert rag.chunk_overlap_token_size == 100
 
@@ -148,31 +149,34 @@ def test_empty_chunk_size_env_does_not_crash_lightrag_init(
 def test_malformed_chunk_size_envs_raise_in_lightrag_init(
     env_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Malformed non-empty env values must raise ValueError on LightRAG init."""
+    """Malformed non-empty env values must raise ValueError on LightRAG init.
+
+    The partial ``addon_params`` chunker skips ``default_chunker_config``, so
+    each strategy env is read by the init overlay's own call site.
+    """
     monkeypatch.setenv(env_key, "20OO")
-    monkeypatch.setattr(
-        "lightrag.lightrag.verify_storage_implementation", lambda *a: None
-    )
-    monkeypatch.setattr("lightrag.lightrag.check_storage_env_vars", lambda *a: None)
-
-    class DummyStorage:
-        def __init__(self, *a, **k):
-            pass
-
-    monkeypatch.setattr(
-        "lightrag.lightrag.get_storage_class", lambda *a, **k: DummyStorage
-    )
-
-    async def emb(texts: list[str]) -> np.ndarray:
-        return np.zeros((len(texts), 8))
-
-    from lightrag.lightrag import LightRAG
-    from lightrag.utils import EmbeddingFunc
-
     with pytest.raises(ValueError, match=env_key):
-        LightRAG(
-            working_dir=str(tmp_path / "wd"),
+        _new_rag(
+            tmp_path,
+            monkeypatch,
             addon_params={"chunker": {"paragraph_semantic": {}}},
-            embedding_func=EmbeddingFunc(embedding_dim=8, max_token_size=100, func=emb),
-            llm_model_func=lambda *a, **k: "ok",
         )
+
+
+@pytest.mark.offline
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        pytest.param("\n\n", "\n\n", id="paragraph-break"),
+        pytest.param("", None, id="blank-slot"),
+        pytest.param(" None ", None, id="literal-none"),
+    ],
+)
+def test_chunk_f_split_by_character_keeps_whitespace_separators(
+    env_value: str, expected: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ``CHUNK_F_SPLIT_BY_CHARACTER="\n\n"`` in .env reaches the process as two
+    # newlines; dropping it as blank silently turned paragraph splitting off.
+    monkeypatch.setenv("CHUNK_F_SPLIT_BY_CHARACTER", env_value)
+    cfg = default_chunker_config()["fixed_token"]
+    assert cfg["split_by_character"] == expected
