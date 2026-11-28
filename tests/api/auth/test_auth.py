@@ -470,3 +470,46 @@ def test_hash_password_cli_reports_password_over_bcrypt_limit(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "password is 73 bytes in UTF-8; bcrypt accepts at most 72" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("username", "message"),
+    [
+        ("a:b", "username cannot contain ':' or ',' (AUTH_ACCOUNTS separators)"),
+        ("a,b", "username cannot contain ':' or ',' (AUTH_ACCOUNTS separators)"),
+        ("   ", "username cannot be blank"),
+    ],
+)
+def test_hash_password_cli_rejects_invalid_username(username, message, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        hash_password_main(["--username", username, "secret"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith(f"error: {message}\n")
+
+
+def test_hash_password_cli_rejects_invalid_username_before_prompt(monkeypatch):
+    def fail_if_called(_prompt):
+        pytest.fail("password prompt should not be called")
+
+    monkeypatch.setattr("lightrag.tools.hash_password.getpass.getpass", fail_if_called)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hash_password_main(["--username", "a:b"])
+
+    assert exc_info.value.code == 2
+
+
+def test_hash_password_cli_checks_username_only_when_given(capsys):
+    assert hash_password_main(["secret"]) == 0
+    assert capsys.readouterr().out.startswith(BCRYPT_PASSWORD_PREFIX)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hash_password_main(["--username", "", "secret"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.endswith("error: username cannot be blank\n")

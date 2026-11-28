@@ -23,6 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.username is not None:
+        if not args.username.strip():
+            parser.error("username cannot be blank")
+        if ":" in args.username or "," in args.username:
+            parser.error(
+                "username cannot contain ':' or ',' (AUTH_ACCOUNTS separators)"
+            )
     password = args.password or getpass.getpass("Password: ")
     if not password:
         parser.error("password cannot be empty")
