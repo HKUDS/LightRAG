@@ -5436,7 +5436,9 @@ async def kg_query(
         # (with regenerated reference IDs) than the code that wrote an older
         # entry. Serving that entry pairs its citations with a reference list
         # that no longer has them, so every KG answer written before must
-        # miss. Only the KG key carries it: the naive context is unchanged.
+        # miss. Only the KG key carries it unconditionally: a naive request
+        # changes context only when its own check drops chunks, and marks the
+        # key then (see naive_query).
         "\n<kg_total_budget>\n",
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         # Present only when the search swaps keyword lists between stores. An
@@ -6463,6 +6465,28 @@ async def _apply_token_truncation(
     }
 
 
+def _fit_prefix(count: int, candidate: Callable[[int], tuple[bool, Any]]) -> Any:
+    """Return ``candidate``'s result for the longest prefix length that fits.
+
+    ``candidate(n)`` renders the first ``n`` records and returns
+    ``(fits, result)``. Search prefixes, then verify the exact survivor
+    rendering: tokenization need not be strictly monotonic at record or
+    template boundaries. The result for length 0 is returned unchecked.
+    """
+    low, high = 0, count
+    while low < high:
+        mid = (low + high + 1) // 2
+        if candidate(mid)[0]:
+            low = mid
+        else:
+            high = mid - 1
+    fits, result = candidate(low)
+    while not fits and low:
+        low -= 1
+        fits, result = candidate(low)
+    return result
+
+
 def _fit_kg_context_to_total_budget(
     entities: list[dict],
     relations: list[dict],
@@ -6564,41 +6588,25 @@ def _fit_kg_context_to_total_budget(
             [record for kind, record in records if kind == "relation"],
         )
 
-    # Search prefixes, then verify the exact survivor rendering. Tokenization
-    # need not be strictly monotonic at record or template boundaries.
-    def fit_prefix(count, candidate):
-        low, high = 0, count
-        while low < high:
-            mid = (low + high + 1) // 2
-            if candidate(mid)[0]:
-                low = mid
-            else:
-                high = mid - 1
-        fits, result = candidate(low)
-        while not fits and low:
-            low -= 1
-            fits, result = candidate(low)
-        return result
-
     if not render(entities, relations, [])[0]:
         all_entities, all_relations = entities, relations
-        entities, relations, _, _, _ = fit_prefix(
+        entities, relations, _, _, _ = _fit_prefix(
             len(ranked), lambda count: render(*graph_prefix(count), [])
         )
         # An oversized row in one source must not block the other source's
         # smaller records. Extend each remaining source prefix independently.
-        entities, relations, _, _, _ = fit_prefix(
+        entities, relations, _, _, _ = _fit_prefix(
             len(all_entities),
             lambda count: render(all_entities[:count], relations, []),
         )
-        entities, relations, _, _, _ = fit_prefix(
+        entities, relations, _, _, _ = _fit_prefix(
             len(all_relations),
             lambda count: render(entities, all_relations[:count], []),
         )
     fits, result = render(entities, relations, chunks)
     if fits:
         return result
-    return fit_prefix(
+    return _fit_prefix(
         len(chunks), lambda count: render(entities, relations, chunks[:count])
     )
 
@@ -7800,6 +7808,45 @@ async def _find_related_text_unit_from_relations(
     return result_chunks
 
 
+def _fit_naive_chunks_to_total_budget(
+    chunks: list[dict],
+    query: str,
+    max_total_tokens: int,
+    tokenizer: Tokenizer,
+    render_prompt: Callable[[str], str],
+) -> tuple[list[dict], list[dict], str, str] | None:
+    """Keep the leading chunks whose rendered naive prompt fits the total budget.
+
+    Run in the tokenizer executor. ``render_prompt`` turns a context into the
+    system prompt that is sent, so the reference list, the context template and
+    every place the caller's template renders the context are all charged.
+    Return ``(references, chunks_with_reference_ids, context, system_prompt)``
+    for the longest fitting prefix, with reference IDs rebuilt from the chunks
+    that are kept, or None when not even the first chunk fits. Conversation
+    history and provider message framing are outside this query-context budget.
+    """
+    query_tokens = len(tokenizer.encode(query))
+
+    def render(count):
+        references, rendered_chunks = generate_reference_list_from_chunks(
+            chunks[:count]
+        )
+        context = PROMPTS["naive_query_context"].format(
+            text_chunks_str=render_chunks_context_text(rendered_chunks),
+            reference_list_str="\n".join(
+                f"[{ref['reference_id']}] {ref['file_path']}" for ref in references
+            ),
+        )
+        prompt = render_prompt(context)
+        fits = len(tokenizer.encode(prompt)) + query_tokens <= max_total_tokens
+        return fits, (references, rendered_chunks, context, prompt)
+
+    fits, result = render(len(chunks))
+    if not fits:
+        result = _fit_prefix(len(chunks) - 1, render)
+    return result if result[1] else None
+
+
 @overload
 async def naive_query(
     query: str,
@@ -7948,10 +7995,35 @@ async def naive_query(
         )
         return None
 
-    # Generate reference list from processed chunks using the new common function
-    reference_list, processed_chunks_with_ref_ids = generate_reference_list_from_chunks(
-        processed_chunks
+    # The chunk limit above reserves a fixed allowance for the reference list
+    # and the context template, and counts the context slot once. Check the
+    # prompt that is actually sent and drop trailing chunks until it fits, so
+    # max_total_tokens bounds naive queries the same way it bounds graph modes.
+    def render_sys_prompt(context: str) -> str:
+        return sys_prompt_template.format(
+            response_type=query_param.response_type,
+            user_prompt=effective_user_prompt.slot,
+            content_data=context,
+        )
+
+    fitted = await run_in_tokenizer_executor(
+        _fit_naive_chunks_to_total_budget,
+        processed_chunks,
+        query,
+        max_total_tokens,
+        tokenizer,
+        render_sys_prompt,
     )
+    if fitted is None:
+        logger.warning(
+            f"Token budget left no room for any of {len(processed_chunks)} "
+            f"retrieved chunks once their reference list was rendered "
+            f"(max_total_tokens: {max_total_tokens}); the query returns no result. "
+            "Raise max_total_tokens."
+        )
+        return None
+    reference_list, processed_chunks_with_ref_ids, context_content, sys_prompt = fitted
+    budget_dropped_chunks = len(processed_chunks_with_ref_ids) < len(processed_chunks)
 
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
@@ -7976,30 +8048,10 @@ async def naive_query(
         "final_chunks_count": len(processed_chunks_with_ref_ids),
     }
 
-    # Build chunks_context from processed chunks with reference IDs
-    text_units_str = render_chunks_context_text(processed_chunks_with_ref_ids)
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
-
-    naive_context_template = PROMPTS["naive_query_context"]
-    context_content = naive_context_template.format(
-        text_chunks_str=text_units_str,
-        reference_list_str=reference_list_str,
-    )
-
     if query_param.only_need_context and not query_param.only_need_prompt:
         return QueryResult(
             content=context_content, raw_data=raw_data, llm_generated=False
         )
-
-    sys_prompt = sys_prompt_template.format(
-        response_type=query_param.response_type,
-        user_prompt=effective_user_prompt.slot,
-        content_data=context_content,
-    )
 
     user_query = query
 
@@ -8032,6 +8084,13 @@ async def naive_query(
         effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
+        # Present only when the rendered-prompt check dropped chunks. Before
+        # that check existed the same request sent every chunk, so an answer
+        # cached then cites references the rebuilt list no longer has and must
+        # miss. A request that fits builds the same context as before and keeps
+        # hitting, which is why _ANSWER_CACHE_POLICY_VERSION does not need a
+        # bump.
+        *(("\n<naive_total_budget>\n",) if budget_dropped_chunks else ()),
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),

@@ -16,6 +16,8 @@ it acts only through the composed text, so a disabled request with a prefix
 configured must share an entry with a request that never had one.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from lightrag.base import QueryContextResult, QueryParam
@@ -533,6 +535,40 @@ async def test_kg_entry_written_before_the_total_budget_cap_misses(
     result = await _run_kg(param, cfg, cache)
     assert result.content == "answer-1"
     assert model.calls == 1
+
+
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_naive_entry_written_before_the_rendered_budget_check_misses():
+    """A naive answer cached before max_total_tokens was checked against the
+    rendered prompt was written from every chunk the chunk limit admitted. When
+    that check now drops a chunk, the reference list is rebuilt, so the old
+    entry's citations no longer match it and it must not be served. (A request
+    that drops nothing builds the same context as before and still hits: the
+    naive pre-prefix test above.)
+    """
+    cache = _FakeKVStorage()
+    model = _RecordingModel()
+    cfg = _query_global_config(model)
+    # Both chunks pass the chunk limit, which ignores their 1000-character
+    # paths; rendered with the reference list, only the first one fits.
+    param = _naive_param(max_total_tokens=6200)
+    chunks_vdb = _FakeChunksVDB()
+    chunks_vdb.query = AsyncMock(
+        return_value=[
+            {"id": name, "content": name * 1000, "file_path": name * 1000}
+            for name in ("a", "b")
+        ]
+    )
+    cache._store[_preprefix_answer_cache_key(param, cfg)] = {
+        "return": "PRE-BUDGET-ANSWER",
+        "create_time": 1,
+    }
+
+    result = await naive_query(QUERY, chunks_vdb, param, cfg, hashing_kv=cache)
+
+    assert result.content == "answer-1"
+    assert len(result.raw_data["data"]["chunks"]) == 1
 
 
 @pytest.mark.offline
