@@ -291,12 +291,18 @@ def _usage_counts(usage: Any) -> dict[str, int]:
     successful response, and ``token_tracker`` may be any object with
     ``add_usage(dict)``, so the counts are normalized to ints here rather than
     left to the tracker. A missing total is the sum of the components; a
-    reported total, including zero, is kept. ``cached_prompt_tokens`` (a subset
-    of ``prompt_tokens``) is sent only when Gemini reports it; a reported zero
+    reported total, including zero, is kept.
+
+    Thinking tokens are reported in ``thoughts_token_count``, outside
+    ``candidates_token_count``, but are generated and billed as output, so
+    they count as completion tokens. ``cached_prompt_tokens`` (a subset of
+    ``prompt_tokens``) is sent only when Gemini reports it; a reported zero
     is kept.
     """
     prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
-    completion_tokens = getattr(usage, "candidates_token_count", None) or 0
+    completion_tokens = (getattr(usage, "candidates_token_count", None) or 0) + (
+        getattr(usage, "thoughts_token_count", None) or 0
+    )
     total_tokens = getattr(usage, "total_token_count", None)
     if total_tokens is None:
         total_tokens = prompt_tokens + completion_tokens

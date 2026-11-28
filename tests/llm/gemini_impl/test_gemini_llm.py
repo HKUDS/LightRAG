@@ -483,7 +483,10 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
     The usage is still recorded: the raise used to precede the token
     accounting, so the request that spent its whole output budget on
     reasoning was the one missing from usage reporting (Codex review on
-    PR #3607).
+    PR #3607). Such a request's output is almost all thinking, which Gemini
+    reports in ``thoughts_token_count`` outside ``candidates_token_count`` and
+    bills as output, so both count as completion tokens, also in a computed
+    total.
     """
     from lightrag.exceptions import EmptyTruncatedResponseError
 
@@ -494,6 +497,8 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
         thought_text="let me carefully consider the entities",
         finish_reason="MAX_TOKENS",
     )
+    fake_response.usage_metadata.thoughts_token_count = 300
+    fake_response.usage_metadata.total_token_count = None
 
     async def _counting_generate_content(**kwargs):
         calls["n"] += 1
@@ -523,7 +528,7 @@ async def test_gemini_thinking_only_max_tokens_response_raises(monkeypatch, requ
 
     assert calls["n"] == 1, "a deterministic token-limit failure must not retry"
     assert tracked == [
-        {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        {"prompt_tokens": 1, "completion_tokens": 302, "total_tokens": 303}
     ], "the exhausted request's tokens vanished from usage accounting"
     message = str(excinfo.value)
     assert "Received empty content from Gemini API" in message
