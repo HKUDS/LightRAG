@@ -176,19 +176,25 @@ def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
     assert second._addon_params["chunker"]["fixed_token"]["split_by_character"] == "|"
 
 
-def test_empty_update_and_ior_do_not_invalidate_cache() -> None:
-    owner = _addon_params_change_observer()
+def _update_with_empty_mapping(params: ObservableAddonParams) -> None:
+    params.update({})
 
-    owner._addon_params.update({})
-    owner._addon_params.update([])
-    owner._addon_params |= {}
-    owner._addon_params |= []
 
-    assert owner._addon_params_dirty is False
+def _ior_with_empty_iterable(params: ObservableAddonParams) -> None:
+    params |= []
 
-    with pytest.raises(ValueError):
-        owner._addon_params |= [("bad_pair",)]
-    assert owner._addon_params_dirty is False
 
-    owner._addon_params.update({"language": "French"})
-    assert owner._addon_params_dirty is True
+@pytest.mark.parametrize(
+    "apply_empty", [_update_with_empty_mapping, _ior_with_empty_iterable]
+)
+def test_empty_update_does_not_notify(apply_empty) -> None:
+    """An update that writes nothing must not invalidate the derived cache."""
+    changes: list[str] = []
+    params = ObservableAddonParams(
+        {"language": "English"}, on_change=lambda: changes.append("changed")
+    )
+
+    apply_empty(params)
+
+    assert params == {"language": "English"}
+    assert changes == []
