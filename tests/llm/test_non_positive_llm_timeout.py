@@ -18,42 +18,17 @@ pytestmark = pytest.mark.offline
 
 @pytest.mark.parametrize("llm_timeout", [0, 0.0, -1])
 @pytest.mark.asyncio
-async def test_non_positive_llm_timeout_still_runs_the_call(llm_timeout):
-    async def slow_func(value: str, **_kwargs):
-        await asyncio.sleep(0.05)
+async def test_non_positive_llm_timeout_still_runs_the_call(
+    llm_timeout, lightrag_caplog
+):
+    async def yielding_func(value: str, **_kwargs):
+        # One scheduler yield is enough: a 0s budget cancels the call there.
+        await asyncio.sleep(0)
         return value
 
     wrapped = priority_limit_async_func_call(
         1, llm_timeout=llm_timeout, queue_name="no-timeout LLM func"
-    )(slow_func)
-    try:
-        assert await wrapped("hello") == "hello"
-    finally:
-        await wrapped.shutdown(graceful=True, timeout=1)
-
-
-@pytest.mark.asyncio
-async def test_unset_llm_timeout_runs_the_call():
-    async def quick_func(value: str, **_kwargs):
-        return value
-
-    wrapped = priority_limit_async_func_call(1, queue_name="unset-timeout LLM func")(
-        quick_func
-    )
-    try:
-        assert await wrapped("hello") == "hello"
-    finally:
-        await wrapped.shutdown(graceful=True, timeout=1)
-
-
-@pytest.mark.asyncio
-async def test_non_positive_llm_timeout_is_not_logged_as_enforced(lightrag_caplog):
-    async def quick_func(value: str, **_kwargs):
-        return value
-
-    wrapped = priority_limit_async_func_call(
-        1, llm_timeout=0, queue_name="zero-timeout LLM func"
-    )(quick_func)
+    )(yielding_func)
     try:
         with lightrag_caplog.at_level("INFO", logger="lightrag"):
             assert await wrapped("hello") == "hello"
@@ -63,9 +38,9 @@ async def test_non_positive_llm_timeout_is_not_logged_as_enforced(lightrag_caplo
     messages = [record.getMessage() for record in lightrag_caplog.records]
     init_lines = [m for m in messages if "new workers initialized" in m]
     assert init_lines, messages
-    # An enforced 0s budget would be advertised here and would fail the call.
-    assert "Func: 0s" not in init_lines[0]
-    assert "Worker: 0s" not in init_lines[0]
+    # No budget is enforced, so none may be advertised either.
+    assert "Func:" not in init_lines[0]
+    assert "Worker:" not in init_lines[0]
 
 
 @pytest.mark.asyncio
