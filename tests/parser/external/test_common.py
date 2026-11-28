@@ -405,3 +405,25 @@ async def test_stream_capped_get_rejects_non_identity_encoding(content_encoding)
     assert "my download op" in message
     assert "https://x/result.zip?token=secret" not in message
     assert "secret" not in message
+
+
+async def test_stream_capped_get_cap_counts_across_chunks():
+    """The cap applies to the running total, not to each chunk: every chunk
+    here is far below the limit. The per-client oversized-response bounds
+    tests deliver one preloaded chunk, so they stay green if the total is
+    reset per chunk; this is the only multi-chunk input."""
+    from lightrag.parser.external._common import stream_capped_get
+
+    chunks = [b"x" * 1000 for _ in range(50)]  # 50,000 bytes total
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_GenuineStream(chunks))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError) as excinfo:
+            await stream_capped_get(
+                client, "https://x/y", max_bytes=10_000, operation="cap check"
+            )
+
+    assert "10000 bytes" in str(excinfo.value)
