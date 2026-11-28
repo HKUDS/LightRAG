@@ -215,3 +215,11 @@ When API upload explicitly passes `parse_engine="myengine"`, that engine is fixe
 - **Unit-test the engine itself**: bypass the CLI and directly call `get_parser("myengine").parse(ParseContext(fake_rag, doc_id, file_path, content_data))`. `fake_rag` only needs to provide `_persist_parsed_full_docs` / `_resolve_source_file_for_parser` / `full_docs` / `doc_status` (see `build_debug_rag()` in `lightrag/parser/debug.py`, or the minimal `_FakeRag` in `tests/parser/test_legacy_parser.py`);
 - **The registry is a module-level singleton**: after calling `register_parser` in a test, clean up with `finally: registry._REGISTRY.pop("myengine", None)` (see `tests/parser/test_registry.py`);
 - **Entry-point loading logic**: see `tests/parser/test_plugins.py` (monkeypatch `lightrag.parser.plugins.entry_points` to inject a fake entry point; the `plugins._loaded` flag must be reset).
+
+## 7. Published Third-Party Engines
+
+Engines that other packages publish through the `lightrag.parsers` entry point. Each one is maintained by its own project, not by LightRAG; the list helps users find them and gives implementers a complete engine to read. If you publish an engine, add a row by pull request.
+
+| Engine | Install | Formats | Notes |
+|---|---|---|---|
+| `opendockit` | `pip install "opendockit[lightrag]"` ([docs](https://github.com/hyeonsang010716/OpenDocKit/blob/main/docs/integrations.md#lightrag)) | `hwp`, `hwpx`, `doc`, `ppt`, `xls`, `pdf`, `docx`, `pptx`, `xlsx`, `odt`, `ods`, `odp`, `rtf`, `epub`, `html`, `eml`, `csv` | Local, rule-based conversion to Markdown: no model and no external service, and no OCR, so a scanned document is marked FAILED. A plain-text engine (path A) in the `native` pool. A rule for the formats the built-in local engines do not read: `LIGHTRAG_PARSER="hwp:opendockit,hwpx:opendockit,doc:opendockit,ppt:opendockit,xls:opendockit"` |

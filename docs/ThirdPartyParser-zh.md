@@ -215,3 +215,11 @@ API 上传时显式传 `parse_engine="myengine"` 则直接固定该引擎(存入
 - **单测引擎本体**:绕开 CLI,直接 `get_parser("myengine").parse(ParseContext(fake_rag, doc_id, file_path, content_data))`。`fake_rag` 只需提供 `_persist_parsed_full_docs` / `_resolve_source_file_for_parser` / `full_docs` / `doc_status`(参考 `lightrag/parser/debug.py` 的 `build_debug_rag()`,或 `tests/parser/test_legacy_parser.py` 的极简 `_FakeRag`);
 - **注册表是模块级单例**:测试中 `register_parser` 后,用 `finally: registry._REGISTRY.pop("myengine", None)` 清理(参考 `tests/parser/test_registry.py`);
 - **entry-point 加载逻辑**:参考 `tests/parser/test_plugins.py`(monkeypatch `lightrag.parser.plugins.entry_points` 注入 fake entry point;`plugins._loaded` 标志需复位)。
+
+## 7. 已发布的第三方引擎
+
+其他包通过 `lightrag.parsers` entry point 发布的引擎。它们由各自的项目维护,而非 LightRAG;此列表便于用户查找,也为实现者提供一个可以完整阅读的引擎。如果你发布了引擎,欢迎提交 PR 添加一行。
+
+| 引擎 | 安装 | 格式 | 说明 |
+|---|---|---|---|
+| `opendockit` | `pip install "opendockit[lightrag]"`([文档](https://github.com/hyeonsang010716/OpenDocKit/blob/main/docs/integrations.md#lightrag)) | `hwp`、`hwpx`、`doc`、`ppt`、`xls`、`pdf`、`docx`、`pptx`、`xlsx`、`odt`、`ods`、`odp`、`rtf`、`epub`、`html`、`eml`、`csv` | 基于规则的本地转换,输出 Markdown:不使用模型,不调用外部服务,也没有 OCR,因此扫描件会被标记为 FAILED。纯文本引擎(路径 A),共用 `native` 并发池。针对内置本地引擎无法读取的格式的规则:`LIGHTRAG_PARSER="hwp:opendockit,hwpx:opendockit,doc:opendockit,ppt:opendockit,xls:opendockit"` |
