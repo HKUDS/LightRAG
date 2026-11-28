@@ -107,6 +107,17 @@ Five storages keep their data in memory and publish it by rewriting a whole file
 
 **Full contract: [docs/design/ConfigurationStorageContract.md](docs/design/ConfigurationStorageContract.md) — read it before touching `lightrag/config_store.py`, `lightrag/config_anchor.py`, `lightrag/config_shards.py`, `lightrag/kg/anchor_lock.py`, `lightrag/kg/working_dir_lock.py`, `LightRAG.initialize_storages` / `finalize_storages`, the `config` KV namespace on any backend, `config_storage` or where the JSON configuration snapshots live, the baseline writes in `lightrag/tools/rebuild_vdb.py`, `lightrag/tools/migrate_config.py`, or the configuration cleanup in `/documents/clear`.** Its *Rules at a glance* section is the summary; do not restate it here. [docs/design/ConfigurationStorageDesign.md](docs/design/ConfigurationStorageDesign.md) is the design overview: the components, the reasons behind them, the departures from the original plan and the known gaps -- start there before redesigning anything.
 
+### Runtime configuration propagation contract
+
+**Full contract: [docs/design/RuntimeConfigPropagationContract.md](docs/design/RuntimeConfigPropagationContract.md) — read it before touching `lightrag/addon_params.py`, `lightrag/llm_roles.py`, `lightrag/kg/shared_storage.py`, or runtime configuration hot-swap paths.**
+
+- Runtime configuration uses independent versioned namespaces: `runtime_addon_params` is scoped to `rag.workspace`, while `runtime_llm_config` uses `workspace=""` for process-wide role LLM configuration and `max_async`.
+- Publishing is explicit. Concurrent publishers serialize under the namespace lock, and workers apply only monotonically newer committed versions.
+- Update flags accelerate convergence, while bounded version audits recover missed notifications. Apply failures retain the complete previous configuration and retry without advancing the applied version.
+- `get_global_concurrency_limit()` and the limit read inside slot acquisition remain worker-local and IPC-free; existing shared lease coordination still uses Manager IPC. Wrappers created while unlimited must observe a later limited configuration.
+- Entity prompt content is published with its SHA-256 identity; applying workers never treat the path hint as authoritative.
+- Secret-marked fields are rejected before any shared write. Propagation tests use a real Manager through `initialize_share_data(2)` and two real `LightRAG` instances.
+
 ### Relation weight contract
 
 **Full contract: [docs/ProgramingWithCore.md](docs/ProgramingWithCore.md#relation-weight-contract)** — keep it synchronized with the core API docstrings, REST graph documentation, and custom-KG examples whenever relation write behavior changes.
