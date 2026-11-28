@@ -5,7 +5,12 @@ with ``chunk_overlap_token_size`` of overlap between adjacent windows.
 Every window is a slice of the input cut at a character boundary
 (:meth:`lightrag.utils.Tokenizer.split_by_token_limit`, the primitive the
 pre-embedding hard split also uses), never a decoded token window, so a
-window never splits a multi-byte character.
+window never splits a multi-byte character. A genuinely new trailing window
+smaller than half the budget is balanced with its predecessor when two safe
+windows can meet that floor. Short documents and delimiter-separated segments
+stay short; character safety and the cap take precedence when a tokenizer
+cannot provide such a split. This changes only the chunker, not the shared
+hard-split primitive.
 When ``split_by_character`` is supplied, the splitter first segments on
 that delimiter and then either tokenizes each segment as-is
 (``split_by_character_only=True``) or further sub-splits any segment
@@ -131,7 +136,45 @@ def _token_windows(
             chunk_token_limit=chunk_token_size,
             chunk_preview=exc.preview,
         ) from exc
-    return [(span.start, span.end, span.token_count) for span in spans]
+    windows = [(span.start, span.end, span.token_count) for span in spans]
+    if len(windows) < 2:
+        return windows
+    tail_start, tail_end, _ = windows[-1]
+    if len(tokenizer.encode(text[tail_start:tail_end].strip())) * 2 >= chunk_token_size:
+        return windows
+
+    # Re-split only the final pair, rather than appending the tail and
+    # exceeding the cap. Keep earlier windows and their overlap unchanged.
+    pair_start = windows[-2][0]
+    pair_text = text[pair_start:]
+    minimum = (chunk_token_size + 1) // 2
+    balanced_size = min(
+        chunk_token_size,
+        max(
+            minimum,
+            (len(tokenizer.encode(pair_text)) + chunk_overlap_token_size + 1) // 2,
+        ),
+    )
+    try:
+        balanced = tokenizer.split_by_token_limit(
+            pair_text, balanced_size, overlap_tokens=chunk_overlap_token_size
+        )
+    except TokenBudgetError:
+        # A complete character may fit the original cap but not this budget.
+        return windows
+    if len(balanced) != 2 or any(
+        span.token_count < minimum
+        or len(tokenizer.encode(pair_text[span.start : span.end].strip())) < minimum
+        for span in balanced
+    ):
+        return windows
+    if len(windows) > 2 and pair_start + balanced[0].end <= windows[-3][1]:
+        # Rebalancing must not turn the penultimate window into a contained one.
+        return windows
+    return windows[:-2] + [
+        (pair_start + span.start, pair_start + span.end, span.token_count)
+        for span in balanced
+    ]
 
 
 def chunking_by_token_size(
