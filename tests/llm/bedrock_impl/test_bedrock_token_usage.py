@@ -56,13 +56,53 @@ class _Session:
         return self.client_instance
 
 
-async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
+@pytest.mark.parametrize(
+    ("cache_fields", "cache_system_prompt", "expected", "system"),
+    [
+        pytest.param(
+            {},
+            False,
+            {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+            [{"text": "rules"}],
+            id="no-cache-fields",
+        ),
+        # With a cachePoint Converse reports inputTokens for the uncached tokens
+        # only: the tracker's prompt_tokens must be the whole prompt.
+        pytest.param(
+            {"cacheReadInputTokens": 1500, "cacheWriteInputTokens": 0},
+            True,
+            {
+                "prompt_tokens": 1510,
+                "completion_tokens": 4,
+                "total_tokens": 1514,
+                "cached_prompt_tokens": 1500,
+            },
+            [{"text": "rules"}, {"cachePoint": {"type": "default"}}],
+            id="cache-read",
+        ),
+        pytest.param(
+            {"cacheWriteInputTokens": 1500},
+            True,
+            {"prompt_tokens": 1510, "completion_tokens": 4, "total_tokens": 1514},
+            [{"text": "rules"}, {"cachePoint": {"type": "default"}}],
+            id="cache-write-only",
+        ),
+    ],
+)
+async def test_non_streaming_usage_is_tracked_without_reaching_sdk(
+    cache_fields, cache_system_prompt, expected, system
+):
     tracker = TokenTracker()
     client = _Client(
         {
             "output": {"message": {"content": [{"text": "answer"}]}},
             "stopReason": "end_turn",
-            "usage": {"inputTokens": 10, "outputTokens": 4, "totalTokens": 14},
+            "usage": {
+                "inputTokens": 10,
+                "outputTokens": 4,
+                "totalTokens": 14,
+                **cache_fields,
+            },
         }
     )
 
@@ -73,17 +113,16 @@ async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
         result = await bedrock_complete_if_cache.__wrapped__(
             model="bedrock-model",
             prompt="hello",
+            system_prompt="rules",
+            cache_system_prompt=cache_system_prompt,
             token_tracker=tracker,
         )
 
     assert result == "answer"
-    assert tracker.get_usage() == {
-        "prompt_tokens": 10,
-        "completion_tokens": 4,
-        "total_tokens": 14,
-        "call_count": 1,
-    }
+    assert tracker.get_usage() == {**expected, "call_count": 1}
+    assert client.request["system"] == system
     assert "token_tracker" not in client.request
+    assert "cache_system_prompt" not in client.request
 
 
 async def test_streaming_usage_is_tracked_after_message_stop():
@@ -98,6 +137,7 @@ async def test_streaming_usage_is_tracked_after_message_stop():
                         "inputTokens": 8,
                         "outputTokens": 3,
                         "totalTokens": 11,
+                        "cacheReadInputTokens": 20,
                     }
                 }
             },
@@ -119,9 +159,10 @@ async def test_streaming_usage_is_tracked_after_message_stop():
 
     assert chunks == ["answer"]
     assert tracker.get_usage() == {
-        "prompt_tokens": 8,
+        "prompt_tokens": 28,
         "completion_tokens": 3,
-        "total_tokens": 11,
+        "total_tokens": 31,
+        "cached_prompt_tokens": 20,
         "call_count": 1,
     }
     assert "token_tracker" not in client.request

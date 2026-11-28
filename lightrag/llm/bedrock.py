@@ -187,6 +187,33 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
         raise BedrockError(f"Unexpected error: {error_message}")
 
 
+def _converse_usage_counts(usage: dict[str, Any]) -> dict[str, int]:
+    """Token counts for ``TokenTracker`` from a Converse ``usage`` block.
+
+    With prompt caching, Converse reports ``inputTokens`` for the uncached
+    tokens only; cache reads and writes arrive in ``cacheReadInputTokens`` and
+    ``cacheWriteInputTokens``. ``prompt_tokens`` is the whole prompt, the same
+    meaning it has for the OpenAI and Gemini bindings, and the cache-read share
+    goes to ``cached_prompt_tokens``. Without cache fields the counts are
+    exactly what Converse reported, and ``cached_prompt_tokens`` is left out so
+    "provider did not say" stays distinguishable from "no hit".
+    """
+    counts = {
+        "prompt_tokens": usage.get("inputTokens", 0),
+        "completion_tokens": usage.get("outputTokens", 0),
+        "total_tokens": usage.get("totalTokens", 0),
+    }
+    cache_read = usage.get("cacheReadInputTokens")
+    cache_write = usage.get("cacheWriteInputTokens")
+    if cache_read is None and cache_write is None:
+        return counts
+    counts["prompt_tokens"] += (cache_read or 0) + (cache_write or 0)
+    counts["total_tokens"] = counts["prompt_tokens"] + counts["completion_tokens"]
+    if cache_read is not None:
+        counts["cached_prompt_tokens"] = cache_read
+    return counts
+
+
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -213,6 +240,7 @@ async def bedrock_complete_if_cache(
     image_inputs: list[Any] | None = None,
     timeout: int | None = None,
     token_tracker: Any | None = None,
+    cache_system_prompt: bool = False,
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     """Call Amazon Bedrock Converse API with LightRAG-compatible shims.
@@ -238,6 +266,15 @@ async def bedrock_complete_if_cache(
     - ``endpoint_url`` overrides the default regional Bedrock endpoint. Pass
       ``None``, an empty string, or the sentinel ``DEFAULT_BEDROCK_ENDPOINT``
       to let the AWS SDK select its default endpoint.
+
+    Prompt caching note:
+    - ``cache_system_prompt=True`` appends a Converse ``cachePoint`` after the
+      system prompt, so a system prompt that is identical across calls (the
+      entity-extraction prompt is) is written once and read afterwards. Claude
+      models on Bedrock do not cache without a checkpoint. A prefix under the
+      model's minimum (512 to 4,096 tokens) is simply not cached; read
+      ``cached_prompt_tokens`` from the ``token_tracker`` to verify.
+    - Off by default: a cache write costs more than a plain input token.
 
     Timeout note:
     - ``timeout`` is in seconds and maps to botocore ``connect_timeout`` and
@@ -332,6 +369,8 @@ async def bedrock_complete_if_cache(
     # Define system prompt
     if system_prompt:
         args["system"] = [{"text": system_prompt}]
+        if cache_system_prompt:
+            args["system"].append({"cachePoint": {"type": "default"}})
 
     # Map and set up inference parameters
     inference_params_map = {
@@ -395,15 +434,7 @@ async def bedrock_complete_if_cache(
                         elif "metadata" in event and token_tracker is not None:
                             usage = event["metadata"].get("usage") or {}
                             if usage:
-                                token_tracker.add_usage(
-                                    {
-                                        "prompt_tokens": usage.get("inputTokens", 0),
-                                        "completion_tokens": usage.get(
-                                            "outputTokens", 0
-                                        ),
-                                        "total_tokens": usage.get("totalTokens", 0),
-                                    }
-                                )
+                                token_tracker.add_usage(_converse_usage_counts(usage))
 
                 except Exception as e:
                     # Convert to appropriate exception type
@@ -475,13 +506,7 @@ async def bedrock_complete_if_cache(
 
             usage = response.get("usage") or {}
             if token_tracker is not None and usage:
-                token_tracker.add_usage(
-                    {
-                        "prompt_tokens": usage.get("inputTokens", 0),
-                        "completion_tokens": usage.get("outputTokens", 0),
-                        "total_tokens": usage.get("totalTokens", 0),
-                    }
-                )
+                token_tracker.add_usage(_converse_usage_counts(usage))
 
             if not content or content.strip() == "":
                 # Already a failure before this change; what was missing is the
