@@ -96,6 +96,8 @@ from lightrag.constants import (
     KG_PURGE_PHASE_COMPLETED,
     KG_PURGE_PHASE_DERIVED_COMMITTED,
     KG_PURGE_PHASE_PREPARED,
+    KG_PURGE_PHASE_REBUILD_PENDING,
+    KG_PURGE_PHASE_REBUILD_DEFERRED,
     KG_PURGE_SCHEMA_VERSION,
     KG_WRITE_STATE_PRE_GRAPH,
 )
@@ -544,6 +546,8 @@ class _AdminHoldCeiling:
 # are the ones that may legitimately have removed the anchors.
 _KG_PURGE_PHASE_ORDER: tuple[str, ...] = (
     KG_PURGE_PHASE_PREPARED,
+    KG_PURGE_PHASE_REBUILD_PENDING,
+    KG_PURGE_PHASE_REBUILD_DEFERRED,
     KG_PURGE_PHASE_DERIVED_COMMITTED,
     KG_PURGE_PHASE_ANCHORS_PENDING,
     KG_PURGE_PHASE_COMPLETED,
@@ -4430,7 +4434,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # not only the ids deleted above.
             await self._flush_storages([self.text_chunks, self.llm_response_cache])
 
-        warning_rows = await self._persist_custom_chunk_recovery_warning(
+        warning_rows = await self._persist_kg_recovery_warning(
             doc_id,
             journal,
             rebuild_report,
@@ -4501,7 +4505,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             **truncation_restore,
         )
 
-    async def _persist_custom_chunk_recovery_warning(
+    async def _persist_kg_recovery_warning(
         self,
         doc_id: str,
         journal: dict[str, Any],
@@ -4510,20 +4514,27 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         mode: str,
         pipeline_status: dict,
         pipeline_status_lock: Any,
+        surviving_chunk_rows: list[dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Persist bounded degraded-recovery warnings on surviving owners.
 
         Patch rollback always includes the target document. Create rollback
         removes that target entirely, so its warning is attached to documents
         owning the surviving chunks that contributed to degraded aggregates.
+        Deletion uses its already-read surviving chunk rows. If no document
+        survives, its warning remains in the returned report and job history.
         """
         if not report.has_warnings:
             return {}
 
         owner_doc_ids: set[str] = set()
         surviving_chunk_ids = sorted(report.surviving_chunk_ids)
-        if surviving_chunk_ids:
-            chunk_rows = await self.text_chunks.get_by_ids(surviving_chunk_ids)
+        if surviving_chunk_rows is not None or surviving_chunk_ids:
+            chunk_rows = (
+                surviving_chunk_rows
+                if surviving_chunk_rows is not None
+                else await self.text_chunks.get_by_ids(surviving_chunk_ids)
+            )
             for chunk_row in chunk_rows:
                 if not isinstance(chunk_row, dict):
                     continue
@@ -4536,7 +4547,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         else:
             owner_doc_ids.discard(doc_id)
 
-        if not owner_doc_ids:
+        if not owner_doc_ids and mode != "delete":
             raise RuntimeError(
                 "Cannot persist degraded KG recovery warning: no surviving "
                 "owner document was found"
@@ -4550,9 +4561,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             f"{src}~{tgt}" for src, tgt in report.degraded_relationships
         ]
         event = {
-            "code": "degraded_custom_chunk_rollback",
+            "code": "degraded_document_deletion"
+            if mode == "delete"
+            else "degraded_custom_chunk_rollback",
             "message": (
-                "Custom-chunk rollback completed with structural provenance "
+                "Document deletion completed but some KG aggregates could not "
+                "be fully rebuilt; "
+                "objects without live source chunks were preserved untouched."
+                if mode == "delete"
+                else "Custom-chunk rollback completed with structural provenance "
                 "repair, but some KG semantic aggregates could not be fully "
                 "rebuilt from extraction cache."
             ),
@@ -4603,7 +4620,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             }
             updated_rows[owner_doc_id] = updated_row
 
-        if missing_owner_doc_ids:
+        if missing_owner_doc_ids and mode != "delete":
             raise RuntimeError(
                 "Cannot persist degraded KG recovery warning: document status "
                 f"missing for {', '.join(missing_owner_doc_ids)}"
@@ -4614,7 +4631,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             await self._flush_storages([self.doc_status])
 
         log_message = (
-            "[rollback] Degraded KG recovery warning for custom-chunk operation "
+            f"[purge] Degraded KG recovery during deletion: "
+            f"{len(report.degraded_entities)} entity(ies), "
+            f"{len(report.degraded_relationships)} relation(s); "
+            f"warning recorded on {len(updated_rows)} surviving document(s)"
+            if mode == "delete"
+            else "[rollback] Degraded KG recovery warning for custom-chunk operation "
             f"{journal.get('operation_id')} persisted on "
             f"{len(updated_rows)} surviving document(s)"
         )
@@ -7333,6 +7355,15 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         )
         metadata = doc_status_field(status_doc, "metadata", {})
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        previous = metadata.get(KG_PURGE_METADATA_KEY, {})
+        deferred_rebuild = phase in (
+            KG_PURGE_PHASE_REBUILD_PENDING,
+            KG_PURGE_PHASE_REBUILD_DEFERRED,
+        ) or (
+            isinstance(previous, dict)
+            and previous.get("operation_id") == operation_id
+            and previous.get("deferred_rebuild") is True
+        )
         metadata[KG_PURGE_METADATA_KEY] = {
             "schema_version": KG_PURGE_SCHEMA_VERSION,
             "operation_id": operation_id,
@@ -7340,6 +7371,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             "chunk_count": chunk_count,
             "updated_at": int(time.time()),
         }
+        if deferred_rebuild:
+            metadata[KG_PURGE_METADATA_KEY]["deferred_rebuild"] = True
         # missing_ok=False: the row vanishing between the read above and this
         # write is the same unjournaled-purge hazard, not a tolerable race.
         fields: dict[str, Any] = {"metadata": metadata}
@@ -7402,6 +7435,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         candidate_relations: list[tuple[str, str]] | None = None,
         patch_only: bool = False,
         stamp_deleting: bool = False,
+        defer_rebuild: bool = False,
         rebuild_policy: Literal["best_effort", "rollback"] = "best_effort",
         pipeline_status: dict,
         pipeline_status_lock: Any,
@@ -7418,6 +7452,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         Only document deletion sets ``stamp_deleting``. Ingestion recovery
         keeps its ingestion status; deletion stamps the status with the durable
         journal before mutating contributions and never restores the old status.
+        ``defer_rebuild`` retains recovery anchors after chunk removal, with a
+        durable pending rebuild. The caller must finalize while holding the
+        deletion reservation. A non-deferred retry honors that journal too.
+        See *Deferred batch deletion* in ``docs/design/PurgeRecoveryContract.md``.
 
         What this method does:
             1. Resolves the candidate entity/relation set: the explicit
@@ -7550,10 +7588,41 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         elif not chunk_ids:
             return KGRebuildReport()
 
+        deferred_phases = (
+            KG_PURGE_PHASE_REBUILD_PENDING,
+            KG_PURGE_PHASE_REBUILD_DEFERRED,
+        )
+        # A pre-graph document normally needs no rebuild. An unfinished custom
+        # patch can still carry graph candidates in its own durable journal.
+        deferred = (
+            journaled
+            and proof is not None
+            and (
+                proof.journal_phase in deferred_phases
+                or (
+                    defer_rebuild
+                    and (
+                        proof.proof_kind == "anchors"
+                        or (
+                            proof.proof_kind == "pre_graph"
+                            and (
+                                proof.patch_candidate_entities
+                                or proof.patch_candidate_relations
+                            )
+                        )
+                    )
+                )
+            )
+        )
         rebuild_report = KGRebuildReport()
 
         # ---- Steps 1-6: repair or remove every derived contribution ----
-        if proof is None or not proof.phase_at_least(KG_PURGE_PHASE_DERIVED_COMMITTED):
+        derived_phase = (
+            KG_PURGE_PHASE_REBUILD_PENDING
+            if deferred
+            else KG_PURGE_PHASE_DERIVED_COMMITTED
+        )
+        if proof is None or not proof.phase_at_least(derived_phase):
             rebuild_report = await self._purge_derived_kg_contributions(
                 doc_id,
                 chunk_ids,
@@ -7571,11 +7640,12 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 # A journal from an earlier attempt means its step 2 may have
                 # persisted narrowed tracking before its rebuild failed.
                 resuming=proof is not None and proof.journal_phase is not None,
+                defer_rebuild=deferred,
             )
             if journaled and proof is not None:
                 await self._write_kg_purge_phase(
                     doc_id,
-                    KG_PURGE_PHASE_DERIVED_COMMITTED,
+                    derived_phase,
                     operation_id=proof.operation_id,
                     chunk_count=len(chunk_ids),
                     stamp_deleting=stamp_deleting,
@@ -7587,8 +7657,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             )
 
         # ---- 7. Delete chunks themselves ----
+        chunks_deleted_phase = (
+            KG_PURGE_PHASE_REBUILD_DEFERRED
+            if deferred
+            else KG_PURGE_PHASE_ANCHORS_PENDING
+        )
         if chunk_ids and (
-            proof is None or not proof.phase_at_least(KG_PURGE_PHASE_ANCHORS_PENDING)
+            proof is None or not proof.phase_at_least(chunks_deleted_phase)
         ):
             # Deleted only AFTER every derived graph/vector/tracking contribution
             # has been repaired or removed AND flushed. The INVERSE order --
@@ -7612,6 +7687,31 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                 raise _PurgeStageError(
                     f"Failed to delete document chunks: {e}", stage="delete_chunks"
                 ) from e
+
+        if deferred and proof is not None:
+            if not proof.phase_at_least(KG_PURGE_PHASE_REBUILD_DEFERRED):
+                await self._write_kg_purge_phase(
+                    doc_id,
+                    KG_PURGE_PHASE_REBUILD_DEFERRED,
+                    operation_id=proof.operation_id,
+                    chunk_count=len(chunk_ids),
+                    stamp_deleting=stamp_deleting,
+                )
+            if defer_rebuild:
+                return rebuild_report
+            # A normal single-document retry must pay a previously deferred
+            # obligation before its recovery anchors can be removed.
+            try:
+                rebuild_report = await self._rebuild_deferred_kg_contributions(
+                    [doc_id],
+                    pipeline_status=pipeline_status,
+                    pipeline_status_lock=pipeline_status_lock,
+                )
+            except Exception as error:
+                raise _PurgeStageError(
+                    f"Deferred KG rebuild failed: {error}",
+                    stage="rebuild_knowledge_graph",
+                ) from error
 
         # Chunk deletion is confirmed durable: the anchors may now go. This
         # phase is the one that keeps step 8 retryable — without it, a failure
@@ -7676,6 +7776,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         pipeline_status: dict,
         pipeline_status_lock: Any,
         resuming: bool = False,
+        defer_rebuild: bool = False,
     ) -> KGRebuildReport:
         """Steps 1-6 of :py:meth:`_purge_kg_contributions`.
 
@@ -7702,6 +7803,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         rebuild. Its candidates then show no tracking delta, and a capped graph
         ``source_id`` need not name the deleted chunks either, so every
         candidate with remaining sources is rebuilt, as under ``rollback``.
+        ``defer_rebuild`` commits classification and outright removals only;
+        the caller journals that obligation before removing any chunk rows.
         """
         rebuild_report = KGRebuildReport()
         rebuild_every_survivor = resuming or rebuild_policy == "rollback"
@@ -8094,7 +8197,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             ) from e
 
         # ---- 6. Rebuild entities/relations that still have remaining sources ----
-        if entities_to_rebuild or relationships_to_rebuild:
+        if not defer_rebuild and (entities_to_rebuild or relationships_to_rebuild):
             try:
                 rebuild_report = await rebuild_knowledge_from_chunks(
                     entities_to_rebuild=entities_to_rebuild,
@@ -8134,8 +8237,263 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         return rebuild_report
 
+    async def _rebuild_deferred_kg_contributions(
+        self,
+        doc_ids: list[str],
+        *,
+        pipeline_status: dict,
+        pipeline_status_lock: Any,
+    ) -> KGRebuildReport:
+        """Re-derive deferred targets from anchors and live chunk tracking.
+
+        The caller holds the deletion reservation. All source chunks must have
+        been durably removed before this call. Anchors remain until the rebuilt
+        graph, vectors and tracking have been flushed and every document's
+        journal has advanced to ``derived_committed``.
+        """
+        entities: set[str] = set()
+        relations: set[tuple[str, str]] = set()
+        journals: dict[str, dict] = {}
+        for doc_id in dict.fromkeys(doc_ids):
+            row = await require_doc_status_record(
+                self.doc_status, doc_id, purpose="finalize deferred deletion"
+            )
+            journal = doc_status_kg_purge_journal(row)
+            if not journal or journal.get("phase") != KG_PURGE_PHASE_REBUILD_DEFERRED:
+                raise _PurgeStageError(
+                    f"Document {doc_id} has no completed deferred purge",
+                    stage="rebuild_knowledge_graph",
+                )
+            entity_row = await self.full_entities.get_by_id(doc_id)
+            relation_row = await self.full_relations.get_by_id(doc_id)
+            anchors_present = (
+                isinstance(entity_row, dict)
+                and isinstance(entity_row.get("entity_names"), list)
+                and isinstance(relation_row, dict)
+                and isinstance(relation_row.get("relation_pairs"), list)
+            )
+            if not anchors_present and (
+                doc_status_kg_write_state(row) != KG_WRITE_STATE_PRE_GRAPH
+            ):
+                raise _PurgeStageError(
+                    f"Recovery anchors missing for deferred document {doc_id}",
+                    stage="rebuild_knowledge_graph",
+                )
+            if anchors_present:
+                entities.update(entity_row["entity_names"])
+                relations.update(
+                    tuple(sorted(pair)) for pair in relation_row["relation_pairs"]
+                )
+            patch_entities, patch_relations = self._patch_journal_candidates(row)
+            entities.update(patch_entities)
+            relations.update(tuple(sorted(pair)) for pair in patch_relations)
+            journals[doc_id] = journal
+
+        entity_targets: dict[str, list[str]] = {}
+        relation_targets: dict[tuple[str, str], list[str]] = {}
+        nodes = await self.chunk_entity_relation_graph.get_nodes_batch(sorted(entities))
+        edges = await self.chunk_entity_relation_graph.get_edges_batch(
+            [{"src": src, "tgt": tgt} for src, tgt in sorted(relations)]
+        )
+        entity_names = [name for name in sorted(entities) if nodes.get(name)]
+        relation_pairs = [pair for pair in sorted(relations) if edges.get(pair)]
+        entity_tracking = (
+            await self.entity_chunks.get_by_ids(entity_names)
+            if self.entity_chunks is not None and entity_names
+            else [None] * len(entity_names)
+        )
+        relation_tracking = (
+            await self.relation_chunks.get_by_ids(
+                [make_relation_chunk_key(*pair) for pair in relation_pairs]
+            )
+            if self.relation_chunks is not None and relation_pairs
+            else [None] * len(relation_pairs)
+        )
+
+        def tracked_sources(tracking, graph_data):
+            source_ids = (
+                tracking.get("chunk_ids", [])
+                if isinstance(tracking, dict)
+                else graph_data.get("source_id", "").split(GRAPH_FIELD_SEP)
+            )
+            return list(
+                dict.fromkeys(
+                    source_id
+                    for source_id in source_ids
+                    if source_id and source_id not in RELATION_NO_EVIDENCE_SOURCE_IDS
+                )
+            )
+
+        entity_sources = {
+            name: tracked_sources(tracking, nodes[name])
+            for name, tracking in zip(entity_names, entity_tracking)
+        }
+        relation_sources = {
+            pair: tracked_sources(tracking, edges[pair])
+            for pair, tracking in zip(relation_pairs, relation_tracking)
+        }
+        all_sources = sorted(
+            {
+                chunk_id
+                for sources in (*entity_sources.values(), *relation_sources.values())
+                for chunk_id in sources
+            }
+        )
+        chunk_rows = (
+            await self.text_chunks.get_by_ids(all_sources) if all_sources else []
+        )
+        live_chunks = {
+            chunk_id: row
+            for chunk_id, row in zip(all_sources, chunk_rows)
+            if isinstance(row, dict)
+        }
+        skipped_entities: dict[str, list[str]] = {}
+        skipped_relations: dict[tuple[str, str], list[str]] = {}
+        for name, sources in entity_sources.items():
+            remaining = [chunk_id for chunk_id in sources if chunk_id in live_chunks]
+            if remaining:
+                entity_targets[name] = remaining
+            elif sources or tracked_sources(None, nodes[name]):
+                skipped_entities[name] = sources
+        for pair, sources in relation_sources.items():
+            remaining = [chunk_id for chunk_id in sources if chunk_id in live_chunks]
+            if remaining:
+                relation_targets[pair] = remaining
+            elif sources or tracked_sources(None, edges[pair]):
+                skipped_relations[pair] = sources
+
+        report = await rebuild_knowledge_from_chunks(
+            entities_to_rebuild=entity_targets,
+            relationships_to_rebuild=relation_targets,
+            knowledge_graph_inst=self.chunk_entity_relation_graph,
+            entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            text_chunks_storage=self.text_chunks,
+            llm_response_cache=self.llm_response_cache,
+            global_config=self._build_global_config(),
+            pipeline_status=pipeline_status,
+            pipeline_status_lock=pipeline_status_lock,
+            entity_chunks_storage=self.entity_chunks,
+            relation_chunks_storage=self.relation_chunks,
+            doc_status_storage=self.doc_status,
+        )
+        # No live evidence means no safe provenance rewrite. Keep the object,
+        # vector and tracking untouched, and surface the gap without preventing
+        # document deletion. Source-less manual objects need no warning.
+        report.degraded_entities.update(skipped_entities)
+        report.degraded_relationships.update(skipped_relations)
+        report.referenced_chunk_ids.update(all_sources)
+        if report.has_warnings:
+            await self._persist_kg_recovery_warning(
+                doc_ids[0],
+                {
+                    "operation_id": compute_mdhash_id(
+                        "\n".join(
+                            sorted(
+                                journal["operation_id"] for journal in journals.values()
+                            )
+                        ),
+                        prefix="delete-",
+                    )
+                },
+                report,
+                mode="delete",
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                surviving_chunk_rows=list(live_chunks.values()),
+            )
+        await self._insert_done()
+        for doc_id, journal in journals.items():
+            await self._write_kg_purge_phase(
+                doc_id,
+                KG_PURGE_PHASE_DERIVED_COMMITTED,
+                operation_id=journal["operation_id"],
+                chunk_count=journal["chunk_count"],
+                stamp_deleting=True,
+            )
+        return report
+
+    async def afinalize_document_deletions(
+        self, doc_ids: list[str], *, delete_llm_cache: bool = False
+    ) -> list[DeletionResult]:
+        """Route-only finalization under the document-delete reservation.
+
+        The document route owns the destructive reservation and its
+        ``Deleting ...`` job name. Library callers retry a deferred document
+        through ``adelete_by_doc_id`` instead.
+        Only pass documents whose ``adelete_by_doc_id(defer_rebuild=True)``
+        returned ``deferred``. One aggregate rebuild precedes per-document
+        cleanup. Rebuild failure retains every document and its anchors for
+        re-deletion; individual cleanup failures retain their existing journal.
+        """
+        if not doc_ids:
+            return []
+        doc_ids = list(dict.fromkeys(doc_ids))
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=self.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=self.workspace
+        )
+        async with pipeline_status_lock:
+            if not (
+                pipeline_status.get("busy")
+                and pipeline_status.get("destructive_busy")
+                and str(pipeline_status.get("job_name", ""))
+                .lower()
+                .startswith("deleting")
+            ):
+                raise RuntimeError(
+                    "Deferred finalization requires the batch deletion reservation"
+                )
+        try:
+            await self._rebuild_deferred_kg_contributions(
+                doc_ids,
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+            )
+        except Exception as error:
+            message = (
+                f"Batch KG rebuild failed; documents remain DELETING for retry: {error}"
+            )
+            results = []
+            for doc_id in doc_ids:
+                row = await require_doc_status_record(
+                    self.doc_status, doc_id, purpose="record deferred rebuild failure"
+                )
+                await self._update_delete_retry_state(
+                    doc_id,
+                    row,
+                    deletion_stage="rebuild_knowledge_graph",
+                    doc_llm_cache_ids=[],
+                    error_message=message,
+                    failed=True,
+                )
+                results.append(
+                    DeletionResult(
+                        status="fail",
+                        doc_id=doc_id,
+                        message=message,
+                        status_code=500,
+                        file_path=doc_status_field(row, "file_path"),
+                    )
+                )
+            await self._flush_storages([self.doc_status])
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = message
+                append_pipeline_history(pipeline_status, message)
+            return results
+        return [
+            await self.adelete_by_doc_id(doc_id, delete_llm_cache=delete_llm_cache)
+            for doc_id in doc_ids
+        ]
+
     async def adelete_by_doc_id(
-        self, doc_id: str, delete_llm_cache: bool = False
+        self,
+        doc_id: str,
+        delete_llm_cache: bool = False,
+        *,
+        defer_rebuild: bool = False,
     ) -> DeletionResult:
         """Delete a document and all its related data, including chunks, graph elements.
 
@@ -8171,10 +8529,13 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             doc_id (str): The unique identifier of the document to be deleted.
             delete_llm_cache (bool): Whether to delete cached LLM extraction results
                 associated with the document. Defaults to False.
+            defer_rebuild (bool): Stage an anchor-backed purge for aggregate
+                finalization. Requires the caller's destructive batch reservation.
+                A deferred result retains document records, anchors and cache IDs.
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
-                - `status` (str): "success", "not_found", "not_allowed", or "fail".
+                - `status` (str): "success", "deferred", "not_found", "not_allowed", or "fail".
                 - `doc_id` (str): The ID of the document attempted to be deleted.
                 - `message` (str): A summary of the operation's result.
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 403, 500).
@@ -8268,6 +8629,16 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     )
                 # Pipeline is busy with batch deletion - join without acquiring.
 
+            if defer_rebuild and (
+                we_acquired_pipeline or not pipeline_status.get("destructive_busy")
+            ):
+                return DeletionResult(
+                    status="not_allowed",
+                    doc_id=doc_id,
+                    message="Deferring a rebuild requires the batch deletion reservation",
+                    status_code=403,
+                )
+
             async with pipeline_status_lock:
                 log_message = f"Starting deletion process for document {doc_id}"
                 logger.info(log_message)
@@ -8334,6 +8705,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             metadata = doc_status_data.get("metadata", {})
             if not isinstance(metadata, dict):
                 metadata = {}
+            deferred_cleanup = (
+                isinstance(metadata.get(KG_PURGE_METADATA_KEY), dict)
+                and metadata[KG_PURGE_METADATA_KEY].get("deferred_rebuild") is True
+            )
             metadata_cache_ids = normalize_string_list(
                 metadata.get("deletion_llm_cache_ids", []),
                 context=f"doc {doc_id} metadata.deletion_llm_cache_ids",
@@ -8448,8 +8823,14 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     # doc_status record is already gone so the retry finds no record and
                     # treats the document as already deleted rather than creating a zombie.
                     deletion_stage = "delete_doc_entries"
-                    await self.doc_status.delete([doc_id])
-                    await self.full_docs.delete([doc_id])
+                    if deferred_cleanup:
+                        await self.full_docs.delete([doc_id])
+                        await self._flush_storages([self.full_docs])
+                        await self.doc_status.delete([doc_id])
+                        await self._flush_storages([self.doc_status])
+                    else:
+                        await self.doc_status.delete([doc_id])
+                        await self.full_docs.delete([doc_id])
                 except Exception as e:
                     logger.error(
                         f"Failed to delete document {doc_id} with no chunks: {e}"
@@ -8580,12 +8961,26 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
                     doc_id,
                     chunk_ids,
                     stamp_deleting=True,
+                    defer_rebuild=defer_rebuild,
                     pipeline_status=pipeline_status,
                     pipeline_status_lock=pipeline_status_lock,
                 )
             except _PurgeStageError as purge_error:
                 deletion_stage = purge_error.purge_stage
                 raise
+
+            if defer_rebuild:
+                current = await require_doc_status_record(
+                    self.doc_status, doc_id, purpose="check deferred deletion outcome"
+                )
+                journal = doc_status_kg_purge_journal(current)
+                if journal and journal.get("phase") == KG_PURGE_PHASE_REBUILD_DEFERRED:
+                    return DeletionResult(
+                        status="deferred",
+                        doc_id=doc_id,
+                        message="Document purge staged; awaiting batch KG rebuild",
+                        file_path=file_path,
+                    )
 
             # 9. Delete LLM cache while the document status still exists so a failure
             # remains retryable via the same doc_id.
@@ -8646,9 +9041,17 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             # rather than finding a doc_status that points to a missing full_docs entry.
             try:
                 deletion_stage = "delete_doc_entries"
-                in_final_delete_stage = True
-                await self.doc_status.delete([doc_id])
-                await self.full_docs.delete([doc_id])
+                if deferred_cleanup:
+                    # The journal remains the retry anchor until all remaining
+                    # payload cleanup is durable, including on a single retry.
+                    await self.full_docs.delete([doc_id])
+                    await self._flush_storages([self.full_docs])
+                    await self.doc_status.delete([doc_id])
+                    await self._flush_storages([self.doc_status])
+                else:
+                    in_final_delete_stage = True
+                    await self.doc_status.delete([doc_id])
+                    await self.full_docs.delete([doc_id])
             except Exception as e:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e

@@ -388,7 +388,9 @@ class _DeleteRag:
         self.deleted_doc_ids = []
         self.doc_status = _DeleteDocStatus(status_rows)
 
-    async def adelete_by_doc_id(self, doc_id, delete_llm_cache=False):
+    async def adelete_by_doc_id(
+        self, doc_id, delete_llm_cache=False, *, defer_rebuild=False
+    ):
         self.deleted_doc_ids.append((doc_id, delete_llm_cache))
         self.doc_status.rows.pop(doc_id, None)
         return self.result
@@ -2359,7 +2361,9 @@ async def test_delete_release_drives_processing_on_mailbox_work(tmp_path):
 
     rag.apipeline_process_enqueue_documents = _process
 
-    async def _adelete_and_signal(doc_id, delete_llm_cache=False):
+    async def _adelete_and_signal(
+        doc_id, delete_llm_cache=False, *, defer_rebuild=False
+    ):
         # A busy-refused process request lands while we hold the slot.
         ingress.request_auto_rescan()
         return SimpleNamespace(status="success", file_path="-", message="ok")
@@ -2379,7 +2383,7 @@ async def test_delete_release_drives_processing_on_mailbox_work(tmp_path):
     # Empty mailbox → release without driving.
     ingress.consume_auto_rescan()
 
-    async def _adelete_quiet(doc_id, delete_llm_cache=False):
+    async def _adelete_quiet(doc_id, delete_llm_cache=False, *, defer_rebuild=False):
         return SimpleNamespace(status="success", file_path="-", message="ok")
 
     rag.adelete_by_doc_id = _adelete_quiet
@@ -2948,7 +2952,7 @@ async def test_delete_document_reserves_destructive_busy_synchronously(tmp_path)
     gate = asyncio.Event()
     _orig_delete = rag.adelete_by_doc_id
 
-    async def _gated_delete(doc_id, delete_llm_cache=False):
+    async def _gated_delete(doc_id, delete_llm_cache=False, *, defer_rebuild=False):
         await gate.wait()
         return await _orig_delete(doc_id, delete_llm_cache=delete_llm_cache)
 
@@ -3123,7 +3127,7 @@ async def test_delete_managed_task_released_on_shutdown_drain(tmp_path):
 
     gate = asyncio.Event()
 
-    async def _gated_delete(doc_id, delete_llm_cache=False):
+    async def _gated_delete(doc_id, delete_llm_cache=False, *, defer_rebuild=False):
         await gate.wait()
 
     rag.adelete_by_doc_id = _gated_delete

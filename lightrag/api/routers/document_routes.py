@@ -69,6 +69,7 @@ from lightrag.base import (
     CursorAfter,
     CursorPosition,
     DocStatus,
+    DeletionResult,
     SourceAbsent,
     SourceConflict,
     SourceUnique,
@@ -4320,37 +4321,74 @@ async def background_delete_documents(
                     pipeline_status, "LLM cache cleanup requested for this deletion job"
                 )
 
-        # Loop through each document ID and delete them one by one
+        # Stage each purge incrementally. Keep document records and source
+        # files until the one aggregate rebuild has been durably committed.
+        deletion_results: dict[str, DeletionResult] = {}
+        deferred_docs = []
+        cancelled_docs: set[str] = set()
         for i, doc_id in enumerate(doc_ids, 1):
-            # Check for cancellation at the start of each document deletion
             async with pipeline_status_lock:
                 if pipeline_status.get("cancellation_requested", False):
-                    cancel_msg = f"Deletion cancelled by user at document {i}/{total_docs}. {len(successful_deletions)} deleted, {total_docs - i + 1} remaining."
-                    logger.info(cancel_msg)
-                    pipeline_status["latest_message"] = cancel_msg
-                    append_pipeline_history(pipeline_status, cancel_msg)
-                    # Add remaining documents to failed list with cancellation reason
-                    failed_deletions.extend(
-                        doc_ids[i - 1 :]
-                    )  # i-1 because enumerate starts at 1
-                    break  # Exit the loop, remaining documents unchanged
-
+                    cancelled_docs.update(doc_ids[i - 1 :])
+                    cancel_message = (
+                        f"Deletion cancelled by user at document {i}/{total_docs}. "
+                        f"{i - 1} reached, {total_docs - i + 1} remaining; "
+                        "finalizing already-staged deletions."
+                    )
+                    logger.info(cancel_message)
+                    pipeline_status["latest_message"] = cancel_message
+                    append_pipeline_history(pipeline_status, cancel_message)
+                    for remaining_id in doc_ids[i - 1 :]:
+                        deletion_results[remaining_id] = DeletionResult(
+                            status="fail",
+                            doc_id=remaining_id,
+                            message="Deletion cancelled before this document was reached",
+                        )
+                    break
                 start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
                 logger.info(start_msg)
                 pipeline_status.update({"cur_batch": i, "latest_message": start_msg})
                 append_pipeline_history(pipeline_status, start_msg)
+            try:
+                result = await rag.adelete_by_doc_id(
+                    doc_id, delete_llm_cache=delete_llm_cache, defer_rebuild=True
+                )
+            except Exception as error:
+                result = DeletionResult(
+                    status="fail", doc_id=doc_id, message=str(error), status_code=500
+                )
+            deletion_results[doc_id] = result
+            if result.status == "deferred":
+                deferred_docs.append(doc_id)
 
+        if deferred_docs:
+            try:
+                finalized = await rag.afinalize_document_deletions(
+                    deferred_docs, delete_llm_cache=delete_llm_cache
+                )
+                deletion_results.update((result.doc_id, result) for result in finalized)
+            except Exception as error:
+                for doc_id in deferred_docs:
+                    deletion_results[doc_id] = DeletionResult(
+                        status="fail",
+                        doc_id=doc_id,
+                        file_path=deletion_results[doc_id].file_path,
+                        message=f"Batch finalization failed; re-run deletion: {error}",
+                        status_code=500,
+                    )
+
+        # Report results and remove files only after finalization succeeds.
+        for i, doc_id in enumerate(doc_ids, 1):
+            if doc_id in cancelled_docs:
+                failed_deletions.append(doc_id)
+                continue
             file_path = "#"
             try:
                 delete_physical_file = delete_file
                 file_preservation_reason = None
 
-                result = await rag.adelete_by_doc_id(
-                    doc_id, delete_llm_cache=delete_llm_cache
-                )
-                file_path = (
-                    getattr(result, "file_path", "-") if "result" in locals() else "-"
-                )
+                result = deletion_results[doc_id]
+                file_path = result.file_path or "-"
                 if result.status == "success":
                     if (
                         delete_file

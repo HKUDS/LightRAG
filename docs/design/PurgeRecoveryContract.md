@@ -23,6 +23,63 @@ Anchor-driven whole-document purge is **journaled and resumable** through four o
 
 Both metadata keys are in the `_DOC_STATUS_METADATA_CARRY_OVER_KEYS` **and** `_DOC_STATUS_METADATA_DIRECTIVE_KEYS` whitelists in `lightrag/utils_pipeline.py`; dropping either at a transition or a FAILED→PENDING reset turns a resumable purge into a permanent refusal. Retiring one requires `doc_status_transition_metadata(..., drop=...)` — passing it via `extra` would persist the value, and omitting it lets carry-over restore it.
 
+### Deferred batch deletion
+
+The document-delete route holds `busy` and `destructive_busy` through staging,
+aggregate rebuild, record cleanup and source-file cleanup. Each document is
+classified incrementally against current ownership. Cancellation stops staging
+new documents; it never classifies against the whole requested batch's chunk set.
+An untouched document therefore retains its contributions and original status.
+
+An anchor-backed deferred purge follows the schema-2 branch
+`prepared` → `rebuild_pending` → `rebuild_deferred` → `derived_committed` →
+`anchors_pending` → `completed`. `rebuild_pending` is flushed after classification
+and outright removal, before any chunk deletion. It records an unpaid rebuild
+even if the process dies after deleting chunks but before the next checkpoint.
+`rebuild_deferred` confirms chunk removal. Both phases retain the document's
+`full_entities`, `full_relations`, `full_docs` and `doc_status` records. The nested
+`kg_purge.deferred_rebuild` flag survives every checkpoint for that operation;
+the existing metadata carry-over rules preserve the containing journal.
+
+`adelete_by_doc_id(..., defer_rebuild=True)` requires an existing destructive
+batch reservation and returns `DeletionResult.status == "deferred"` when work
+remains. `afinalize_document_deletions` runs inside that reservation. It unions
+the retained anchors and unfinished patch candidates, skips graph objects already
+removed outright, and resolves remaining sources from live tracking, falling
+back to graph provenance only when tracking is absent. Missing chunk rows are
+filtered before rebuilding, so stale sources never enter a rebuilt tracking row.
+A target whose recorded sources are all dangling is kept untouched in the
+graph, vectors and tracking. It is reported as degraded recovery and does not
+block document deletion. The report is persisted in `kg_recovery_warnings` on
+surviving document owners; when none can be found, it remains in the returned
+report and pipeline history. Intentionally source-less objects are preserved.
+Tracking and chunk-existence reads are batched across the target set.
+
+There is one `rebuild_knowledge_from_chunks` call for the staged documents, using
+`_build_global_config()` and the existing extraction-evidence policy. Only after
+its graph/vector/tracking writes are flushed do the journals advance to
+`derived_committed`. Cleanup then uses the ordinary per-document delete path.
+Deferred document payloads are flushed away before their status rows, leaving
+the journal available if payload cleanup fails. Physical source files and
+successful-deletion counts wait for finalized results. Rebuild failure records
+diagnostics on every affected `DELETING` row and reports those deletions as failed.
+
+A single-document re-delete recognizes either deferred phase from the journal,
+finishes chunk removal if necessary, and rebuilds as a batch of one. A failure
+after the rebuilt state was flushed but before every checkpoint landed can
+repeat a rebuild; it cannot discard its obligation or its recovery anchors.
+There is no automatic destructive recovery at startup.
+
+During staging, graph summaries may still describe removed contributions.
+Queries filter missing chunk rows, so references to those chunks drop from
+context. The writer exclusion bounds this window through finalization; a failed
+or interrupted batch leaves its `DELETING` rows visible for explicit retry.
+
+The schema version is informational; readers do not validate it. Before
+downgrading to code without the schema-2 phases, complete all pending deletions.
+An older reader ignores the unknown phase and performs a non-resuming purge,
+which can silently leave stale summaries because it misses the unpaid rebuild.
+
 Callers: `adelete_by_doc_id` (delegates wholly to the primitive; the chunk-less branch runs it too), and the pipeline's resume path `_purge_stale_extraction_if_resuming` (which retires the journal and persists `chunks_list=[]` in one targeted write). Explicit-candidate mode — custom-chunk patch rollback — is neither journaled nor proof-checked, because its own operation journal already names the complete candidate superset; the primitive reads that journal to union in candidates no anchor row can name yet.
 
 A document can legitimately own nothing: `skip_kg` (`process_options` `'!'`) skips extraction and the merge, so no anchor rows are ever written. Post-change those documents carry `pre_graph` and delete normally; older ones have neither proof, and anchor repair has nothing to rebuild from.

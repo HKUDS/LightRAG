@@ -391,7 +391,7 @@ async def test_recovery_warning_deduplicates_and_keeps_latest_ten(
 
         lock = asyncio.Lock()
         journal = {"operation_id": "new-op"}
-        await rag._persist_custom_chunk_recovery_warning(
+        await rag._persist_kg_recovery_warning(
             "doc-1",
             journal,
             report,
@@ -399,7 +399,7 @@ async def test_recovery_warning_deduplicates_and_keeps_latest_ten(
             pipeline_status=status,
             pipeline_status_lock=lock,
         )
-        await rag._persist_custom_chunk_recovery_warning(
+        await rag._persist_kg_recovery_warning(
             "doc-1",
             journal,
             report,
