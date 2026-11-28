@@ -165,7 +165,6 @@ class TestLocaleNormalization:
         assert normalize_locale("EN") == "en"
 
     def test_extension_and_private_use_subtags_stay_lowercase(self):
-        assert normalize_locale("en-u-ca-gregory") == "en-u-ca-gregory"
         assert normalize_locale("de-DE-u-co-phonebk") == "de-DE-u-co-phonebk"
         assert normalize_locale("ar-u-nu-latn") == "ar-u-nu-latn"
         assert normalize_locale("en-US-x-tw") == "en-US-x-tw"

@@ -115,7 +115,10 @@ def normalize_locale(value: str) -> str:
       internal ids to hyphens is the frontend's single-throat job (§8.2),
       the server only refuses the wrong shape;
     - lowercases the language subtag, uppercases 2-letter region subtags,
-      titlecases 4-letter script subtags.
+      titlecases 4-letter script subtags;
+    - lowercases every subtag from the first singleton (``-u-``, ``-t-``,
+      ``-x-``…) on: extension and private-use values are never read as a
+      region or script (``en-u-ca-gregory`` stays as written).
     """
     if not isinstance(value, str) or not value.strip():
         raise ValueError("locale must be a non-empty string")

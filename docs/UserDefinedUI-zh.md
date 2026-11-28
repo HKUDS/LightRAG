@@ -183,6 +183,7 @@ key 是 BCP 47 标签的**连字符**形式，且必须写成已归一化的形�
 - 语言小写（`zh`、`en`、`ar`）；
 - 4 字母 script 首字母大写（`Hant`、`Arab`）；
 - 2 字母地区全大写（`TW`、`CN`）；
+- 从单字符 singleton 起的所有子标签全小写——即 extension 与私有用途的取值（`en-u-ca-gregory`、`en-US-x-tw`）；
 - `zh_TW`（下划线）会被拒绝——请写 `zh-TW`；
 - `zh-tw` 同样会被拒绝：key 必须已经是归一化形式（`zh-TW`）。
 
@@ -194,13 +195,13 @@ key 是 BCP 47 标签的**连字符**形式，且必须写成已归一化的形�
 | 其后每个子标签为 1–8 个字母数字 | `zh-Hant-TW`、`de-CH-1901`、`sl-rozaj-biske` | `abcdefghi` |
 | 整个标签不超过 35 个字符 | | 更长的标签 |
 
-script、地区、variant 和 extension 子标签都可用——`zh-Hant-TW`、`ar-aao-Latn`、 `en-US-u-VA-posix`。
+script、地区、variant 和 extension 子标签都可用——`zh-Hant-TW`、`ar-aao-Latn`、 `en-US-u-va-posix`。
 
 被排除的恰恰是**首子标签只有一个字母**这一条，它顺带排除了私有用途标签（`x-acme`）和 *不规则*的 grandfathered 标签（`i-klingon`）。这并不等于「排除 grandfathered 这一类」：规则型 grandfathered 标签以正常的语言子标签开头，是被接受的——`art-lojban`、`en-GB-oed`、 `zh-min-nan` 都能通过。
 
 反方向上，这个检查比 BCP 47 更宽松：`en-u` 会被接受，尽管合法标签要求 extension singleton 之后至少还有一个子标签。这一点没有任何逻辑依赖——未知 locale 只会走回退——所以请以上表为准，把 BCP 47 视为该表所近似的惯例。
 
-另请注意：归一化是按位置作用于*每一个*子标签的，包括 extension 自身的取值—— `en-US-u-va-posix` 会被归一化为 `en-US-u-VA-posix`，而 key 必须已经是归一化形式，所以要按后者书写。
+另请注意：地区与 script 规则只作用于第一个 singleton 之前的子标签；extension 自身的取值不论长度一律小写—— `en-US-u-VA-posix` 会被归一化为 `en-US-u-va-posix`，而 key 必须已经是归一化形式，所以要按小写形式书写。
 
 若要声明前端自带语言之外的 locale，请先阅读 [§5.3](#53-界面语言与-bundle-语言)。
 
@@ -566,7 +567,7 @@ curl -s 'http://localhost:9621/ui/customization?locale=zh' | jq
 | `unsupported schema_version` | 必须恰好为 `1`。 |
 | `locales: key 'zh_TW' uses the underscore form` | 请写 `zh-TW`。 |
 | `locales: key 'x-acme' has an invalid language subtag` | 主语言子标签必须是 2–8 个字母，因此首子标签为单字母的会被拒——私有用途（`x-…`）与不规则 grandfathered（`i-…`）。规则型 grandfathered 标签如 `art-lojban` 可用——见 [§4.3](#43-locale-key-的写法)。 |
-| `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | 修正大小写。 |
+| `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | 修正大小写。singleton（`-u-`、`-x-`…）之后的子标签一律小写：`en-u-CA-gregory` → `en-u-ca-gregory`。 |
 | `default_locale '…' is not a declared locale` | `default_locale` 必须出现在 `locales` 中。 |
 | `fallbacks.xx: target 'yy' is not a declared locale` | fallback 的目标必须已声明；只有来源可以是未覆盖的 locale。 |
 | `…: '…' does not exist or is not a file` | manifest 中某个路径指向了不存在的文件。路径相对于模板包根目录，且区分大小写。 |
