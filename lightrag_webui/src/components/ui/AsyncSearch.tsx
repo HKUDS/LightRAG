@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
-import { cn } from '@/lib/utils'
+import { cn, isImeComposing } from '@/lib/utils'
 import {
   Command,
   CommandEmpty,
@@ -83,6 +83,7 @@ export function AsyncSearch<T>({
   const [searchTerm, setSearchTerm] = useState('')
   const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
   const containerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const requestGeneration = useRef(0)
 
   useEffect(() => () => { requestGeneration.current += 1 }, [])
@@ -149,20 +150,35 @@ export function AsyncSearch<T>({
 
   const handleSelect = useCallback((currentValue: string) => {
     onChange(currentValue)
-    requestAnimationFrame(() => {
-      // Blur the input to ensure focus event triggers on next click
-      const input = document.activeElement as HTMLElement
-      input?.blur()
-      // Close the dropdown
-      setOpen(false)
-    })
+    // Focus BEFORE closing: when focus had left the input, focus() re-fires
+    // handleFocus (setOpen(true)); closing last makes the close win either way.
+    inputRef.current?.focus()
+    setOpen(false)
   }, [onChange])
 
   const handleFocus = useCallback(() => {
+    if (disabled) return
     setOpen(true)
     // Use current search term to fetch options
     fetchOptions(searchTerm)
-  }, [searchTerm, fetchOptions])
+  }, [disabled, searchTerm, fetchOptions])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    // An Escape during IME composition dismisses the candidate window only.
+    if (isImeComposing(e)) return
+    // Consume Escape only while open: a prevented Escape while closed would
+    // block a parent Radix Dialog's dismissal (DismissableLayer checks
+    // defaultPrevented).
+    if (e.key === 'Escape' && open) {
+      e.preventDefault()
+      setOpen(false)
+    } else if (e.key === 'ArrowDown' && !open && !disabled) {
+      // Focus stays on the input after a selection or Escape, so neither a
+      // focus event nor a value change reopens the results: ArrowDown does.
+      setOpen(true)
+      fetchOptions(searchTerm)
+    }
+  }, [open, disabled, searchTerm, fetchOptions])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
@@ -175,16 +191,26 @@ export function AsyncSearch<T>({
     <div
       ref={containerRef}
       className={cn(disabled && 'cursor-not-allowed opacity-50', className)}
+      aria-disabled={disabled || undefined}
       onMouseDown={handleMouseDown}
     >
       <Command shouldFilter={false} className="bg-transparent">
         <div>
           <CommandInput
+            ref={inputRef}
             placeholder={placeholder}
             value={searchTerm}
             className="max-h-8"
             aria-label={ariaLabel}
+            disabled={disabled}
             onFocus={handleFocus}
+            onKeyDown={handleKeyDown}
+            onClick={() => {
+              if (!disabled && !open) {
+                setOpen(true)
+                fetchOptions(searchTerm)
+              }
+            }}
             onValueChange={(value) => {
               setSearchTerm(value)
               if (!open) setOpen(true)
