@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
-import { cn } from '@/lib/utils'
+import { cn, isImeComposing } from '@/lib/utils'
 import {
   Command,
   CommandEmpty,
@@ -164,6 +164,8 @@ export function AsyncSearch<T>({
   }, [disabled, searchTerm, fetchOptions])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    // An Escape during IME composition dismisses the candidate window only.
+    if (isImeComposing(e)) return
     // Consume Escape only while open: a prevented Escape while closed would
     // block a parent Radix Dialog's dismissal (DismissableLayer checks
     // defaultPrevented).

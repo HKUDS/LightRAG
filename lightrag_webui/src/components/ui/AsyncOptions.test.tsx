@@ -83,9 +83,10 @@ describe('Async primitive accessibility', () => {
   })
 
   test.each([
-    ['open', true],
-    ['closed', false]
-  ] as const)('AsyncSearch Escape while %s: consumed only when it closes the dropdown', async (state, consumed) => {
+    ['open', false, true],
+    ['open', true, false],
+    ['closed', false, false]
+  ] as const)('AsyncSearch Escape while %s (IME composing: %p): consumed only when it closes the dropdown', async (state, composing, consumed) => {
     renderWithProviders(<AsyncSearch {...searchProps} />)
     const input = screen.getByPlaceholderText('Search entities') as HTMLInputElement
     if (state === 'open') {
@@ -96,10 +97,11 @@ describe('Async primitive accessibility', () => {
       await waitFor(() => expect(screen.queryAllByRole('option')).toHaveLength(0))
     }
     // A prevented Escape while closed would block a parent Radix Dialog's dismissal.
-    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    // An Escape that dismisses an IME candidate window belongs to the IME.
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: composing })
     act(() => { input.dispatchEvent(event) })
     expect(event.defaultPrevented).toBe(consumed)
-    expect(screen.queryAllByRole('option')).toHaveLength(0)
+    expect(screen.queryAllByRole('option')).toHaveLength(state === 'open' && composing ? 1 : 0)
   })
 
   test.each([
@@ -134,13 +136,16 @@ describe('Async primitive accessibility', () => {
       // still count as a keyboard selection. A typed term gives the items
       // real cmdk values (with an empty term they are all '', which cmdk never
       // highlights), so Enter picks the first one.
-      await user.click(screen.getByPlaceholderText('Search...'))
+      const search = screen.getByPlaceholderText('Search...')
+      await user.click(search)
       await user.keyboard('Al{Enter}')
+    } else {
+      await user.click(option)
     }
-    else await user.click(option)
     expect(onChange.mock.calls).toEqual([['Alpha', { viaKeyboard }]])
-    // Radix restores focus asynchronously on close; let it run.
-    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    // Radix returns focus from a setTimeout(0) queued during the close;
+    // one zero-delay macrotask queued after it is enough (no fixed sleep).
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
     expect(screen.queryAllByRole('option')).toHaveLength(0)
     // Keyboard: focus is back on the trigger. Pointer: it is not, so the
     // trigger's tooltip does not pop up under the mouse user.
