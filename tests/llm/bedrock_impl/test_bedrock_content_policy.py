@@ -144,9 +144,7 @@ async def test_content_filtered_still_records_billed_usage():
                     "gr-1": [
                         {
                             "contentPolicy": {
-                                "filters": [
-                                    {"type": "VIOLENCE", "action": "BLOCKED"}
-                                ]
+                                "filters": [{"type": "VIOLENCE", "action": "BLOCKED"}]
                             }
                         }
                     ]
@@ -160,9 +158,7 @@ async def test_content_filtered_still_records_billed_usage():
                 "inputAssessment": {
                     "gr-1": {
                         "sensitiveInformationPolicy": {
-                            "piiEntities": [
-                                {"type": "NAME", "action": "ANONYMIZED"}
-                            ]
+                            "piiEntities": [{"type": "NAME", "action": "ANONYMIZED"}]
                         }
                     }
                 },
@@ -170,9 +166,7 @@ async def test_content_filtered_still_records_billed_usage():
                     "gr-1": [
                         {
                             "contentPolicy": {
-                                "filters": [
-                                    {"type": "VIOLENCE", "action": "BLOCKED"}
-                                ]
+                                "filters": [{"type": "VIOLENCE", "action": "BLOCKED"}]
                             }
                         }
                     ]
@@ -215,9 +209,7 @@ async def test_guardrail_anonymize_returns_masked_content():
             "gr-1": [
                 {
                     "sensitiveInformationPolicy": {
-                        "piiEntities": [
-                            {"match": "John Doe", "action": "ANONYMIZED"}
-                        ]
+                        "piiEntities": [{"match": "John Doe", "action": "ANONYMIZED"}]
                     }
                 }
             ]
@@ -225,10 +217,10 @@ async def test_guardrail_anonymize_returns_masked_content():
     }
     calls: list[dict] = []
 
-    with _converse_patch(_guardrail_response([{"text": "Hello [NAME]."}], trace), calls):
-        result = await bedrock_complete_if_cache(
-            model="bedrock-model", prompt="hello"
-        )
+    with _converse_patch(
+        _guardrail_response([{"text": "Hello [NAME]."}], trace), calls
+    ):
+        result = await bedrock_complete_if_cache(model="bedrock-model", prompt="hello")
 
     assert result == "Hello [NAME]."
     assert len(calls) == 1

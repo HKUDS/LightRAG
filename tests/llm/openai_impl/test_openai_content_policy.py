@@ -168,7 +168,10 @@ async def test_policy_400_fails_after_one_attempt(body, expected_type, reason_fr
     "finish_reason, expected_type, attempts",
     [
         pytest.param(
-            "content_filter", ContentPolicyViolationError, 1, id="policy-stop-one-attempt"
+            "content_filter",
+            ContentPolicyViolationError,
+            1,
+            id="policy-stop-one-attempt",
         ),
         # Control: a genuinely empty response is a sampling artifact and keeps
         # its three retryable attempts.

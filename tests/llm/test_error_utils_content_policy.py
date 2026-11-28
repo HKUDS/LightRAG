@@ -85,9 +85,7 @@ def _make_error(body: object, message: str | None = None) -> BadRequestError:
         # Azure: the code is the verdict; the message prose ("content
         # management policy") must not be what matches.
         pytest.param(AZURE_CONTENT_FILTER_BODY, None, id="azure-content-filter-code"),
-        pytest.param(
-            {"error": DASHSCOPE_INPUT_BODY}, None, id="nested-envelope"
-        ),
+        pytest.param({"error": DASHSCOPE_INPUT_BODY}, None, id="nested-envelope"),
         # A proxy that flattens the body: no usable code, the verdict slug
         # survives only in the message (observed "<400>" prefix included).
         pytest.param(

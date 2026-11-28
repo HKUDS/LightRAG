@@ -187,7 +187,9 @@ def _counting_client(response):
 
 
 def _no_backoff(monkeypatch, gemini_module):
-    monkeypatch.setattr(gemini_module.gemini_complete_if_cache.retry, "wait", wait_none())
+    monkeypatch.setattr(
+        gemini_module.gemini_complete_if_cache.retry, "wait", wait_none()
+    )
 
 
 @pytest.mark.parametrize("member", _SAFETY_MEMBERS)

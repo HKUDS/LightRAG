@@ -435,9 +435,7 @@ async def bedrock_complete_if_cache(
                             if text:
                                 yield text
                         elif "messageStop" in event:
-                            stop_reason = (event["messageStop"] or {}).get(
-                                "stopReason"
-                            )
+                            stop_reason = (event["messageStop"] or {}).get("stopReason")
                             if stop_reason == "content_filtered":
                                 raise _content_policy_violation(stop_reason)
                         elif "metadata" in event:
@@ -462,8 +460,7 @@ async def bedrock_complete_if_cache(
                                 )
                                 actions = _collect_guardrail_actions(guardrail)
                                 if not (
-                                    actions
-                                    and all(a == "ANONYMIZED" for a in actions)
+                                    actions and all(a == "ANONYMIZED" for a in actions)
                                 ):
                                     raise _content_policy_violation(
                                         stop_reason, actions
