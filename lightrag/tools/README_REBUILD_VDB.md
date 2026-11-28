@@ -88,6 +88,8 @@ the startup refusal.
 lightrag-rebuild-vdb
 # or
 python -m lightrag.tools.rebuild_vdb
+# or restore from a tagged Lance cold snapshot (zero re-embedding):
+lightrag-rebuild-vdb --from-snapshot /path/to/lake --tag snap-2026-11
 ```
 
 The tool reads the same `.env` / environment configuration as the server
@@ -106,9 +108,11 @@ the server once for a new workspace, stop it, then run the tool. The server
 can register only a name its normalization leaves unchanged; an exact SDK name
 such as `team-a` is registered by a library start instead (`LightRAG(...,
 workspace="team-a")`, `initialize_storages()`, `finalize_storages()`).
-`--workspace` is the tool's only option: every other setting, the embedding
-configuration included, comes from `.env` / the environment, and any other
-flag is refused.
+In the default (interactive) mode `--workspace` is the only option: every
+other setting, the embedding configuration included, comes from `.env` / the
+environment, and any other flag is refused. The snapshot-restore mode below
+adds `--from-snapshot`, `--tag`, `--batch-size` and `--concurrency`; those
+four are refused unless `--from-snapshot` is given.
 
 Menu options:
 
@@ -188,6 +192,82 @@ Menu options:
   by the user running the tool and is deleted when the rebuild ends, failed or
   not; if deleting it fails, the tool logs its path. A killed process can leave
   a `lightrag-rebuild-*` directory behind: it holds source text, delete it.
+
+## Restore from a cold snapshot
+
+`--from-snapshot <uri> --tag <tag>` promotes a tagged Lance cold snapshot
+(produced by the export job, `python -m lightrag.kg.lancedb_impl`) back into a
+workspace **without re-embedding**. The cold snapshot is the source of truth;
+the hot vector storages are disposable derived indexes, and promotion is a
+rebuild that reads the vectors straight out of the snapshot's `embedding`
+columns. `<uri>` is a local directory or an `s3://` URI (OSS credentials come
+from the environment exactly as for the export job).
+
+```bash
+lightrag-rebuild-vdb --from-snapshot s3://bucket/lake --tag snap-2026-11 \
+    --batch-size 500 --concurrency 3
+```
+
+Rules:
+
+- **Stop every writer first**, as for any rebuild. The tool asks for
+  confirmation before it changes anything.
+- **A tag is required.** `--from-snapshot` without `--tag` is refused, and
+  `--tag` / `--batch-size` / `--concurrency` without `--from-snapshot` are
+  refused. Tags are immutable; the restore reads exactly the tagged version,
+  never a newer untagged one.
+- **Zero re-embedding is a hard gate.** The embedding function is replaced by
+  a counted, fail-loud stub: any embed attempt aborts the run, and a
+  successful run reports `Snapshot restore embedding calls: 0`. Vectors are
+  seeded into the deferred-embedding buffer's vector cache
+  (`docs/design/FileBackedSnapshotContract.md`, *Deferred-embedding
+  protocol*), so the flush materializes them without calling the model.
+- **Only `NanoVectorDBStorage` vector targets are supported.** Another vector
+  backend raises `StorageCapabilityError` before anything is dropped. The
+  KV/graph sources use the configured backends.
+- **Validation precedes mutation.** A missing table, a missing tag, an empty
+  table, an embedding-dimension mismatch against `EMBEDDING_DIM`, or a
+  vector-eligible row without a stored vector raises `RestoreError` before
+  any storage is dropped or overwritten.
+- **The target workspace must already be registered**, exactly as for a
+  rebuild: with JSON configuration storage, start the server (or an SDK
+  `LightRAG(...).initialize_storages()`) once for the workspace, stop it, then
+  run the restore. The tool never binds the configuration anchor itself.
+- **`--batch-size`** is the number of snapshot rows per upsert/flush batch
+  (default 500). **`--concurrency`** (1-3, default 3) is how many of the three
+  vector targets are restored in parallel; each target's own batches stay
+  sequential. A failing target cancels its siblings, so an interrupted run
+  never leaves concurrent writers behind.
+
+What is restored: the `full_docs` and `text_chunks` KV stores and the graph
+(the sources of truth) are overwritten from the snapshot's `docs` / `chunks`
+/ `entities` / `relations` tables, then `entities_vdb`, `relationships_vdb`
+and `chunks_vdb` are dropped and rewritten with the stored vectors. Sources
+are restored and flushed before any vector target is dropped.
+
+**Idempotent / crash-safe.** The snapshot is immutable and is never modified.
+If the run is interrupted after a target was dropped, re-run it: the drop +
+rewrite converges to the same content. Re-running a completed restore
+produces identical vectors and records.
+
+Accepted residues (a restored workspace serves queries, but is not a full
+ingestion):
+
+- **`doc_status`, the LLM cache, and the chunk-tracking / recovery-anchor KV
+  namespaces are not part of the snapshot** and stay empty. Document
+  lifecycle operations that depend on them (delete / retry, which read the
+  `full_entities` / `full_relations` anchors) fail closed until the documents
+  are re-ingested. Query modes (`local`/`global`/`hybrid`/`mix`/`naive`) work
+  from the restored graph, chunks and vectors.
+- **Vector `content` is reconstructed** from the snapshot fields using the
+  same write-point formulas as a graph rebuild. If content truncation was
+  active at original ingestion, the restored `content` may be fuller than the
+  original; the stored vector is unchanged (it comes from the snapshot), so
+  this only ever surfaces more context, never a different vector.
+- **`__created_at__` resets** on the rebuilt vector records, as for any
+  rebuild. No query logic depends on it.
+- **`created_at` resets with it**: read paths mirror `__created_at__` into
+  `created_at`, so both wall-clock stamps are fresh after a restore.
 
 ## Consistency check
 

@@ -160,6 +160,9 @@ offline-storage = [
     "pgvector>=0.4.2,<1.0.0",
     "qdrant-client>=1.11.0,<2.0.0",
     "opensearch-py>=3.0.0,<4.0.0",
+    # Exact pin: the cold-lake benchmark tier reports numbers for one release,
+    # so a floating range would let the benchmarked version move underneath it.
+    "lancedb==0.41.0",
 ]
 
 offline-llm = [
