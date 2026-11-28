@@ -95,7 +95,9 @@ def apply_llm_timeout(
         global_config = getattr(kwargs.get("hashing_kv"), "global_config", None)
         if not isinstance(global_config, Mapping):
             return
-        timeout = global_config.get("default_llm_timeout")
+        if "default_llm_timeout" not in global_config:
+            return
+        timeout = global_config["default_llm_timeout"]
     kwargs["timeout"] = timeout
 
 
