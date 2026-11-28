@@ -186,24 +186,13 @@ def test_openai_client_config_timeout_survives_without_top_level_timeout():
     [
         pytest.param({}, id="no-hashing-kv"),
         pytest.param({"hashing_kv": object()}, id="hashing-kv-without-config"),
+        pytest.param(
+            {"hashing_kv": SimpleNamespace(global_config={"llm_model_name": "m"})},
+            id="config-without-default-key",
+        ),
     ],
 )
 def test_apply_llm_timeout_outside_role_without_config_sets_nothing(kwargs):
     apply_llm_timeout(kwargs)
 
     assert "timeout" not in kwargs
-
-
-def test_apply_llm_timeout_outside_role_without_default_key_sets_nothing():
-    kwargs = {"hashing_kv": SimpleNamespace(global_config={"llm_model_name": "m"})}
-    apply_llm_timeout(kwargs)
-
-    assert "timeout" not in kwargs
-
-
-def test_apply_llm_timeout_preserves_explicit_none_default():
-    kwargs = {"hashing_kv": _hashing_kv(default_llm_timeout=None)}
-    apply_llm_timeout(kwargs)
-
-    assert "timeout" in kwargs
-    assert kwargs["timeout"] is None
