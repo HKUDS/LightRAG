@@ -143,11 +143,11 @@ safety margin. Reviews apply these rules to each test a PR adds or changes
 - **Necessity: it pins a behavior no existing test pins.** Before adding a
   test, search the mirror directory for one that already drives the same path
   to the same assertion, or builds the same scenario and asserts another
-  field (that one is extended, per the rule above). A regression test pins the
-  defect's trigger, not every neighbouring input. A test of a private helper that a test of its
-  public caller already covers, of a dependency's own behavior, or of an
-  implementation detail no docstring or contract promises, is removed rather
-  than kept "just in case".
+  field (that one is extended, per the rule above). A regression test pins
+  the defect's trigger, not every neighbouring input. A test of a private
+  helper that a test of its public caller already covers, of a dependency's
+  own behavior, or of an implementation detail no docstring or contract
+  promises, is removed rather than kept "just in case".
 - **Merge tests that share one scenario.** Three tests that each build the same
   storage, run the same operation and then assert a different field are one
   test with three assertions: the setup, which is most of the cost, runs once.
