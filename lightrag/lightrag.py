@@ -278,10 +278,12 @@ _SyncResultT = TypeVar("_SyncResultT")
 # ``adelete_by_relation``, ``aedit_entity``, ``aedit_relation``,
 # ``acreate_entity``, ``acreate_relation``, ``amerge_entities``,
 # ``ainsert_custom_kg``) run their body inside ``LightRAG._admin_write_gate``.
-# Where ``_admin_write_gate_required()`` holds (a ``requires_single_writer``
-# graph storage, i.e. ``NetworkXStorage``, or chunk tracking on a KV storage
-# that buffers per process, i.e. ``OpenSearchKVStorage``) the gate takes, in
-# this fixed order:
+# A rename, a merge and an entity deletion take the admin lock on every backend
+# (they rewrite edges whose far endpoint they do not lock). Where
+# ``_admin_write_gate_required()`` holds (a ``requires_single_writer`` graph
+# storage, i.e. ``NetworkXStorage``, or chunk tracking on a KV storage that
+# buffers per process, i.e. ``OpenSearchKVStorage``) it takes, in this fixed
+# order:
 #
 #     admin lock (WAITS, bounded)  ->  pipeline ``busy`` reservation (REFUSES)
 #                                  ->  the per-entity / per-edge keyed locks
@@ -1516,7 +1518,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
     Applies only where ``_admin_write_gate_required()`` holds (a
     ``requires_single_writer`` graph storage, or chunk tracking on a KV storage
-    that buffers per process); other backends never take the gate.
+    that buffers per process); elsewhere a rename, a merge or an entity
+    deletion takes the admin lock alone, with no ceiling.
 
     Declared LAST, away from the ``default_embedding_timeout`` it is derived
     from, because ``LightRAG`` is a plain dataclass without ``kw_only``: field
@@ -8880,7 +8883,11 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
     # ------------------------------------------------------------------
 
     def _admin_write_gate_required(self) -> bool:
-        """Whether this instance's storages need the admin-write gate.
+        """Whether every admin write takes the whole gate.
+
+        Where this holds, every writer takes the admin lock, the ``busy``
+        reservation and its hold ceiling. Elsewhere only a rename, a merge and
+        an entity deletion take the admin lock (see ``_admin_write_gate``).
 
         Decided by two class-level declarations and by nothing else:
 
@@ -8899,9 +8906,10 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         snapshot, ``JsonKVStorage`` / ``JsonDocStatusStorage`` have no reload
         path at all (their data is a shared Manager mapping), and every other
         server-backed store writes immediately with row/transaction-level
-        concurrency of its own. Those combinations run ungated -- serializing
-        them workspace-wide would be a throughput regression for no
-        correctness gain.
+        concurrency of its own. Those combinations take the admin lock only for
+        the writers that need it: excluding the pipeline, or serializing
+        writers the keyed locks already order, would be a throughput
+        regression for no correctness gain.
         """
         if getattr(
             type(self.chunk_entity_relation_graph), "requires_single_writer", False
@@ -8938,8 +8946,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         Called from ``__post_init__`` once the graph storage exists, and ONLY
         when ``_admin_write_gate_required()`` -- a backend combination that
-        never takes the gate must not be refused startup over a knob it does
-        not use.
+        never takes the reservation must not be refused startup over a knob it
+        does not use.
 
         The relation was documented in ``env.example`` and enforced nowhere. A
         ceiling below the embedding timeout stops every admin write that
@@ -8983,16 +8991,52 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             return f"{workspace}:{ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX}"
         return ADMIN_WRITE_LOCK_NAMESPACE_SUFFIX
 
+    async def _acquire_admin_lock(self, admin_lock, operation: str) -> None:
+        """Wait for the workspace admin lock, bounded; 409 after the timeout."""
+        # WAIT for a peer admin write, bounded. ``_KeyedLockContext.__aenter__``
+        # rolls back partially acquired keys under a shield on cancellation, so
+        # a timeout here leaks nothing. ``asyncio.timeout`` (3.11+) runs the
+        # acquire in THIS task, so an acquisition that lands in the same tick
+        # as the expiry is either kept or rolled back -- never completed in a
+        # wrapper task whose result the timeout then throws away; ``wait_for``
+        # is the 3.10 fallback.
+        try:
+            timeout_cm = getattr(asyncio, "timeout", None)
+            if timeout_cm is not None:
+                async with timeout_cm(ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT):
+                    await admin_lock.__aenter__()
+            else:  # pragma: no cover - Python 3.10 only
+                await asyncio.wait_for(
+                    admin_lock.__aenter__(), timeout=ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT
+                )
+        except asyncio.TimeoutError:
+            raise AdminWriteGateRefusedError(
+                f"{ADMIN_WRITE_LOCK_BUSY_PREFIX}: `{operation}` waited "
+                f"{ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT:g}s for the workspace admin "
+                "lock held by another entity/relation edit. Retry once that edit "
+                "has finished.",
+                fence="admin_lock",
+            ) from None
+
     @asynccontextmanager
-    async def _admin_write_gate(self, operation: str):
+    async def _admin_write_gate(
+        self, operation: str, *, rewrites_neighbour_edges: bool = False
+    ):
         """Serialize an admin graph write against its peers and the pipeline.
 
         Wraps the body of every public admin graph writer -- the seven
-        ``utils_graph`` flows plus ``ainsert_custom_kg``. A no-op unless
-        ``_admin_write_gate_required()``: the graph storage's class declares
+        ``utils_graph`` flows plus ``ainsert_custom_kg``. Where
+        ``_admin_write_gate_required()`` -- the graph storage's class declares
         ``requires_single_writer`` (``NetworkXStorage``), or a chunk-tracking
         KV storage declares ``buffers_writes_per_process``
-        (``OpenSearchKVStorage``).
+        (``OpenSearchKVStorage``) -- every writer takes the whole gate.
+        Elsewhere only a writer passing ``rewrites_neighbour_edges`` (a rename,
+        a merge, an entity deletion) takes the admin lock, with no reservation
+        and no hold ceiling: a rename or merge rewrites edges whose far
+        endpoint it does not lock and then deletes the old node, so two
+        concurrent edits of adjacent entities lose the edge between them. The
+        other writers lock both endpoints of every edge they write, so the
+        per-entity keyed locks already order them.
 
         Two halves, one fixed acquisition order::
 
@@ -9036,7 +9080,8 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
         semantics, and the release-time drive obligation including why a
         synchronous wrapper must await it.
         """
-        if not self._admin_write_gate_required():
+        gate_required = self._admin_write_gate_required()
+        if not gate_required and not rewrites_neighbour_edges:
             yield
             return
 
@@ -9046,30 +9091,18 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             namespace=self._admin_write_lock_namespace(),
             enable_logging=False,
         )
-        # WAIT for a peer admin write, bounded. ``_KeyedLockContext.__aenter__``
-        # rolls back partially acquired keys under a shield on cancellation, so
-        # a timeout here leaks nothing. ``asyncio.timeout`` (3.11+) runs the
-        # acquire in THIS task, so an acquisition that lands in the same tick
-        # as the expiry is either kept or rolled back -- never completed in a
-        # wrapper task whose result the timeout then throws away; ``wait_for``
-        # is the 3.10 fallback.
-        try:
-            timeout_cm = getattr(asyncio, "timeout", None)
-            if timeout_cm is not None:
-                async with timeout_cm(ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT):
-                    await admin_lock.__aenter__()
-            else:  # pragma: no cover - Python 3.10 only
-                await asyncio.wait_for(
-                    admin_lock.__aenter__(), timeout=ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT
-                )
-        except asyncio.TimeoutError:
-            raise AdminWriteGateRefusedError(
-                f"{ADMIN_WRITE_LOCK_BUSY_PREFIX}: `{operation}` waited "
-                f"{ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT:g}s for the workspace admin "
-                "lock held by another entity/relation edit. Retry once that edit "
-                "has finished.",
-                fence="admin_lock",
-            ) from None
+        if not gate_required:
+            # The admin lock alone. A rename or merge rewrites every incident
+            # edge without locking its far endpoint and then deletes the old
+            # node, which cascades: two unserialized edits of adjacent
+            # entities each delete the edge the other has just written.
+            await self._acquire_admin_lock(admin_lock, operation)
+            try:
+                yield
+            finally:
+                await admin_lock.__aexit__(None, None, None)
+            return
+        await self._acquire_admin_lock(admin_lock, operation)
 
         # Generated BEFORE any await so the ``finally`` can release by owner
         # even if the acquire below is cancelled at its lock exit.
@@ -9436,7 +9469,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import adelete_by_entity
 
-        async with self._admin_write_gate("adelete_by_entity"):
+        async with self._admin_write_gate(
+            "adelete_by_entity", rewrites_neighbour_edges=True
+        ):
             return await adelete_by_entity(
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -9614,7 +9649,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import aedit_entity
 
-        async with self._admin_write_gate("aedit_entity"):
+        async with self._admin_write_gate(
+            "aedit_entity", rewrites_neighbour_edges="entity_name" in updated_data
+        ):
             return await aedit_entity(
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -9806,7 +9843,9 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
 
         from lightrag.utils_graph import amerge_entities
 
-        async with self._admin_write_gate("amerge_entities"):
+        async with self._admin_write_gate(
+            "amerge_entities", rewrites_neighbour_edges=True
+        ):
             return await amerge_entities(
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,

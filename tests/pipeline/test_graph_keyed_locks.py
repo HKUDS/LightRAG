@@ -854,6 +854,69 @@ async def test_gate_is_scoped_by_the_graph_storage_declaration(ws1_pipeline_stat
     assert status["busy"] is False
 
 
+_NEIGHBOUR_EDGE_WRITERS = [
+    pytest.param(lambda rag: rag.aedit_entity("X", {"entity_name": "Z"}), id="rename"),
+    pytest.param(lambda rag: rag.amerge_entities(["X"], "Y"), id="merge"),
+    pytest.param(lambda rag: rag.adelete_by_entity("X"), id="delete_entity"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invoke", _NEIGHBOUR_EDGE_WRITERS)
+async def test_server_backed_neighbour_edge_writers_take_the_admin_lock(
+    ws1_pipeline_status, invoke
+):
+    """A rename or merge rewrites edges whose far endpoint it does not lock and
+    then deletes the old node, so on a server-backed graph store these writers
+    (and the entity deletion that races them) still take the admin lock,
+    before their per-key lock, but not the reservation."""
+    from lightrag import lightrag as lightrag_module
+    from lightrag import utils_graph
+
+    status, _lock = await _bootstrap_status("ws1")
+    graph = _admin_graph_mock(cls=_ServerBackedGraphMock)
+    graph.has_node = AsyncMock(side_effect=lambda name: name in {"X", "Y"})
+    rag = _make_gated_rag("ws1", graph=graph)
+    assert rag._admin_write_gate_required() is False
+    recorder = _OrderRecorder(abort_namespace_suffix=":GraphDB")
+
+    with (
+        patch.object(lightrag_module, "get_storage_keyed_lock", recorder.keyed_lock),
+        patch.object(utils_graph, "get_storage_keyed_lock", recorder.keyed_lock),
+        patch.object(
+            lightrag_module,
+            "acquire_reservation",
+            recorder.wrap_reservation(lightrag_module.acquire_reservation),
+        ),
+    ):
+        with pytest.raises(_LockCaptured):
+            await invoke(rag)
+
+    assert recorder.events[0] == ("lock", "ws1:GraphAdmin", ["admin"])
+    assert recorder.events[1][1] == "ws1:GraphDB"
+    assert ("reservation",) not in recorder.events
+    assert status["busy"] is False
+
+
+@pytest.mark.asyncio
+async def test_server_backed_admin_lock_is_released_when_the_edit_fails(
+    ws1_pipeline_status, monkeypatch
+):
+    """The lock-only branch has no reservation to release, only the lock: a
+    failed rename must not leave every later rename refused with 409."""
+    from lightrag import lightrag as lightrag_module
+
+    await _bootstrap_status("ws1")
+    graph = _admin_graph_mock(cls=_ServerBackedGraphMock)
+    graph.has_node = AsyncMock(return_value=False)
+    rag = _make_gated_rag("ws1", graph=graph)
+    monkeypatch.setattr(lightrag_module, "ADMIN_WRITE_LOCK_ACQUIRE_TIMEOUT", 0.2)
+
+    for _ in range(2):  # the second one is refused if the first kept the lock
+        with pytest.raises(ValueError, match="does not exist"):
+            await rag.aedit_entity("Missing", {"entity_name": "Z"})
+
+
 def test_requires_single_writer_is_a_class_declaration_not_a_dataclass_field():
     """R1.1: the declaration lives on ``BaseGraphStorage`` as a ``ClassVar``
     (True on ``NetworkXStorage`` alone), so it neither appears in any graph

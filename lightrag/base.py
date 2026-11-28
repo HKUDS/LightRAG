@@ -964,9 +964,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     # ``LightRAG._admin_write_gate`` keys off this: where it is ``True`` the
     # admin graph writers take the workspace admin lock and the pipeline
     # ``busy`` reservation; where it is ``False`` (every server-backed store,
-    # which has row/transaction-level concurrency of its own) they run
-    # unserialized, unless a chunk-tracking KV storage asks for the gate
-    # through ``BaseKVStorage.buffers_writes_per_process``.
+    # which has row/transaction-level concurrency of its own) only a rename, a
+    # merge or an entity deletion takes the admin lock, unless a chunk-tracking
+    # KV storage asks for the whole gate through
+    # ``BaseKVStorage.buffers_writes_per_process``.
     #
     # ``ClassVar`` on purpose: the storage bases are dataclasses, so a bare
     # annotated attribute would become an ``__init__`` field and change the
