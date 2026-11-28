@@ -848,7 +848,7 @@ lightrag-server --embedding-binding gemini --help
 
 > **Every provider option, in one place:** the `--help` output covers only the binding you pass and prints no default values or environment-variable names. [LLM and Embedding Provider Options Reference](./LLMProviderOptions.md) lists every `OPENAI_LLM_*`, `OLLAMA_LLM_*`, `GEMINI_LLM_*`, `BEDROCK_LLM_*`, `OLLAMA_EMBEDDING_*`, and `GEMINI_EMBEDDING_*` variable with its type and meaning, plus the resolution rules (unset means "not sent", value syntax, which options each driver actually forwards, and why provider options do not invalidate the LLM cache).
 >
-> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter, [OrcaRouter](https://www.orcarouter.ai), or vLLM/SGLang. You can pass additional parameters to these providers through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
+> Please use OpenAI-compatible method to access LLMs deployed by OpenRouter, [OrcaRouter](https://www.orcarouter.ai), [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) for local serving on Apple Silicon, or vLLM/SGLang. You can pass additional parameters to these providers through the `OPENAI_LLM_EXTRA_BODY` environment variable to disable reasoning mode or achieve other personalized controls.
 
 Set the max_tokens to **prevent excessively long or endless output loop** during the entity relationship extraction phase for Large Language Model (LLM) responses.  The purpose of setting max_tokens parameter is to truncate LLM output before timeouts occur, thereby preventing document extraction failures. This addresses issues where certain text blocks (e.g., tables or citations) containing numerous entities and relationships can lead to overly long or even endless loop outputs from LLMs. This setting is particularly crucial for locally deployed, smaller-parameter models. Max tokens value can be calculated by this formula: `LLM_TIMEOUT * llm_output_tokens/second` (i.e. `240s * 50 tokens/s = 12000`, max_tokens should smaller than 12000)
 
@@ -1118,6 +1118,17 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 RERANK_BINDING_HOST=http://localhost:8000/rerank
 RERANK_BINDING_API_KEY=your_rerank_api_key_here
 ```
+
+For a local [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) reranker on Apple Silicon, use the Cohere-compatible endpoint and set `RERANK_MODEL` to the model ID passed to `--rerank-model`:
+
+```
+RERANK_BINDING=cohere
+RERANK_MODEL=mlx-community/Qwen3-Reranker-0.6B-4bit
+RERANK_BINDING_HOST=http://localhost:8000/v1/rerank
+RERANK_BINDING_API_KEY=not-needed
+```
+
+A placeholder key works while Rapid-MLX authentication is off; if it was started with `--api-key` or `RAPID_MLX_API_KEY`, use that key instead. See the Rapid-MLX example in `env.example` for chat and embedding configuration.
 
 Here is an example configuration for utilizing the Reranker service provided by Aliyun (`gte-rerank-*` and `qwen3-vl-rerank`, which use the nested `input`/`parameters` payload format):
 
