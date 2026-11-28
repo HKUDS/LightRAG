@@ -1178,6 +1178,17 @@ def parse_cache_key(cache_key: str) -> tuple[str, str, str] | None:
     return None
 
 
+def cache_key_has_type(cache_key: str, cache_types: set[str]) -> bool:
+    """Whether ``cache_key`` parses as a cache key with a type in ``cache_types``.
+
+    The one selection rule for "rows of these cache types": a key that does not
+    parse never matches. Backends that filter server-side (PG, Mongo) must
+    reproduce exactly this.
+    """
+    parsed = parse_cache_key(cache_key)
+    return parsed is not None and parsed[1] in cache_types
+
+
 # Custom exception classes
 class QueueFullError(Exception):
     """Raised when the queue is full and the wait times out"""

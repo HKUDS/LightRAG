@@ -595,6 +595,35 @@ class ReprocessResponse(BaseModel):
     )
 
 
+class ClearQueryCacheResponse(BaseModel):
+    """Response model for clearing the query-answer cache
+
+    Attributes:
+        status: Always "success"; a failure is an HTTP error instead
+        deleted: Number of cache rows deleted
+        cache_types: The cache types that were cleared
+        message: Message describing the operation result
+    """
+
+    status: Literal["success"] = Field(description="Status of the clear operation")
+    deleted: int = Field(description="Number of cache rows deleted")
+    cache_types: list[Literal["query", "keywords"]] = Field(
+        description="The cache types that were cleared"
+    )
+    message: str = Field(description="Message describing the operation result")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "success",
+                "deleted": 42,
+                "cache_types": ["keywords", "query"],
+                "message": "Deleted 42 query cache rows (keywords, query).",
+            }
+        }
+    )
+
+
 class CancelPipelineResponse(BaseModel):
     """Response model for pipeline cancellation operation
 
@@ -6066,8 +6095,8 @@ def create_document_routes(
         unless clear_llm_cache=True is passed AND every storage drop succeeded
         (a partial drop preserves it either way -- see below).
 
-        **Clearing the LLM cache is only available here**, folded into this
-        endpoint rather than exposed as its own route, because
+        **Clearing the whole LLM cache is only available here**, folded into
+        this endpoint rather than exposed as its own route, because
         ``llm_response_cache.drop()`` states a caller contract it cannot enforce
         itself: the caller must hold the pipeline ``busy`` reservation. A
         standalone endpoint held nothing, so clearing mid-ingestion wiped the
@@ -6076,6 +6105,8 @@ def create_document_routes(
         ``llm_cache_list`` naming rows that no longer exist. Running it here
         puts it inside the destructive reservation that already refuses while
         the pipeline is busy, and leaves one destructive path to reason about.
+        The query-answer cache alone, which no chunk references, is cleared
+        without a reservation by ``DELETE /documents/query_cache``.
 
         For the same reason the cache drop is skipped whenever ANY storage
         drop failed, not only when they all did: a surviving ``text_chunks``
@@ -6617,6 +6648,60 @@ def create_document_routes(
                 token=destructive_token,
                 action=_clear_release,
             )
+
+    @router.delete(
+        "/query_cache",
+        response_model=ClearQueryCacheResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def clear_query_cache(
+        cache_type: Annotated[
+            list[Literal["query", "keywords"]] | None,
+            Query(
+                description=(
+                    "Cache types to clear; repeat the parameter for both. "
+                    "Omitted means both. 'query' holds generated answers and "
+                    "is what goes stale after ingestion; 'keywords' holds the "
+                    "keywords extracted from each query."
+                )
+            ),
+        ] = None,
+    ):
+        """
+        Clear the query-answer cache without touching documents.
+
+        Deletes the cached query answers (``query``) and query keyword
+        extractions (``keywords``) in every query mode. Use it after ingesting
+        documents when the query cache is enabled: a cached answer is keyed on
+        the query, not the corpus, so it is not refreshed by new documents.
+
+        Extraction cache rows are never touched, so documents can still reuse
+        the extraction results already paid for. No pipeline reservation is
+        taken: the call is safe, and accepted, while documents are being
+        ingested. To drop the whole LLM cache, use
+        ``DELETE /documents?clear_llm_cache=true``.
+
+        Returns:
+            ClearQueryCacheResponse: The number of rows deleted, once the
+            deletion is committed.
+
+        Raises:
+            HTTPException: 500 if the deletion or its commit failed. The cache
+                may be partly cleared; re-run to finish it.
+        """
+        types = sorted(set(cache_type or ("query", "keywords")))
+        try:
+            deleted = await rag.aclear_query_cache(types)
+        except Exception as e:
+            logger.error(f"Error clearing the query cache: {e}")
+            logger.error(traceback.format_exc())
+            raise internal_server_error(e)
+        return ClearQueryCacheResponse(
+            status="success",
+            deleted=deleted,
+            cache_types=types,
+            message=f"Deleted {deleted} query cache rows ({', '.join(types)}).",
+        )
 
     @router.get(
         "/pipeline_status",

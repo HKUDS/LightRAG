@@ -812,9 +812,12 @@ Because nothing here can discard an uncommitted write, neither class carries a
   namespace: `LightRAG.aclear_cache` states the contract but does not take the
   reservation, and the only REST path to it is `DELETE
   /documents?clear_llm_cache=true`, which runs inside the destructive
-  reservation. A standalone cache-clearing endpoint is what this rules out —
-  clearing mid-ingestion wipes the extraction rows in-flight chunks already
-  paid for.
+  reservation. A standalone endpoint that drops the whole cache is what this
+  rules out — clearing mid-ingestion wipes the extraction rows in-flight
+  chunks already paid for. `DELETE /documents/query_cache` is not a `drop`:
+  it deletes only the `query` / `keywords` rows, which no chunk references,
+  and commits through the ordered pair (see *LLM extraction cache
+  reachability* in `PurgeRecoveryContract.md`).
 * `upsert` / `delete` invoked from non-pipeline admin flows (cache management,
   etc.) — safe under the shared-lock model, but consumers should still respect
   the pipeline gate to avoid interleaving with batched ingest work.

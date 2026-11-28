@@ -156,59 +156,16 @@ Continue with deletion? (y/n): y
 
 #### 6. Execute Cleanup
 
-The tool performs batch deletion with real-time progress:
+The tool deletes the selected cache types in one operation, then persists the change:
 
-**JsonKVStorage Example:**
 ```
 === Starting Cleanup ===
-💡 Processing 1,000 records at a time from JsonKVStorage
+💡 Deleting ['keywords', 'query'] caches from JsonKVStorage
 
-Batch 1/8: ████░░░░░░░░░░░░░░░░ 1,000/7,605 (13.1%) ✓
-Batch 2/8: ████████░░░░░░░░░░░░ 2,000/7,605 (26.3%) ✓
-...
-Batch 8/8: ████████████████████ 7,605/7,605 (100.0%) ✓
+✓ Deleted 7,605 records in 0.45s
 
 Persisting changes to storage...
 ✓ Changes persisted successfully
-```
-
-**RedisKVStorage Example:**
-```
-=== Starting Cleanup ===
-💡 Processing Redis keys in batches of 1,000
-
-Batch 1: Deleted 1,000 keys (Total: 1,000) ✓
-Batch 2: Deleted 1,000 keys (Total: 2,000) ✓
-...
-```
-
-**PostgreSQL Example:**
-```
-=== Starting Cleanup ===
-💡 Executing PostgreSQL DELETE query
-
-✓ Deleted 7,605 records in 0.45s
-```
-
-**MongoDB Example:**
-```
-=== Starting Cleanup ===
-💡 Executing MongoDB deleteMany operations
-
-Pattern 1/8: Deleted 1,234 records ✓
-Pattern 2/8: Deleted 567 records ✓
-...
-Total deleted: 7,605 records
-```
-
-**OpenSearchKVStorage Example:**
-```
-=== Starting Cleanup ===
-💡 Processing 1,000 records at a time from OpenSearchKVStorage
-
-Batch 1/8: ████░░░░░░░░░░░░░░░░ 1,000/7,605 (13.1%) ✓
-Batch 2/8: ████████░░░░░░░░░░░░ 2,000/7,605 (26.3%) ✓
-...
 ```
 
 #### 7. Review Cleanup Report
@@ -223,8 +180,8 @@ Cleanup Complete - Final Report
 
 📊 Statistics:
   Total records to delete:  7,605
-  Total batches:            8
-  Successful batches:       8
+  Total batches:            1
+  Successful batches:       1
   Failed batches:           0
   Successfully deleted:     7,605
   Failed to delete:         0
@@ -260,17 +217,17 @@ Cleanup Complete - Final Report
 
 📊 Statistics:
   Total records to delete:  7,605
-  Total batches:            8
-  Successful batches:       7
+  Total batches:            1
+  Successful batches:       0
   Failed batches:           1
-  Successfully deleted:     6,605
-  Failed to delete:         1,000
-  Success rate:             86.85%
+  Successfully deleted:     0
+  Failed to delete:         7,605
+  Success rate:             0.00%
 
 📈 Before/After Comparison:
   Total caches before:      7,605
-  Total caches after:       1,000
-  Net reduction:            6,605
+  Total caches after:       7,605
+  Net reduction:            0
 
 ⚠️  Errors encountered: 1
 
@@ -282,10 +239,10 @@ Error Summary:
 
 First 5 errors:
 
-  1. Batch 3
+  1. Batch 1
      Type: ConnectionError
      Message: Connection timeout after 30s
-     Records lost: 1,000
+     Records lost: 7,605
 
 ============================================================
 ⚠️  WARNING: Cleanup completed with errors!
@@ -311,77 +268,34 @@ The tool retrieves workspace in the following priority order:
 3. **Default value**
    - Empty string (uses storage's default workspace)
 
-### Batch Deletion
+### Deletion
 
-- Default batch size: 1000 records/batch
-- Prevents memory overflow and connection timeouts
-- Each batch is processed independently
-- Failed batches are logged but don't stop cleanup
+The tool deletes through `BaseKVStorage.delete_by_cache_types`, the same
+implementation the server's `DELETE /documents/query_cache` route uses, so the two
+cannot disagree about what a query cache row is. A row matches when its key parses
+as `{mode}:{cache_type}:{hash}` with `cache_type` in the selected types, in any mode.
 
-### Storage-Specific Deletion Strategies
+| Backend | Strategy |
+|---|---|
+| JsonKVStorage | removes the matching keys from memory under the namespace lock; the tool then persists the file |
+| RedisKVStorage | SCANs the namespace and pipelines `DEL` for the matching keys |
+| PGKVStorage | one parameterized `DELETE` (`split_part(id, ':', 2) = ANY($2)`) scoped to the workspace |
+| MongoKVStorage | one `delete_many` with an anchored `_id` regex |
+| OpenSearchKVStorage | scans the index and buffers deletes; the tool then flushes them |
 
-#### JsonKVStorage
-- Collects all matching keys first (snapshot approach)
-- Deletes in batches with lock protection
-- Fast in-memory operations
-
-#### RedisKVStorage
-- Uses SCAN with pattern matching
-- Pipeline DELETE for batch operations
-- Cursor-based iteration for large datasets
-
-#### PostgreSQL
-- Single DELETE query with OR conditions
-- Efficient server-side bulk deletion
-- Uses LIKE patterns for mode/type matching
-
-#### MongoDB
-- Multiple deleteMany operations (one per pattern)
-- Regex-based document matching
-- Returns exact deletion counts
-
-### Pattern Matching Implementation
-
-**JsonKVStorage:**
-```python
-# Direct key prefix matching
-if key.startswith("mix:query:") or key.startswith("mix:keywords:")
-```
-
-**RedisKVStorage:**
-```python
-# SCAN with namespace-prefixed patterns
-pattern = f"{namespace}:mix:query:*"
-cursor, keys = await redis.scan(cursor, match=pattern)
-```
-
-**PostgreSQL:**
-```python
-# SQL LIKE conditions
-WHERE id LIKE 'mix:query:%' OR id LIKE 'mix:keywords:%'
-```
-
-**MongoDB:**
-```python
-# Regex queries on _id field
-{"_id": {"$regex": "^mix:query:"}}
-```
-
-**OpenSearchKVStorage:**
-```python
-# Scan raw hits, then match cache key prefixes in Python
-if hit["_id"].startswith("mix:query:"):
-```
+The deletion runs as one operation per backend rather than in client-side batches.
+To clear the query cache while the server is running, use the route instead:
+`curl -X DELETE "http://localhost:9621/documents/query_cache"`.
 
 ## Error Handling & Resilience
 
 The tool implements comprehensive error tracking:
 
-### Batch-Level Error Tracking
-- Each batch is independently error-checked
-- Failed batches are logged with full details
-- Successful batches commit even if later batches fail
-- Real-time progress shows ✓ (success) or ✗ (failed)
+### Error Tracking
+- The deletion is error-checked as a whole and reported as one batch
+- A failure is logged with full details, and the verification count below
+  shows how many rows remain
+- The output shows ✓ (success) or ✗ (failed)
 
 ### Error Reporting
 After cleanup completes, a detailed report includes:

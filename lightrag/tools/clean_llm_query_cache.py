@@ -33,7 +33,6 @@ sys.path.insert(
 
 from lightrag.constants import DEFAULT_WORKING_DIR
 from lightrag.kg import STORAGE_ENV_REQUIREMENTS
-from lightrag.kg.shared_storage import set_all_update_flags
 from lightrag.namespace import NameSpace
 from lightrag.utils import setup_logger
 
@@ -126,7 +125,6 @@ class CleanupTool:
     def __init__(self):
         self.storage = None
         self.workspace = ""
-        self.batch_size = DEFAULT_BATCH_SIZE
 
     def get_workspace_for_storage(self, storage_name: str) -> str:
         """Get workspace for a specific storage type
@@ -448,344 +446,40 @@ class CleanupTool:
         else:
             raise ValueError(f"Unsupported storage type: {storage_name}")
 
-    async def delete_query_caches_json(
-        self, storage, cleanup_type: str, stats: CleanupStats
-    ):
-        """Delete query caches from JsonKVStorage
-
-        Args:
-            storage: JsonKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        # Collect keys to delete
-        async with storage._storage_lock:
-            keys_to_delete = []
-            for key in storage._data.keys():
-                should_delete = False
-                for mode in QUERY_MODES:
-                    if cleanup_type == "all":
-                        if key.startswith(f"{mode}:query:") or key.startswith(
-                            f"{mode}:keywords:"
-                        ):
-                            should_delete = True
-                    elif cleanup_type == "query":
-                        if key.startswith(f"{mode}:query:"):
-                            should_delete = True
-                    elif cleanup_type == "keywords":
-                        if key.startswith(f"{mode}:keywords:"):
-                            should_delete = True
-
-                if should_delete:
-                    keys_to_delete.append(key)
-
-        # Delete in batches
-        total_keys = len(keys_to_delete)
-        stats.total_batches = (total_keys + self.batch_size - 1) // self.batch_size
-
-        print("\n=== Starting Cleanup ===")
-        print(
-            f"💡 Processing {self.batch_size:,} records at a time from JsonKVStorage\n"
-        )
-
-        for batch_idx in range(stats.total_batches):
-            start_idx = batch_idx * self.batch_size
-            end_idx = min((batch_idx + 1) * self.batch_size, total_keys)
-            batch_keys = keys_to_delete[start_idx:end_idx]
-
-            try:
-                async with storage._storage_lock:
-                    for key in batch_keys:
-                        del storage._data[key]
-
-                # CRITICAL: Set update flag so changes persist to disk
-                # Without this, deletions remain in-memory only and are lost on exit
-                await set_all_update_flags(
-                    storage.namespace, workspace=storage.workspace
-                )
-
-                # Success
-                stats.successful_batches += 1
-                stats.successfully_deleted += len(batch_keys)
-
-                # Calculate progress
-                progress = (stats.successfully_deleted / total_keys) * 100
-                bar_length = 20
-                filled_length = int(
-                    bar_length * stats.successfully_deleted // total_keys
-                )
-                bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-                print(
-                    f"Batch {batch_idx + 1}/{stats.total_batches}: {bar} "
-                    f"{stats.successfully_deleted:,}/{total_keys:,} ({progress:.1f}%) ✓"
-                )
-
-            except Exception as e:
-                stats.add_error(batch_idx + 1, e, len(batch_keys))
-                print(
-                    f"Batch {batch_idx + 1}/{stats.total_batches}: ✗ FAILED - "
-                    f"{type(e).__name__}: {str(e)}"
-                )
-
-    async def delete_query_caches_redis(
-        self, storage, cleanup_type: str, stats: CleanupStats
-    ):
-        """Delete query caches from RedisKVStorage
-
-        Args:
-            storage: RedisKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        # Build patterns to delete
-        patterns = []
-        for mode in QUERY_MODES:
-            if cleanup_type == "all":
-                patterns.append(f"{mode}:query:*")
-                patterns.append(f"{mode}:keywords:*")
-            elif cleanup_type == "query":
-                patterns.append(f"{mode}:query:*")
-            elif cleanup_type == "keywords":
-                patterns.append(f"{mode}:keywords:*")
-
-        print("\n=== Starting Cleanup ===")
-        print(f"💡 Processing Redis keys in batches of {self.batch_size:,}\n")
-
-        batch_idx = 0
-        total_deleted = 0
-
-        async with storage._get_redis_connection() as redis:
-            for pattern in patterns:
-                prefixed_pattern = f"{storage.final_namespace}:{pattern}"
-                cursor = 0
-
-                while True:
-                    cursor, keys = await redis.scan(
-                        cursor, match=prefixed_pattern, count=self.batch_size
-                    )
-
-                    if keys:
-                        batch_idx += 1
-                        stats.total_batches += 1
-
-                        try:
-                            # Delete batch using pipeline
-                            pipe = redis.pipeline()
-                            for key in keys:
-                                pipe.delete(key)
-                            await pipe.execute()
-
-                            # Success
-                            stats.successful_batches += 1
-                            stats.successfully_deleted += len(keys)
-                            total_deleted += len(keys)
-
-                            # Progress
-                            print(
-                                f"Batch {batch_idx}: Deleted {len(keys):,} keys "
-                                f"(Total: {total_deleted:,}) ✓"
-                            )
-
-                        except Exception as e:
-                            stats.add_error(batch_idx, e, len(keys))
-                            print(
-                                f"Batch {batch_idx}: ✗ FAILED - "
-                                f"{type(e).__name__}: {str(e)}"
-                            )
-
-                    if cursor == 0:
-                        break
-
-                    await asyncio.sleep(0)
-
-    async def delete_query_caches_pg(
-        self, storage, cleanup_type: str, stats: CleanupStats
-    ):
-        """Delete query caches from PostgreSQL
-
-        Args:
-            storage: PGKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        from lightrag.kg.postgres_impl import namespace_to_table_name
-
-        table_name = namespace_to_table_name(storage.namespace)
-
-        # Build WHERE conditions
-        conditions = []
-        for mode in QUERY_MODES:
-            if cleanup_type == "all":
-                conditions.append(f"id LIKE '{mode}:query:%'")
-                conditions.append(f"id LIKE '{mode}:keywords:%'")
-            elif cleanup_type == "query":
-                conditions.append(f"id LIKE '{mode}:query:%'")
-            elif cleanup_type == "keywords":
-                conditions.append(f"id LIKE '{mode}:keywords:%'")
-
-        where_clause = " OR ".join(conditions)
-
-        print("\n=== Starting Cleanup ===")
-        print("💡 Executing PostgreSQL DELETE query\n")
-
-        try:
-            query = f"""
-                DELETE FROM {table_name}
-                WHERE workspace = $1
-                AND ({where_clause})
-            """
-
-            start_time = time.time()
-            # Fix: Pass dict instead of list for execute() method
-            await storage.db.execute(query, {"workspace": storage.workspace})
-            elapsed = time.time() - start_time
-
-            # PostgreSQL returns deletion count
-            stats.total_batches = 1
-            stats.successful_batches = 1
-            stats.successfully_deleted = stats.total_to_delete
-
-            print(f"✓ Deleted {stats.successfully_deleted:,} records in {elapsed:.2f}s")
-
-        except Exception as e:
-            stats.add_error(1, e, stats.total_to_delete)
-            print(f"✗ DELETE failed: {type(e).__name__}: {str(e)}")
-
-    async def delete_query_caches_mongo(
-        self, storage, cleanup_type: str, stats: CleanupStats
-    ):
-        """Delete query caches from MongoDB
-
-        Args:
-            storage: MongoKVStorage instance
-            cleanup_type: 'all', 'query', or 'keywords'
-            stats: CleanupStats object to track progress
-        """
-        # Build regex patterns
-        patterns = []
-        for mode in QUERY_MODES:
-            if cleanup_type == "all":
-                patterns.append(f"^{mode}:query:")
-                patterns.append(f"^{mode}:keywords:")
-            elif cleanup_type == "query":
-                patterns.append(f"^{mode}:query:")
-            elif cleanup_type == "keywords":
-                patterns.append(f"^{mode}:keywords:")
-
-        print("\n=== Starting Cleanup ===")
-        print("💡 Executing MongoDB deleteMany operations\n")
-
-        total_deleted = 0
-        for idx, pattern in enumerate(patterns, 1):
-            try:
-                query = {"_id": {"$regex": pattern}}
-                result = await storage._data.delete_many(query)
-                deleted_count = result.deleted_count
-
-                stats.total_batches += 1
-                stats.successful_batches += 1
-                stats.successfully_deleted += deleted_count
-                total_deleted += deleted_count
-
-                print(
-                    f"Pattern {idx}/{len(patterns)}: Deleted {deleted_count:,} records ✓"
-                )
-
-            except Exception as e:
-                stats.add_error(idx, e, 0)
-                print(
-                    f"Pattern {idx}/{len(patterns)}: ✗ FAILED - "
-                    f"{type(e).__name__}: {str(e)}"
-                )
-
-        print(f"\nTotal deleted: {total_deleted:,} records")
-
-    async def delete_query_caches_opensearch(
-        self, storage, cleanup_type: str, stats: CleanupStats
-    ):
-        """Delete query caches from OpenSearchKVStorage."""
-        keys_to_delete = []
-
-        async for hits in storage._iter_raw_docs(batch_size=self.batch_size):
-            for hit in hits:
-                key = hit["_id"]
-                should_delete = False
-                for mode in QUERY_MODES:
-                    if cleanup_type == "all":
-                        if key.startswith(f"{mode}:query:") or key.startswith(
-                            f"{mode}:keywords:"
-                        ):
-                            should_delete = True
-                    elif cleanup_type == "query":
-                        if key.startswith(f"{mode}:query:"):
-                            should_delete = True
-                    elif cleanup_type == "keywords":
-                        if key.startswith(f"{mode}:keywords:"):
-                            should_delete = True
-
-                if should_delete:
-                    keys_to_delete.append(key)
-
-        total_keys = len(keys_to_delete)
-        stats.total_batches = (total_keys + self.batch_size - 1) // self.batch_size
-
-        print("\n=== Starting Cleanup ===")
-        print(
-            f"💡 Processing {self.batch_size:,} records at a time from OpenSearchKVStorage\n"
-        )
-
-        for batch_idx in range(stats.total_batches):
-            start_idx = batch_idx * self.batch_size
-            end_idx = min((batch_idx + 1) * self.batch_size, total_keys)
-            batch_keys = keys_to_delete[start_idx:end_idx]
-
-            try:
-                await storage.delete(batch_keys)
-                stats.successful_batches += 1
-                stats.successfully_deleted += len(batch_keys)
-
-                progress = (stats.successfully_deleted / total_keys) * 100
-                bar_length = 20
-                filled_length = int(
-                    bar_length * stats.successfully_deleted // total_keys
-                )
-                bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
-                print(
-                    f"Batch {batch_idx + 1}/{stats.total_batches}: {bar} "
-                    f"{stats.successfully_deleted:,}/{total_keys:,} ({progress:.1f}%) ✓"
-                )
-            except Exception as e:
-                stats.add_error(batch_idx + 1, e, len(batch_keys))
-                print(
-                    f"Batch {batch_idx + 1}/{stats.total_batches}: ✗ FAILED - "
-                    f"{type(e).__name__}: {str(e)}"
-                )
-
     async def delete_query_caches(
         self, storage, storage_name: str, cleanup_type: str, stats: CleanupStats
     ):
-        """Delete query caches from any storage type
+        """Delete query caches through the storage's own implementation
+
+        ``BaseKVStorage.delete_by_cache_types`` is the single implementation
+        the server's ``DELETE /documents/query_cache`` route also uses, so the
+        tool and the route cannot drift apart. The caller persists afterwards
+        (``index_done_callback``) for the deferred backends.
 
         Args:
             storage: Storage instance
-            storage_name: Storage type name
+            storage_name: Storage type name (for display only)
             cleanup_type: 'all', 'query', or 'keywords'
             stats: CleanupStats object to track progress
         """
-        if storage_name == "JsonKVStorage":
-            await self.delete_query_caches_json(storage, cleanup_type, stats)
-        elif storage_name == "RedisKVStorage":
-            await self.delete_query_caches_redis(storage, cleanup_type, stats)
-        elif storage_name == "PGKVStorage":
-            await self.delete_query_caches_pg(storage, cleanup_type, stats)
-        elif storage_name == "MongoKVStorage":
-            await self.delete_query_caches_mongo(storage, cleanup_type, stats)
-        elif storage_name == "OpenSearchKVStorage":
-            await self.delete_query_caches_opensearch(storage, cleanup_type, stats)
-        else:
-            raise ValueError(f"Unsupported storage type: {storage_name}")
+        cache_types = set(CACHE_TYPES) if cleanup_type == "all" else {cleanup_type}
+
+        print("\n=== Starting Cleanup ===")
+        print(f"💡 Deleting {sorted(cache_types)} caches from {storage_name}\n")
+
+        stats.total_batches = 1
+        start_time = time.time()
+        try:
+            deleted = await storage.delete_by_cache_types(cache_types)
+        except Exception as e:
+            stats.add_error(1, e, stats.total_to_delete)
+            print(f"✗ DELETE failed: {type(e).__name__}: {str(e)}")
+            return
+        elapsed = time.time() - start_time
+
+        stats.successful_batches = 1
+        stats.successfully_deleted = deleted
+        print(f"✓ Deleted {deleted:,} records in {elapsed:.2f}s")
 
     def print_header(self):
         """Print tool header"""
