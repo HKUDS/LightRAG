@@ -122,7 +122,7 @@ Set `LIGHTRAG_RUN_INTEGRATION=true` as an environment variable as an alternative
 2. **Make your changes** and ensure:
    - Pre-commit checks pass: `pre-commit run --all-files`
    - Relevant tests pass: `python -m pytest tests`
-   - New behavior is covered by tests where applicable
+   - New behavior is covered by tests where applicable, by extending the existing tests of the changed code first (an assertion or a `parametrize` case) and adding a new test function only when none fits; see [*Writing backend tests*](../AGENTS.md#writing-backend-tests) in AGENTS.md
 
 3. **Commit** with a clear message describing *why* the change was made:
    ```bash
@@ -137,7 +137,7 @@ Set `LIGHTRAG_RUN_INTEGRATION=true` as an environment variable as an alternative
 
 - [ ] Changes tested locally
 - [ ] Pre-commit checks pass (`pre-commit run --all-files`)
-- [ ] Unit/integration tests added or updated where applicable
+- [ ] Unit/integration tests extended or added where applicable (existing tests first; a new test function says in the PR which existing test it could not join)
 - [ ] Documentation updated if behavior changes
 - [ ] README changes applied to all four language versions (`README.md`, `-zh`, `-ja`, `-id`), line counts equal
 - [ ] PR description explains the *why*, not just the *what*

@@ -25,8 +25,8 @@ This template helps contributors provide a clear and concise description of thei
 - [ ] Changes tested locally
 - [ ] Code reviewed
 - [ ] Documentation updated (if necessary)
-- [ ] Unit tests added (if applicable)
+- [ ] Tests extended or added (if applicable): existing tests of the changed code were extended first; each new test function names the existing test considered and why it could not take the case ([AGENTS.md, *Writing backend tests*](../AGENTS.md#writing-backend-tests))
 
 ## Additional Notes
 
-[Add any additional notes or context for the reviewer(s).]
+[Add any additional notes or context for the reviewer(s). If tests changed: which test subset you ran, its pass count, and the net change in test count.]
