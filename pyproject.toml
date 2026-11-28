@@ -217,6 +217,7 @@ lightrag-gc-llm-cache = "lightrag.tools.gc_llm_cache:main"
 lightrag-rebuild-vdb = "lightrag.tools.rebuild_vdb:main"
 lightrag-clear-storage = "lightrag.tools.clear_storage:main"
 lightrag-migrate-config = "lightrag.tools.migrate_config:main"
+lightrag-export-graph = "lightrag.tools.export_graph:main"
 
 [project.urls]
 Homepage = "https://github.com/HKUDS/LightRAG"
