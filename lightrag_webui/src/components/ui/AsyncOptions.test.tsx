@@ -63,7 +63,7 @@ describe('Async primitive accessibility', () => {
     expect(input.disabled).toBe(true)
   })
 
-  test('AsyncSearch keeps focus on the input after a selection and reopens on click', async () => {
+  test.each(['click', 'ArrowDown'] as const)('AsyncSearch keeps focus on the input after a selection and reopens on %s', async (reopen) => {
     renderWithProviders(<AsyncSearch {...searchProps} />)
     const input = screen.getByPlaceholderText('Search entities') as HTMLInputElement
     // Real focus() so document.activeElement moves (fireEvent.focus does not
@@ -76,8 +76,9 @@ describe('Async primitive accessibility', () => {
     fireEvent.click(option)
     expect(document.activeElement === input).toBe(true)
     await waitFor(() => expect(screen.queryAllByRole('option')).toHaveLength(0))
-    // Focus is already on the input, so only the click handler can reopen.
-    fireEvent.click(input)
+    // Focus is already on the input, so only the click or key handler can reopen.
+    if (reopen === 'click') fireEvent.click(input)
+    else fireEvent.keyDown(input, { key: 'ArrowDown' })
     expect(await screen.findByText('Alpha')).toBeTruthy()
     expect(screen.queryAllByRole('option')).toHaveLength(1)
   })

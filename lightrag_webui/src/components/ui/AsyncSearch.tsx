@@ -172,8 +172,13 @@ export function AsyncSearch<T>({
     if (e.key === 'Escape' && open) {
       e.preventDefault()
       setOpen(false)
+    } else if (e.key === 'ArrowDown' && !open && !disabled) {
+      // Focus stays on the input after a selection or Escape, so neither a
+      // focus event nor a value change reopens the results: ArrowDown does.
+      setOpen(true)
+      fetchOptions(searchTerm)
     }
-  }, [open])
+  }, [open, disabled, searchTerm, fetchOptions])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
