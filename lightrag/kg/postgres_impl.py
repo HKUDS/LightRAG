@@ -71,6 +71,8 @@ from ..exceptions import (
 from ..namespace import CONFIG_CONTAINER_TAG, NameSpace, is_namespace
 from ..utils import (
     logger,
+    ENV_BOOL_TRUE_WORDS,
+    ENV_BOOL_FALSE_WORDS,
     compute_mdhash_id,
     _cooperative_yield,
     get_env_value,
@@ -482,6 +484,48 @@ def _safe_index_name(table_name: str, index_suffix: str) -> str:
     return shortened_name
 
 
+async def _pg_vector_sibling_tables(
+    db: "PostgreSQLDB", base_table: str, table_name: str
+) -> list[str]:
+    """Find the exact tables workspace cleanup would delete from.
+
+    Share discovery with No-DDL privilege validation so startup and cleanup
+    cannot disagree about the tables whose workspace rows must be removable.
+    Visibility follows the whole search path, not just current_schema().
+    """
+    rows = await db.query(
+        """
+        SELECT c.relname AS table_name
+        FROM pg_catalog.pg_class c
+        WHERE c.relkind IN ('r', 'p')
+          AND pg_catalog.pg_table_is_visible(c.oid)
+          AND c.relname LIKE $1
+          AND c.relname <> $2
+          AND EXISTS (
+              SELECT 1 FROM pg_catalog.pg_attribute a
+              WHERE a.attrelid = c.oid
+                AND a.attname = 'workspace'
+                AND NOT a.attisdropped)
+          AND EXISTS (
+              SELECT 1 FROM pg_catalog.pg_attribute a
+              WHERE a.attrelid = c.oid
+                AND a.attname = 'content_vector'
+                AND NOT a.attisdropped)
+        """,
+        [base_table.lower() + "\\_%", table_name.lower()],
+        multirows=True,
+    )
+    prefix = base_table.lower() + "_"
+    # LIKE treats underscores as wildcards; only names the suffix fold can
+    # produce may be formatted into a DELETE statement.
+    return [
+        row["table_name"]
+        for row in rows or []
+        if row["table_name"].startswith(prefix)
+        and _MODEL_TABLE_RE.fullmatch(row["table_name"])
+    ]
+
+
 def _timing_details_suffix(**details: Any) -> str:
     parts = [f"{key}={value}" for key, value in details.items()]
     return f" {' '.join(parts)}" if parts else ""
@@ -558,8 +602,22 @@ _INITIALIZED_GRAPHS_LOOKUP = (
 )
 
 
+def _postgres_auto_migrate(value: Any) -> bool:
+    """Parse an explicit migration policy strictly; typos must never enable DDL."""
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized not in ENV_BOOL_TRUE_WORDS + ENV_BOOL_FALSE_WORDS:
+        raise ValueError(
+            "POSTGRES_AUTO_MIGRATE / [postgres] auto_migrate must be a boolean "
+            "(true/false, yes/no, on/off, t/f, 1/0; blank means false)."
+        )
+    return normalized in ENV_BOOL_TRUE_WORDS
+
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
+        self.auto_migrate = _postgres_auto_migrate(config.get("auto_migrate", True))
         self.host = config["host"]
         self.port = config["port"]
         self.user = config["user"]
@@ -1105,18 +1163,37 @@ class PostgreSQLDB:
         )
 
     async def configure_vector_extension(self, connection: asyncpg.Connection) -> None:
-        """Create VECTOR extension if it doesn't exist for vector similarity operations.
+        """Provision pgvector, or require an existing extension in No-DDL mode.
 
         When vector_index_type is HNSW_HALFVEC, validates that pgvector >= 0.7.0
         (required for halfvec support) and raises RuntimeError if older.
         """
-        try:
-            await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
-            logger.info("PostgreSQL, VECTOR extension enabled")
-        except Exception as e:
-            logger.warning(f"Could not create VECTOR extension: {e}")
-            # Don't raise - let the system continue without vector extension
-            return
+        if getattr(self, "auto_migrate", True):
+            try:
+                await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                logger.info("PostgreSQL, VECTOR extension enabled")
+            except Exception as e:
+                logger.warning(f"Could not create VECTOR extension: {e}")
+                # Preserve the automatic mode's existing best-effort behavior.
+                return
+        else:
+            row = await connection.fetchrow(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            if not row or not row["extversion"]:
+                raise RuntimeError(
+                    "POSTGRES_AUTO_MIGRATE=false: PGVectorStorage requires the vector "
+                    "extension. Have an administrator install pgvector in this database."
+                )
+            if self.vector_index_type == "VCHORDRQ":
+                extension = await connection.fetchrow(
+                    "SELECT extversion FROM pg_extension WHERE extname = 'vchord'"
+                )
+                if not extension:
+                    raise RuntimeError(
+                        "POSTGRES_AUTO_MIGRATE=false: VCHORDRQ requires the vchord "
+                        "extension. Have an administrator install VectorChord."
+                    )
 
         if getattr(self, "vector_index_type", None) == "HNSW_HALFVEC":
             row = await connection.fetchrow(
@@ -2655,6 +2732,22 @@ class PostgreSQLDB:
             logger.error(f"Failed to batch check field lengths: {e}")
 
     async def check_tables(self):
+        if getattr(self, "auto_migrate", True) is False:
+            from .postgres_schema import COMMON_TABLES, validate_table
+
+            for table, columns in COMMON_TABLES.items():
+                await validate_table(self, table, columns)
+            # A failed read must not become "no migration needed" here.
+            legacy_cache = await self.query(
+                "SELECT 1 FROM LIGHTRAG_LLM_CACHE WHERE id NOT LIKE '%:%' LIMIT 1"
+            )
+            if legacy_cache is not None:
+                raise RuntimeError(
+                    "POSTGRES_AUTO_MIGRATE=false: LIGHTRAG_LLM_CACHE needs flattened "
+                    "cache keys. Have an administrator run initialization with "
+                    "POSTGRES_AUTO_MIGRATE=true before starting runtime workers."
+                )
+            return
         # Vector tables that should be skipped - they are created by PGVectorStorage.setup_table()
         # with proper embedding model and dimension suffix for data isolation
         vector_tables_to_skip = {
@@ -3232,8 +3325,8 @@ class ClientManager:
     """Manage the process-wide PostgreSQL client pool shared by PG storages.
 
     The first successful initialization defines the pool configuration for the
-    lifetime of the shared client. Reusing the pool with a different vector
-    storage setup is not supported and will raise a fail-fast error.
+    lifetime of the shared client. Reusing it with a different migration policy
+    or vector storage setup is not supported and raises a fail-fast error.
     """
 
     _instances: dict[str, Any] = {
@@ -3249,6 +3342,12 @@ class ClientManager:
         config.read("config.ini", "utf-8")
 
         return {
+            "auto_migrate": _postgres_auto_migrate(
+                os.environ.get(
+                    "POSTGRES_AUTO_MIGRATE",
+                    config.get("postgres", "auto_migrate", fallback="true"),
+                )
+            ),
             "host": os.environ.get(
                 "POSTGRES_HOST",
                 config.get("postgres", "host", fallback="localhost"),
@@ -3406,6 +3505,7 @@ class ClientManager:
         cls, config: dict[str, Any], vector_storage: str | None
     ) -> dict[str, Any]:
         signature = {
+            "auto_migrate": config.get("auto_migrate", True),
             "vector_storage": vector_storage,
             "enable_vector": config["enable_vector"],
         }
@@ -3443,16 +3543,28 @@ class ClientManager:
     async def get_client(cls, vector_storage: str | None = None) -> PostgreSQLDB:
         """Return the shared PostgreSQL client for all PG storages in this process.
 
-        The first caller fixes the vector-related pool configuration. Later calls
-        must provide a compatible vector storage setup or a RuntimeError is raised.
+        The first caller fixes the migration policy and vector pool configuration.
+        Later calls must provide compatible settings or a RuntimeError is raised.
         """
         async with cls._lock:
             config = ClientManager.get_config(vector_storage=vector_storage)
             requested_signature = cls._build_vector_signature(config, vector_storage)
             if cls._instances["db"] is None:
                 db = PostgreSQLDB(config)
-                await db.initdb()
-                await db.check_tables()
+                try:
+                    await db.initdb()
+                    await db.check_tables()
+                except BaseException:
+                    # A failed validator must not publish or leak an unowned pool.
+                    if db.pool is not None:
+                        try:
+                            await asyncio.wait_for(
+                                db.pool.close(), timeout=db.pool_close_timeout
+                            )
+                        except BaseException:
+                            db.pool.terminate()
+                        db.pool = None
+                    raise
                 cls._instances["db"] = db
                 cls._instances["ref_count"] = 0
                 cls._instances["vector_signature"] = requested_signature
@@ -4707,6 +4819,14 @@ class PGVectorStorage(BaseVectorStorage):
         _check_vector_index_dimension(
             getattr(db, "vector_index_type", None), embedding_dim
         )
+
+        if getattr(db, "auto_migrate", True) is False:
+            from .postgres_schema import validate_vector_table
+
+            await validate_vector_table(
+                db, table_name, base_table, workspace, embedding_dim, legacy_table_name
+            )
+            return
 
         new_table_exists = await db.check_table_exists(table_name)
         legacy_exists = legacy_table_name and await db.check_table_exists(
@@ -6118,45 +6238,11 @@ class PGVectorStorage(BaseVectorStorage):
         migrate back on the next start.
         """
         try:
-            # Visibility, not a schema name: ``pg_table_is_visible`` resolves
-            # exactly as the unqualified names in every other statement here
-            # do (and as ``check_table_exists``'s ``to_regclass``).
-            # ``current_schema()`` is only the FIRST schema on the search
-            # path, which is not where the tables are once another schema
-            # precedes ``public`` -- a ``"$user"`` schema, or ``ag_catalog``
-            # on a connection AGE configured -- and a sibling this query
-            # misses is reported as a clean sweep.
-            rows = await self.db.query(
-                """
-                SELECT c.relname AS table_name
-                FROM pg_catalog.pg_class c
-                WHERE c.relkind IN ('r', 'p')
-                  AND pg_catalog.pg_table_is_visible(c.oid)
-                  AND c.relname LIKE $1
-                  AND c.relname <> $2
-                  AND EXISTS (
-                      SELECT 1 FROM pg_catalog.pg_attribute a
-                      WHERE a.attrelid = c.oid
-                        AND a.attname = 'workspace'
-                        AND NOT a.attisdropped)
-                  AND EXISTS (
-                      SELECT 1 FROM pg_catalog.pg_attribute a
-                      WHERE a.attrelid = c.oid
-                        AND a.attname = 'content_vector'
-                        AND NOT a.attisdropped)
-                """,
-                [self.legacy_table_name.lower() + "\\_%", self.table_name.lower()],
-                multirows=True,
+            tables = await _pg_vector_sibling_tables(
+                self.db, self.legacy_table_name, self.table_name
             )
             cleared = []
-            prefix = self.legacy_table_name.lower() + "_"
-            for row in rows or []:
-                name = row["table_name"]
-                # LIKE treats the base name's own underscores as wildcards, and
-                # the name is formatted into SQL below: accept only the exact
-                # prefix and the identifier shape the suffix fold produces.
-                if not name.startswith(prefix) or not _MODEL_TABLE_RE.fullmatch(name):
-                    continue
+            for name in tables:
                 sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                     table_name=name
                 )
@@ -8163,6 +8249,18 @@ class PGGraphStorage(BaseGraphStorage):
         return normalized_id
 
     async def initialize(self):
+        policy = (
+            getattr(self.db, "auto_migrate", True)
+            if self.db is not None
+            else ClientManager.get_config(self.global_config.get("vector_storage"))[
+                "auto_migrate"
+            ]
+        )
+        if policy is False:
+            raise ValueError(
+                "POSTGRES_AUTO_MIGRATE=false does not support AGE-based PGGraphStorage. "
+                "Use PGTableGraphStorage or enable administrative automatic migrations."
+            )
         async with get_data_init_lock():
             if self.db is None:
                 self.db = await ClientManager.get_client(

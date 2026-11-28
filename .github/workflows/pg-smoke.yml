@@ -13,6 +13,7 @@ on:
       # PG backends and the startup migration they serve
       - 'lightrag/kg/pgtable_impl.py'
       - 'lightrag/kg/postgres_impl.py'
+      - 'lightrag/kg/postgres_schema.py'
       - 'lightrag/storage_migrations.py'
       # Shared storage layer
       - 'lightrag/kg/__init__.py'
@@ -119,4 +120,5 @@ jobs:
         run: |
           pytest tests/kg/pgtable_impl/test_pgtable_smoke.py \
             tests/kg/postgres_impl/test_postgres_anchor_migration_smoke.py \
+            tests/kg/postgres_impl/test_postgres_no_ddl_integration.py \
             -m pg_smoke --run-integration -v --tb=short

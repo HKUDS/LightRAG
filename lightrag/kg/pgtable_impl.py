@@ -536,8 +536,20 @@ class PGTableGraphStorage(BaseGraphStorage):
                     self.workspace = self.db.workspace
                 elif not getattr(self, "workspace", None):
                     self.workspace = "default"
-                await self._db.execute(_DDL)
-                await self._normalize_legacy_edges()
+                try:
+                    if getattr(self._db, "auto_migrate", True) is False:
+                        from .postgres_schema import validate_graph_tables
+
+                        await validate_graph_tables(
+                            self._db, self.workspace, self.namespace
+                        )
+                    else:
+                        await self._db.execute(_DDL)
+                        await self._normalize_legacy_edges()
+                except BaseException:
+                    await ClientManager.release_client(self.db)
+                    self.db = None
+                    raise
         logger.info(f"[{self.workspace}] PGTableGraphStorage initialized")
 
     async def finalize(self) -> None:
