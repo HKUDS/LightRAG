@@ -35,7 +35,37 @@ class _Stream:
             raise StopAsyncIteration from exc
 
 
-async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
+def _client(response):
+    create = AsyncMock(return_value=response)
+    return create, SimpleNamespace(
+        messages=SimpleNamespace(create=create),
+        close=AsyncMock(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("cache_creation", "cache_read", "prompt_tokens", "cache_counts"),
+    [
+        pytest.param(
+            3,
+            2,
+            15,
+            {"cached_prompt_tokens": 2, "cache_creation_tokens": 3},
+            id="cache-counts-reported",
+        ),
+        pytest.param(
+            0,
+            0,
+            10,
+            {"cached_prompt_tokens": 0, "cache_creation_tokens": 0},
+            id="reported-zero-is-kept",
+        ),
+        pytest.param(None, None, 10, {}, id="not-reported-is-left-out"),
+    ],
+)
+async def test_non_streaming_usage_is_tracked_without_reaching_sdk(
+    cache_creation, cache_read, prompt_tokens, cache_counts
+):
     tracker = TokenTracker()
     response = SimpleNamespace(
         content=[SimpleNamespace(type="text", text="answer")],
@@ -43,8 +73,8 @@ async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
         usage=_usage(
             input_tokens=10,
             output_tokens=4,
-            cache_creation=3,
-            cache_read=2,
+            cache_creation=cache_creation,
+            cache_read=cache_read,
         ),
     )
     create = AsyncMock(return_value=response)
@@ -63,10 +93,11 @@ async def test_non_streaming_usage_is_tracked_without_reaching_sdk():
 
     assert result == "answer"
     assert tracker.get_usage() == {
-        "prompt_tokens": 15,
+        "prompt_tokens": prompt_tokens,
         "completion_tokens": 4,
-        "total_tokens": 19,
+        "total_tokens": prompt_tokens + 4,
         "call_count": 1,
+        **cache_counts,
     }
     assert "token_tracker" not in create.await_args.kwargs
 
@@ -158,6 +189,53 @@ async def test_streaming_usage_is_tracked_after_full_consumption():
         "completion_tokens": 5,
         "total_tokens": 18,
         "call_count": 1,
+        "cached_prompt_tokens": 3,
+        "cache_creation_tokens": 2,
     }
     assert "token_tracker" not in create.await_args.kwargs
     stream.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("cache_system_prompt", "system_prompt", "expected_system"),
+    [
+        pytest.param(False, "rules", "rules", id="off-sends-plain-string"),
+        pytest.param(
+            True,
+            "rules",
+            [
+                {
+                    "type": "text",
+                    "text": "rules",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            id="on-marks-system-block",
+        ),
+        pytest.param(True, None, None, id="on-without-system-prompt"),
+    ],
+)
+async def test_cache_system_prompt_sets_breakpoint_on_system_only(
+    cache_system_prompt, system_prompt, expected_system
+):
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="answer")],
+        stop_reason="end_turn",
+        usage=_usage(input_tokens=10, output_tokens=4),
+    )
+    create, client = _client(response)
+
+    with patch("lightrag.llm.anthropic.AsyncAnthropic", return_value=client):
+        await anthropic_complete_if_cache(
+            model="claude-test",
+            prompt="chunk text",
+            system_prompt=system_prompt,
+            api_key="test-key",
+            cache_system_prompt=cache_system_prompt,
+        )
+
+    sent = create.await_args.kwargs
+    assert sent.get("system") == expected_system
+    assert "cache_system_prompt" not in sent
+    # the per-chunk part stays uncached
+    assert sent["messages"] == [{"role": "user", "content": "chunk text"}]

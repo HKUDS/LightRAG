@@ -7444,6 +7444,7 @@ class TokenTracker:
     def reset(self):
         self.prompt_tokens = 0
         self.cached_prompt_tokens: int | None = None
+        self.cache_creation_tokens: int | None = None
         self.completion_tokens = 0
         self.total_tokens = 0
         self.call_count = 0
@@ -7454,6 +7455,9 @@ class TokenTracker:
         Args:
             token_counts: Prompt, completion, and total token counts. A missing
                 or None total is estimated from the available component counts.
+                Optional ``cached_prompt_tokens`` (prompt tokens read from the
+                provider's cache) and ``cache_creation_tokens`` (prompt tokens
+                written to it) are both already part of ``prompt_tokens``.
         """
         prompt_tokens = token_counts.get("prompt_tokens") or 0
         completion_tokens = token_counts.get("completion_tokens") or 0
@@ -7468,6 +7472,11 @@ class TokenTracker:
         cached_tokens = token_counts.get("cached_prompt_tokens")
         if cached_tokens is not None:
             self.cached_prompt_tokens = (self.cached_prompt_tokens or 0) + cached_tokens
+        cache_creation = token_counts.get("cache_creation_tokens")
+        if cache_creation is not None:
+            self.cache_creation_tokens = (
+                self.cache_creation_tokens or 0
+            ) + cache_creation
 
     def get_usage(self):
         """Get current usage statistics."""
@@ -7479,6 +7488,8 @@ class TokenTracker:
         }
         if self.cached_prompt_tokens is not None:
             usage["cached_prompt_tokens"] = self.cached_prompt_tokens
+        if self.cache_creation_tokens is not None:
+            usage["cache_creation_tokens"] = self.cache_creation_tokens
         return usage
 
     def __str__(self):
@@ -7491,6 +7502,8 @@ class TokenTracker:
         )
         if self.cached_prompt_tokens is not None:
             summary += f", Cached prompt tokens: {self.cached_prompt_tokens}"
+        if self.cache_creation_tokens is not None:
+            summary += f", Cache write tokens: {self.cache_creation_tokens}"
         return summary
 
 
