@@ -353,12 +353,22 @@ def _extract_refusal(response: Any) -> str:
 
 
 def _usage_counts(usage: Any) -> dict[str, int]:
-    """Map Responses usage onto the TokenTracker's Chat Completions key names."""
-    return {
+    """Map Responses usage onto the TokenTracker's Chat Completions key names.
+
+    ``cached_prompt_tokens`` (``input_tokens_details.cached_tokens``, a subset
+    of ``prompt_tokens``) is sent only when the provider reports it; a reported
+    zero is kept, as on the Chat Completions binding.
+    """
+    counts = {
         "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
         "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
         "total_tokens": getattr(usage, "total_tokens", 0) or 0,
     }
+    details = getattr(usage, "input_tokens_details", None)
+    cached_tokens = getattr(details, "cached_tokens", None)
+    if cached_tokens is not None:
+        counts["cached_prompt_tokens"] = cached_tokens
+    return counts
 
 
 def _failure_reason(terminal: Any) -> str:
