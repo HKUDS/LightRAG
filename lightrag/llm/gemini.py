@@ -35,6 +35,7 @@ from lightrag.utils import (
     logger,
     remove_think_tags,
     safe_unicode_decode,
+    StreamingUnicodeDecoder,
     wrap_embedding_func_with_attrs,
 )
 
@@ -551,6 +552,8 @@ async def gemini_complete_if_cache(
             cot_started = False
             initial_content_seen = False
             usage_metadata = None
+            regular_decoder = StreamingUnicodeDecoder()
+            thought_decoder = StreamingUnicodeDecoder()
 
             try:
                 # Use native async streaming from genai SDK
@@ -576,15 +579,14 @@ async def gemini_complete_if_cache(
 
                             # Close COT section if it was active
                             if cot_active:
+                                if tail := thought_decoder.flush():
+                                    yield tail
                                 yield "</think>"
                                 cot_active = False
 
                             # Process and yield regular content
-                            if "\\u" in regular_text:
-                                regular_text = safe_unicode_decode(
-                                    regular_text.encode("utf-8")
-                                )
-                            yield regular_text
+                            if text := regular_decoder.feed(regular_text):
+                                yield text
 
                         # Process thought content
                         if thought_text:
@@ -596,22 +598,20 @@ async def gemini_complete_if_cache(
 
                             # Yield thought content if COT is active
                             if cot_active:
-                                if "\\u" in thought_text:
-                                    thought_text = safe_unicode_decode(
-                                        thought_text.encode("utf-8")
-                                    )
-                                yield thought_text
+                                if text := thought_decoder.feed(thought_text):
+                                    yield text
                     else:
                         # COT disabled - only yield regular content
                         if regular_text:
-                            if "\\u" in regular_text:
-                                regular_text = safe_unicode_decode(
-                                    regular_text.encode("utf-8")
-                                )
-                            yield regular_text
+                            if text := regular_decoder.feed(regular_text):
+                                yield text
 
+                if tail := regular_decoder.flush():
+                    yield tail
                 # Ensure COT is properly closed if still active
                 if cot_active:
+                    if tail := thought_decoder.flush():
+                        yield tail
                     yield "</think>"
                     cot_active = False
 

@@ -463,6 +463,29 @@ async def test_streaming_wraps_reasoning_in_think_tags(monkeypatch):
     assert await _collect(result) == "<think>step one</think>answer"
 
 
+async def test_streaming_decodes_escapes_split_across_deltas(monkeypatch):
+    # Reasoning and body are two texts; the reasoning's open escape is flushed
+    # before </think>, the body's at the end of the stream.
+    stream = _FakeStream(
+        [
+            _delta("response.reasoning_summary_text.delta", r"think \ud83d"),
+            _delta("response.reasoning_summary_text.delta", r"\ude00 \u4f"),
+            _delta("response.output_text.delta", r"ans\u00"),
+            _delta("response.output_text.delta", r"41 \u4f"),
+            _completed(),
+        ]
+    )
+    _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache(
+        "gpt-5.6", "hi", stream=True, enable_cot=True
+    )
+
+    assert await _collect(result) == (
+        "<think>think 😀 " + r"\u4f" + "</think>ansA " + r"\u4f"
+    )
+
+
 async def test_streaming_closes_think_tag_when_no_body_text_follows(monkeypatch):
     stream = _FakeStream(
         [

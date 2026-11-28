@@ -38,6 +38,7 @@ from lightrag.utils import (
     provider_timeout,
     wrap_embedding_func_with_attrs,
     safe_unicode_decode,
+    StreamingUnicodeDecoder,
     empty_length_truncated_hint,
     logger,
     TruncatedResponse,
@@ -707,6 +708,8 @@ async def openai_complete_if_cache(
             cot_active = False
             cot_started = False
             initial_content_seen = False
+            content_decoder = StreamingUnicodeDecoder()
+            reasoning_decoder = StreamingUnicodeDecoder()
             # Set on GeneratorExit and CancelledError: the finally block must
             # not yield on either, or cleanup is suspended before the stream
             # and client are closed.
@@ -752,13 +755,14 @@ async def openai_complete_if_cache(
 
                             # If COT was active, end it
                             if cot_active:
+                                if tail := reasoning_decoder.flush():
+                                    yield tail
                                 yield "</think>"
                                 cot_active = False
 
                             # Process regular content
-                            if r"\u" in content:
-                                content = safe_unicode_decode(content.encode("utf-8"))
-                            yield content
+                            if text := content_decoder.feed(content):
+                                yield text
 
                         elif reasoning_content:
                             # Only reasoning content is present
@@ -771,24 +775,24 @@ async def openai_complete_if_cache(
 
                             # Process reasoning content if COT is active
                             if cot_active:
-                                if r"\u" in reasoning_content:
-                                    reasoning_content = safe_unicode_decode(
-                                        reasoning_content.encode("utf-8")
-                                    )
-                                yield reasoning_content
+                                if text := reasoning_decoder.feed(reasoning_content):
+                                    yield text
                     else:
                         # COT disabled, only process regular content
                         if content:
-                            if r"\u" in content:
-                                content = safe_unicode_decode(content.encode("utf-8"))
-                            yield content
+                            if text := content_decoder.feed(content):
+                                yield text
 
                     # If neither content nor reasoning_content, continue to next chunk
                     if content is None and reasoning_content is None:
                         continue
 
+                if tail := content_decoder.flush():
+                    yield tail
                 # Ensure COT is properly closed if still active after stream ends
                 if enable_cot and cot_active:
+                    if tail := reasoning_decoder.flush():
+                        yield tail
                     yield "</think>"
                     cot_active = False
 

@@ -385,6 +385,57 @@ async def test_gemini_streaming_structured_output_disables_cot(monkeypatch, requ
     ]
 
 
+@pytest.mark.offline
+@pytest.mark.asyncio
+async def test_gemini_streaming_decodes_escapes_split_across_chunks(
+    monkeypatch, request
+):
+    # Thoughts and answer are two texts; the thought's open escape is flushed
+    # before </think>, the answer's at the end of the stream.
+    gemini_module = _load_gemini_module(monkeypatch, request)
+    responses = [
+        _make_fake_gemini_response(thought_text=r"think \ud83d"),
+        _make_fake_gemini_response(thought_text=r"\ude00 \u4f"),
+        _make_fake_gemini_response(regular_text=r"ans\u00"),
+        _make_fake_gemini_response(regular_text=r"41 \u4f"),
+    ]
+
+    async def _chunks():
+        for response in responses:
+            yield response
+
+    async def _fake_generate_content_stream(**kwargs):
+        return _chunks()
+
+    fake_client = SimpleNamespace(
+        aio=SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content_stream=_fake_generate_content_stream
+            )
+        )
+    )
+    monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
+
+    stream = await gemini_module.gemini_complete_if_cache(
+        model="gemini-model",
+        prompt="hello",
+        stream=True,
+        enable_cot=True,
+        api_key="test-key",
+    )
+
+    assert [chunk async for chunk in stream] == [
+        "<think>",
+        "think ",
+        "😀 ",
+        r"\u4f",
+        "</think>",
+        "ans",
+        "A ",
+        r"\u4f",
+    ]
+
+
 def _make_nonstreaming_client(fake_response):
     async def _fake_generate_content(**kwargs):
         return fake_response

@@ -4853,22 +4853,69 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     await hashing_kv.upsert({flattened_key: cache_entry})
 
 
+_UNICODE_ESCAPE_RUN_PATTERN = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
+_LONE_SURROGATE_PATTERN = re.compile("[\ud800-\udfff]")
+# The longest suffix the next streamed chunk could still extend into another
+# decoding: a high-surrogate escape awaiting its low half, and/or an escape
+# cut before its fourth hex digit (down to a bare backslash).
+_OPEN_ESCAPE_SUFFIX_PATTERN = re.compile(
+    r"(?:\\u[dD][89abAB][0-9a-fA-F]{2})?(?:\\(?:u[0-9a-fA-F]{0,3})?)?\Z"
+)
+
+
 def safe_unicode_decode(content: bytes) -> str:
     r"""Decode complete \uXXXX runs, combining valid UTF-16 surrogate pairs.
 
-    Other escape sequences and already-decoded UTF-8 text are preserved.
+    Other escape sequences and already-decoded UTF-8 text are preserved. An
+    escaped surrogate with no partner in its run is dropped, as
+    ``sanitize_text_for_encoding`` drops surrogates: it cannot be encoded.
+    A streamed response must go through ``StreamingUnicodeDecoder`` instead,
+    or a pair split across two chunks is dropped as two lone halves.
     """
-    unicode_escape_pattern = re.compile(r"(?:\\u[0-9a-fA-F]{4})+")
 
     def replace_unicode_escape(match: re.Match[str]) -> str:
-        return json.loads(f'"{match.group(0)}"')
+        decoded = json.loads(f'"{match.group(0)}"')
+        return _LONE_SURROGATE_PATTERN.sub("", decoded)
 
-    # Perform the substitution
-    decoded_content = unicode_escape_pattern.sub(
+    return _UNICODE_ESCAPE_RUN_PATTERN.sub(
         replace_unicode_escape, content.decode("utf-8")
     )
 
-    return decoded_content
+
+class StreamingUnicodeDecoder:
+    r"""Apply ``safe_unicode_decode`` to a text that arrives in chunks.
+
+    ``feed`` returns the decodable part of each chunk and holds back a suffix
+    the next chunk may complete (a high-surrogate escape, a ``\u`` escape cut
+    short), so the joined output of ``feed`` calls plus ``flush`` equals
+    ``safe_unicode_decode`` of the joined input. Call ``flush`` once the text
+    ends, before anything else is emitted after it (such as ``</think>``).
+    Use one decoder per text: a reasoning stream and the answer stream are
+    two texts. A chunk without a backslash passes through unchanged.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        if self._pending:
+            text = self._pending + text
+            self._pending = ""
+        if "\\" not in text:
+            return text
+        match = _OPEN_ESCAPE_SUFFIX_PATTERN.search(text)
+        if match.start() < len(text):
+            self._pending = text[match.start() :]
+            text = text[: match.start()]
+        if r"\u" in text:
+            text = safe_unicode_decode(text.encode("utf-8"))
+        return text
+
+    def flush(self) -> str:
+        text, self._pending = self._pending, ""
+        if r"\u" in text:
+            text = safe_unicode_decode(text.encode("utf-8"))
+        return text
 
 
 def exists_func(obj, func_name: str) -> bool:
