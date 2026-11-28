@@ -1319,7 +1319,12 @@ def test_ainsert_legacy_path_honors_f_size_env(tmp_path, monkeypatch):
     )
 
 
-_SIZE_ENV = {"fixed_token": 640, "recursive_character": 777, "semantic_vector": 888}
+_SIZE_ENV = {
+    "fixed_token": 640,
+    "recursive_character": 777,
+    "semantic_vector": 888,
+    "paragraph_semantic": 999,
+}
 
 
 @pytest.mark.offline
@@ -1331,16 +1336,20 @@ def test_partial_chunker_config_still_picks_up_size_env(
     (``normalize_addon_params`` only defaults the whole ``chunker`` key when
     absent), so ``_apply_chunk_size_overlay`` must mirror the strategy
     size-env seeding — otherwise ``CHUNK_F_SIZE`` / ``CHUNK_R_SIZE`` /
-    ``CHUNK_V_SIZE`` are silently ignored for partial configs.
+    ``CHUNK_V_SIZE`` / ``CHUNK_P_SIZE`` are silently ignored for partial
+    configs.
 
     Each case gives one strategy an explicit size, which must beat its env
-    (tier 1 > tier 2), while the other two are backfilled from env. Every
-    strategy is a separate entry of the backfill loop, so each one has to be
-    seen both ways.
+    (tier 1 > tier 2), while the others are backfilled from env. Every
+    strategy is a separate backfill branch, so each one has to be seen both
+    ways. P is checked on the live configuration on purpose: the pipeline's
+    ``slim_chunk_options`` backfills P again, so an enqueue cannot tell
+    whether the overlay populated it (and validated it at construction).
     """
     monkeypatch.setenv("CHUNK_F_SIZE", "640")
     monkeypatch.setenv("CHUNK_R_SIZE", "777")
     monkeypatch.setenv("CHUNK_V_SIZE", "888")
+    monkeypatch.setenv("CHUNK_P_SIZE", "999")
 
     # F keeps a non-size caller value. V has no sub-dict unless it is the
     # explicit one: the overlap overlay creates F/R/P before the size backfill
