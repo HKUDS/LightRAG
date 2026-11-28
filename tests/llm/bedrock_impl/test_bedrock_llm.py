@@ -86,6 +86,13 @@ class _FakeBedrockClient:
         }
 
 
+def _without_retry_config(client_kwargs: dict) -> dict:
+    """Assert botocore retries are off for a call @retry owns, then drop them."""
+    client_kwargs = dict(client_kwargs)
+    assert client_kwargs.pop("config").retries == {"total_max_attempts": 1}
+    return client_kwargs
+
+
 class _FakeSession:
     def __init__(self, captured_calls: list[dict], client_kwargs_calls: list[dict]):
         self._captured_calls = captured_calls
@@ -191,7 +198,7 @@ async def test_bedrock_keyword_extraction_does_not_inject_system_prompt(monkeypa
     assert result == '{"high_level_keywords":["AI"],"low_level_keywords":["RAG"]}'
     assert len(captured_calls) == 1
     assert "system" not in captured_calls[0]
-    assert client_kwargs_calls[-1] == {"region_name": None}
+    assert _without_retry_config(client_kwargs_calls[-1]) == {"region_name": None}
 
 
 @pytest.mark.offline
@@ -220,7 +227,7 @@ async def test_bedrock_default_endpoint_sentinel_uses_sdk_default(
             endpoint_url=endpoint_url,
         )
 
-    assert client_kwargs_calls[-1] == {"region_name": None}
+    assert _without_retry_config(client_kwargs_calls[-1]) == {"region_name": None}
 
 
 class _FakeEmbeddingBody:
@@ -261,7 +268,7 @@ async def test_bedrock_embed_default_endpoint_sentinel_uses_sdk_default(monkeypa
             endpoint_url="DEFAULT_BEDROCK_ENDPOINT",
         )
 
-    assert client_kwargs_calls[-1] == {"region_name": None}
+    assert _without_retry_config(client_kwargs_calls[-1]) == {"region_name": None}
 
 
 @pytest.mark.offline
@@ -285,7 +292,7 @@ async def test_bedrock_complete_forwards_explicit_sigv4_client_kwargs(monkeypatc
             endpoint_url="https://proxy.example.com",
         )
 
-    assert client_kwargs_calls[-1] == {
+    assert _without_retry_config(client_kwargs_calls[-1]) == {
         "region_name": "us-west-2",
         "endpoint_url": "https://proxy.example.com",
         "aws_access_key_id": "akid",
@@ -334,6 +341,8 @@ async def test_bedrock_stream_timeout_maps_to_botocore_client_config(monkeypatch
     config = client_kwargs_calls[-1]["config"]
     assert config.connect_timeout == 240
     assert config.read_timeout == 240
+    # The stream runs outside @retry: botocore's retries are its only ones.
+    assert config.retries is None
     assert "timeout" not in captured_calls[-1]
 
 
@@ -384,7 +393,8 @@ async def test_bedrock_complete_inherits_default_llm_timeout(
     assert "timeout" not in captured_calls[-1]
     config = client_kwargs_calls[0].get("config")
     if expected_read_timeout is None:
-        assert config is None
+        assert "read_timeout" not in config._user_provided_options
+        assert "connect_timeout" not in config._user_provided_options
     else:
         assert config.read_timeout == expected_read_timeout
         assert config.connect_timeout == expected_read_timeout
@@ -514,7 +524,7 @@ async def test_bedrock_embed_forwards_sigv4_and_ignores_api_key(monkeypatch):
                 aws_session_token="session",
             )
 
-    assert client_kwargs_calls[-1] == {
+    assert _without_retry_config(client_kwargs_calls[-1]) == {
         "region_name": "us-east-1",
         "aws_access_key_id": "akid",
         "aws_secret_access_key": "secret",

@@ -16,11 +16,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from botocore.exceptions import ConnectionClosedError
+from botocore.exceptions import ClientError, ConnectionClosedError
 from tenacity import wait_none
 
 from lightrag.llm.bedrock import (
     BedrockConnectionError,
+    BedrockRateLimitError,
     bedrock_complete_if_cache,
     bedrock_embed,
 )
@@ -109,5 +110,39 @@ async def test_bedrock_embed_retries_then_reraises_dropped_connection(monkeypatc
         pytest.raises(BedrockConnectionError),
     ):
         await bedrock_embed(texts=["hello"])
+
+    assert len(calls) == 5
+
+
+class _ModelNotReadyClient(_DisconnectedEmbeddingClient):
+    """Fake Bedrock client whose converse() always answers 429."""
+
+    async def converse(self, **kwargs):
+        self._calls.append(1)
+        raise ClientError(
+            {
+                "Error": {"Code": "ModelNotReadyException", "Message": "loading"},
+                "ResponseMetadata": {"HTTPStatusCode": 429},
+            },
+            "Converse",
+        )
+
+
+@pytest.mark.asyncio
+async def test_bedrock_complete_retries_any_429(monkeypatch):
+    """botocore is told not to retry inside @retry, and it used to retry every
+    429, so @retry must retry a 429 it has no specific code for."""
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setattr(bedrock_complete_if_cache.retry, "wait", wait_none())
+
+    calls: list[int] = []
+    fake_session = SimpleNamespace(
+        client=lambda *_args, **_kwargs: _ModelNotReadyClient(calls)
+    )
+    with (
+        patch("lightrag.llm.bedrock.aioboto3.Session", return_value=fake_session),
+        pytest.raises(BedrockRateLimitError),
+    ):
+        await bedrock_complete_if_cache(model="bedrock-model", prompt="hello")
 
     assert len(calls) == 5
