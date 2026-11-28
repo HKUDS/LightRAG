@@ -249,6 +249,38 @@ def test_one_line_backtick_code_span_does_not_open_a_fence():
     assert len(ex.tables) == 1
 
 
+def test_indented_fence_example_preserves_later_heading_and_table():
+    md = (
+        "# Installation\n\n"
+        "    ~~~python\n"
+        "    import lightrag\n\n"
+        "## Usage\n\n"
+        "| Mode | Value |\n"
+        "| --- | --- |\n"
+        "| Engine | native |\n"
+    )
+    ex = _extract(md)
+    assert [block["heading"] for block in ex.blocks] == ["Installation", "Usage"]
+    assert "    ~~~python\n    import lightrag" in ex.blocks[0]["content"]
+    (table,) = ex.tables.values()
+    assert table["rows"] == [["Engine", "native"]]
+
+
+def test_overindented_fence_marker_stays_inside_fenced_code():
+    md = (
+        "# Installation\n\n"
+        "   ~~~text\n"
+        "    ~~~\n"
+        "## Literal heading\n"
+        "   ~~~ \t\n\n"
+        "## Usage\n"
+        "Use the native parser.\n"
+    )
+    ex = _extract(md)
+    assert [block["heading"] for block in ex.blocks] == ["Installation", "Usage"]
+    assert "    ~~~\n## Literal heading" in ex.blocks[0]["content"]
+
+
 def test_pipe_table_with_header():
     md = "| Name | Age |\n|------|-----|\n| Bob | 30 |\n| Sue | 25 |\n"
     ex = _extract(md)
