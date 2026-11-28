@@ -174,3 +174,27 @@ def test_chunk_size_overlay_does_not_mutate_supplied_addon_params() -> None:
     assert (first.chunk_token_size, second.chunk_token_size) == (500, 2000)
     first._addon_params["chunker"]["fixed_token"]["split_by_character"] = "#"
     assert second._addon_params["chunker"]["fixed_token"]["split_by_character"] == "|"
+
+
+def _update_with_empty_mapping(params: ObservableAddonParams) -> None:
+    params.update({})
+
+
+def _ior_with_empty_iterable(params: ObservableAddonParams) -> None:
+    params |= []
+
+
+@pytest.mark.parametrize(
+    "apply_empty", [_update_with_empty_mapping, _ior_with_empty_iterable]
+)
+def test_empty_update_does_not_notify(apply_empty) -> None:
+    """An update that writes nothing must not invalidate the derived cache."""
+    changes: list[str] = []
+    params = ObservableAddonParams(
+        {"language": "English"}, on_change=lambda: changes.append("changed")
+    )
+
+    apply_empty(params)
+
+    assert params == {"language": "English"}
+    assert changes == []
