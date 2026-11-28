@@ -29,6 +29,7 @@ from lightrag.parser.external.mineru import (
 from lightrag.parser.external.mineru.cache import current_mineru_options_signature
 from lightrag.parser.external.mineru.manifest import write_manifest
 
+pytestmark = pytest.mark.offline
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -83,7 +84,6 @@ def fresh_bundle(tmp_path: Path, source_file: Path) -> tuple[Path, Manifest]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.offline
 def test_raw_dir_naming(tmp_path: Path) -> None:
     parsed = tmp_path / "report.pdf.parsed"
     raw = raw_dir_for_parsed_dir(parsed)
@@ -96,7 +96,6 @@ def test_raw_dir_naming(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.offline
 def test_is_bundle_valid_happy_path(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -104,7 +103,6 @@ def test_is_bundle_valid_happy_path(
     assert is_bundle_valid(raw, source_file) is True
 
 
-@pytest.mark.offline
 def test_invalid_when_manifest_missing(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -113,7 +111,6 @@ def test_invalid_when_manifest_missing(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_manifest_malformed(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -122,7 +119,6 @@ def test_invalid_when_manifest_malformed(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_manifest_not_utf8(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -131,7 +127,6 @@ def test_invalid_when_manifest_not_utf8(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_manifest_wrong_engine(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -142,18 +137,18 @@ def test_invalid_when_manifest_wrong_engine(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_source_size_changes(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
     # Append bytes to the source file — size diverges from manifest fast-path.
+    # The size check returns before hashing, so the same-size hash case below
+    # cannot see a fast path that wrongly accepts.
     raw, _ = fresh_bundle
     with source_file.open("ab") as fh:
         fh.write(b"x")
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_source_hash_changes_but_size_same(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -168,7 +163,6 @@ def test_invalid_when_source_hash_changes_but_size_same(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_engine_version_mismatch(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -182,7 +176,6 @@ def test_invalid_when_engine_version_mismatch(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_engine_version_match_passes(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -196,7 +189,6 @@ def test_engine_version_match_passes(
     assert is_bundle_valid(raw, source_file) is True
 
 
-@pytest.mark.offline
 def test_engine_version_skip_when_either_side_blank(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -210,7 +202,6 @@ def test_engine_version_skip_when_either_side_blank(
     assert is_bundle_valid(raw, source_file) is True
 
 
-@pytest.mark.offline
 def test_invalid_when_api_mode_mismatch(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -225,7 +216,6 @@ def test_invalid_when_api_mode_mismatch(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_options_signature_missing(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -236,7 +226,6 @@ def test_invalid_when_options_signature_missing(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -259,7 +248,6 @@ def test_invalid_when_local_parser_options_change(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -311,7 +299,6 @@ def test_invalid_when_official_parser_options_change(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_endpoint_signature_mismatch(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -327,7 +314,6 @@ def test_invalid_when_endpoint_signature_mismatch(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_endpoint_signature_ignores_trailing_slash(
     fresh_bundle: tuple[Path, Manifest],
     source_file: Path,
@@ -343,7 +329,6 @@ def test_endpoint_signature_ignores_trailing_slash(
     assert is_bundle_valid(raw, source_file) is True
 
 
-@pytest.mark.offline
 def test_invalid_when_critical_file_missing(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -352,17 +337,22 @@ def test_invalid_when_critical_file_missing(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
-def test_invalid_when_critical_file_size_changes(
+def test_invalid_when_critical_file_size_changes_without_hash(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
+    """A manifest without a critical sha256 leaves the size check as the
+    only guard on content_list.json; with a sha256 recorded, the hash would
+    catch a size change too and hide a dropped size check."""
     raw, _ = fresh_bundle
+    payload = json.loads((raw / "_manifest.json").read_text())
+    payload["critical_file"]["sha256"] = None
+    (raw / "_manifest.json").write_text(json.dumps(payload))
+    assert is_bundle_valid(raw, source_file) is True
     cl = raw / "content_list.json"
     cl.write_text(cl.read_text() + "/* extra */")
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_critical_file_hash_changes(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -376,7 +366,6 @@ def test_invalid_when_critical_file_hash_changes(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_aux_file_size_changes(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -386,7 +375,6 @@ def test_invalid_when_aux_file_size_changes(
     assert is_bundle_valid(raw, source_file) is False
 
 
-@pytest.mark.offline
 def test_invalid_when_aux_file_missing(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:
@@ -400,7 +388,6 @@ def test_invalid_when_aux_file_missing(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.offline
 def test_clear_dir_contents_preserves_directory(tmp_path: Path) -> None:
     d = tmp_path / "raw"
     d.mkdir()
@@ -412,7 +399,6 @@ def test_clear_dir_contents_preserves_directory(tmp_path: Path) -> None:
     assert list(d.iterdir()) == []
 
 
-@pytest.mark.offline
 def test_compute_size_and_hash_consistency(tmp_path: Path) -> None:
     """Both values describe the same byte stream."""
     p = tmp_path / "f.bin"

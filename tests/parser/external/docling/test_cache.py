@@ -141,6 +141,8 @@ def test_is_bundle_valid_wrong_engine(tmp_path: Path, source_file: Path) -> None
 def test_is_bundle_valid_source_size_mismatch(
     tmp_path: Path, source_file: Path
 ) -> None:
+    # The size check returns before hashing, so the same-size hash case below
+    # cannot see a fast path that wrongly accepts.
     raw = _build_valid_bundle(tmp_path, source_file)
     source_file.write_bytes(source_file.read_bytes() + b"!")
     assert is_bundle_valid(raw, source_file) is False
@@ -238,6 +240,24 @@ def test_is_bundle_valid_critical_file_corrupt(
     # so the sha256 path must catch it.
     current = (raw / "src.json").read_bytes()
     (raw / "src.json").write_bytes(b"X" * len(current))
+    assert is_bundle_valid(raw, source_file) is False
+
+
+def test_is_bundle_valid_critical_file_size_mismatch_without_hash(
+    tmp_path: Path, source_file: Path
+) -> None:
+    # A manifest without a critical sha256 leaves the size check as the only
+    # guard on the main JSON; with a sha256 recorded, the hash would catch a
+    # size change too and hide a dropped or inverted size check.
+    import json as _json
+
+    raw = _build_valid_bundle(tmp_path, source_file)
+    mp = raw / "_manifest.json"
+    data = _json.loads(mp.read_text(encoding="utf-8"))
+    data["critical_file"]["sha256"] = None
+    mp.write_text(_json.dumps(data), encoding="utf-8")
+    assert is_bundle_valid(raw, source_file) is True
+    (raw / "src.json").write_text('{"schema_name": "DoclingDocument", "x": 1}')
     assert is_bundle_valid(raw, source_file) is False
 
 
