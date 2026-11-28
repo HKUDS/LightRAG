@@ -156,7 +156,7 @@ class QueryParam:
     ``LightRAG.user_prompt_prefix``) to this value. **If this field is empty,
     the prefix alone becomes the instructions sent to the LLM** -- an empty
     ``user_prompt`` does not disable the prefix. Set
-    ``disable_user_prompt_prefix`` (declared at the end of this class) to opt
+    ``disable_user_prompt_prefix`` (declared near the end of this class) to opt
     out instead.
 
     Two paths do not receive the prefix: ``bypass`` mode ignores this field
@@ -175,11 +175,6 @@ class QueryParam:
     containing citation information for the retrieved content.
     """
 
-    # Declared last on purpose. QueryParam is a plain dataclass, so SDK callers
-    # may construct it positionally; inserting a field beside `user_prompt`
-    # would silently rebind every positional argument after it (a positional
-    # `False` meant for `enable_rerank` would land here instead). New fields
-    # belong at the end.
     disable_user_prompt_prefix: bool = False
     """Do not prepend the server-side global prompt prefix to ``user_prompt``.
 
@@ -187,6 +182,21 @@ class QueryParam:
     can never read or replace it. Default ``False``, i.e. the prefix applies --
     including when ``user_prompt`` is empty, where the prefix alone becomes the
     instructions. Set this to True to take full control of the final text.
+    """
+
+    # Declared last on purpose. QueryParam is a plain dataclass, so SDK callers
+    # may construct it positionally; inserting a field beside `user_prompt`
+    # would silently rebind every positional argument after it (a positional
+    # `False` meant for `enable_rerank` would land here instead). New fields
+    # belong at the end.
+    enable_hybrid: bool = os.getenv("HYBRID_BY_DEFAULT", "false").lower() == "true"
+    """Enable hybrid (lexical + vector) retrieval on backends that support it.
+
+    Only ``PGVectorStorage`` advertises ``supports_hybrid_query``; every other
+    vector backend keeps plain vector retrieval when this is True. Default is
+    False. ``HYBRID_BY_DEFAULT`` enables it process-wide at import time: only
+    the literal string "true" (case-insensitive) enables, mirroring
+    ``RERANK_BY_DEFAULT``.
     """
 
 
@@ -342,6 +352,17 @@ class StorageNameSpace(ABC):
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
     requires_embedding_func: ClassVar[bool] = True
+
+    # Whether this backend can serve hybrid (lexical + vector) retrieval.
+    # ``False`` keeps every registered backend on plain vector retrieval;
+    # ``PGVectorStorage`` opts in. A consumer must check this flag before
+    # requesting hybrid results and fall back to vector-only when it is False.
+    #
+    # ``ClassVar`` on purpose: the storage bases are dataclasses, so a bare
+    # annotated attribute would become an ``__init__`` field and change the
+    # constructor signature and field order of every backend (same rule as
+    # ``BaseGraphStorage.requires_single_writer``).
+    supports_hybrid_query: ClassVar[bool] = False
 
     embedding_func: EmbeddingFunc | None
     cosine_better_than_threshold: float = field(default=0.2)

@@ -6397,6 +6397,7 @@ class LightRAG(_RoleLLMMixin, _StorageMigrationMixin, _PipelineMixin):
             user_prompt=param.user_prompt,
             disable_user_prompt_prefix=param.disable_user_prompt_prefix,
             enable_rerank=param.enable_rerank,
+            enable_hybrid=param.enable_hybrid,
         )
 
         query_result = None

@@ -1,0 +1,280 @@
+"""Markdown + JSON report rendering for the hybrid benchmark.
+
+Rules:
+- The JSON carries every number, including per-query values and CIs; the
+  markdown is the human view of the same data, never a separate computation.
+- A synthetic run is labeled SYNTHETIC in both outputs: fake embeddings and
+  the fake LLM prove mechanics, not retrieval quality.
+- Gate verdicts are printed as-is; the report never adjusts a threshold.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+ENTITY_TRUTH_DERIVATION = (
+    "An entity is relevant to a query iff the full_doc_id set of its source "
+    "chunks intersects the query's qrels-positive corpus ids. Source chunks "
+    "come from the entity_chunks tracking row (the full attribution list); "
+    "the graph node source_id split on GRAPH_FIELD_SEP is the fallback only "
+    "when no tracking row exists, because the graph field is capped. Chunk "
+    "ids resolve to documents through the text_chunks KV store. Queries with "
+    "empty derived truth are reported separately and excluded from hit@k."
+)
+
+ENTITY_SEEDING_NOTE = (
+    "Entity arms extract keywords once per query through the product's "
+    "get_keywords_from_query (the kg_query mechanism), then query entities "
+    "with the joined keyword string and its embedding exactly as "
+    "_get_node_data does; the hybrid arm passes lexical_keywords so each "
+    "keyword seeds entities on its own (OR across keywords). Chunk arms "
+    "keep the whole query and its AND lexical leg. Zero-keyword queries "
+    "fall back to the query as one keyword (annotated per query); empty "
+    "low-level lists use the high-level list, the product's fallback."
+)
+
+LEXICAL_ARM_NOTE = (
+    "The lexical-only arm executes the same lexical_chunks SQL template "
+    "hybrid_query uses, read from postgres_impl.SQL_TEMPLATES, with the same "
+    "tokenizer and workspace. Diagnostic only; no product change."
+)
+
+ABLATION_NOTE = (
+    "Ablation combinations run the combined mix-mode retrieval path "
+    "(operate.kg_query, the aquery_data call) with the entity and chunk "
+    "storage dispatches controlled independently via instance-level "
+    "capability overrides; metrics score the FINAL context chunks and "
+    "entities, so the entity leg can change chunk recall. No product change."
+)
+
+LATENCY_SURFACE_NOTE = (
+    "Latency runs through the production query router mounted on a minimal "
+    "FastAPI app via httpx ASGITransport: QueryRequest validation and "
+    "to_query_params are the live /query/data and /query code path, minus "
+    "the network hop. Keywords are injected to exclude the keyword LLM."
+)
+
+DUPLICATE_ALIAS_NOTE = (
+    "content-hash dedup demoted these subset ids to dup pointer rows; each "
+    "was verified against its PROCESSED original by content hash and shares "
+    "the original's chunk attribution (both twins score on the shared chunk)"
+)
+
+MODERATION_FALLBACK_NOTE = (
+    "provider output content moderation (data_inspection_failed) rejected "
+    "extraction permanently; these documents ingested chunks-only after the "
+    "sanctioned recovery rounds — chunk arm intact, NO entities extracted "
+    "(honest entity-arm gap: queries positive only on them can derive empty "
+    "entity truth)"
+)
+
+
+def _fmt_ci(entry: dict) -> str:
+    lo, hi = entry["ci95"]
+    return f"{entry['mean']:.4f} [{lo:.4f}, {hi:.4f}]"
+
+
+def _metric_table(dataset: dict, top_k: int) -> list[str]:
+    lines = [
+        f"| arm | recall@{top_k} [95% CI] | nDCG@{top_k} [95% CI] |",
+        "| --- | --- | --- |",
+    ]
+    for arm, metrics in dataset["chunk_metrics"].items():
+        lines.append(
+            f"| {arm} | {_fmt_ci(metrics[f'recall@{top_k}'])} "
+            f"| {_fmt_ci(metrics[f'ndcg@{top_k}'])} |"
+        )
+    entity = dataset.get("entity_metrics") or {}
+    for arm, metrics in entity.items():
+        lines.append(
+            f"| entity-{arm} | hit@{top_k} {_fmt_ci(metrics[f'hit@{top_k}'])} | - |"
+        )
+    return lines
+
+
+def _latency_lines(latency: dict | None) -> list[str]:
+    if latency is None:
+        return ["Latency: not measured."]
+    lines = [
+        "| phase | arm | p50 s | p95 s | slots x rounds |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for phase, arms in latency.items():
+        for arm in ("dense", "hybrid"):
+            entry = arms[arm]
+            lines.append(
+                f"| {phase} | {arm} | {entry['p50']:.4f} "
+                f"| {entry['p95']:.4f} "
+                f"| {entry['query_slots']} x {entry['rounds']} |"
+            )
+        overhead = arms.get("overhead")
+        ci = arms.get("overhead_ci95")
+        if overhead is not None and ci is not None:
+            lines.append(
+                f"| {phase} | overhead | - "
+                f"| {overhead:.4f} [{ci[0]:.4f}, {ci[1]:.4f}] | - |"
+            )
+    return lines
+
+
+def render_markdown(results: dict) -> str:
+    lines: list[str] = ["# Hybrid retrieval benchmark report", ""]
+    if results["synthetic"]:
+        lines += [
+            "**SYNTHETIC RUN: fake hash embeddings and/or fake LLM. "
+            "Mechanics proof only, NOT retrieval-quality evidence.**",
+            "",
+        ]
+    lines += [
+        f"Seed: {results['config']['seed']} | "
+        f"bootstrap resamples: {results['config']['resamples']} | "
+        f"top_k: {results['config']['top_k']}",
+        "",
+        "## Protocols",
+        "",
+        f"- Entity truth: {ENTITY_TRUTH_DERIVATION}",
+        f"- Entity seeding: {ENTITY_SEEDING_NOTE}",
+        f"- Lexical arm: {LEXICAL_ARM_NOTE}",
+        f"- Ablation: {ABLATION_NOTE}",
+        f"- Latency surface: {LATENCY_SURFACE_NOTE}",
+        "- Extraction subset: all qrels-positive passages plus sorted fill "
+        "up to the CLI cap; the remainder ingests chunks-only without LLM "
+        "extraction.",
+        "",
+        "## Gate verdicts (proposal thresholds, never tuned)",
+        "",
+        "| gate | status | detail |",
+        "| --- | --- | --- |",
+    ]
+    for verdict in results["gates"]:
+        lines.append(
+            f"| {verdict['gate_id']} | {verdict['status']} | {verdict['detail']} |"
+        )
+    top_k = results["config"]["top_k"]
+    for dataset in results["datasets"]:
+        meta = dataset["meta"]
+        lines += [
+            "",
+            f"## Dataset {dataset['name']} "
+            f"(domain={meta['domain']}, language={meta['language']})",
+            "",
+            f"Source: {meta['source']} | license: {meta['license']}",
+            f"Subset protocol: {meta['subset_protocol']}",
+            "",
+            f"Ingest: {dataset['ingest']['chunk_count']} chunks, "
+            f"{len(dataset['ingest']['extracted_doc_ids'])} extracted docs, "
+            f"{len(dataset['ingest']['chunks_only_doc_ids'])} chunks-only "
+            f"docs (cap {dataset['ingest']['extraction_cap']}).",
+            f"Recovery: {dataset['ingest']['recovery_rounds_used']} round(s) "
+            f"via the sanctioned manual retry path; recovered "
+            f"{dataset['ingest']['recovered_doc_ids']}; persistently failed "
+            f"{dataset['ingest']['persistently_failed_doc_ids']}.",
+            f"Entity seeding protocol: "
+            f"{dataset.get('entity_seeding_protocol', 'unannotated')}.",
+        ]
+        if dataset.get("entity_seeding_fallbacks"):
+            lines.append(
+                f"Entity-seeding keyword fallbacks (qid -> kind): "
+                f"{dataset['entity_seeding_fallbacks']}."
+            )
+        if dataset["ingest"].get("duplicate_aliased_doc_ids"):
+            lines.append(
+                f"Duplicate-aliased twins: "
+                f"{dataset['ingest']['duplicate_aliased_doc_ids']} "
+                f"({DUPLICATE_ALIAS_NOTE})."
+            )
+        if dataset["ingest"].get("moderation_fallback_doc_ids"):
+            lines.append(
+                f"Moderation chunks-only fallback: "
+                f"{dataset['ingest']['moderation_fallback_doc_ids']} "
+                f"({MODERATION_FALLBACK_NOTE})."
+            )
+        lines += [
+            "",
+            "### Chunk and entity metrics",
+            "",
+            *_metric_table(dataset, top_k),
+            "",
+            f"Zero-positive queries (excluded from chunk metrics): "
+            f"{dataset['zero_positive_query_ids']}",
+            f"Zero-truth queries (excluded from hit@k): "
+            f"{dataset['entity_truth']['zero_truth_query_ids']}",
+            f"Empty retrieval query ids per arm: "
+            f"{dataset['empty_retrieval_query_ids']}",
+            "",
+            "### Latency",
+            "",
+            *_latency_lines(dataset.get("latency")),
+        ]
+        if dataset.get("ablation"):
+            lines += [
+                "",
+                "### Ablation means",
+                "",
+                f"| combination | recall@{top_k} | nDCG@{top_k} | entity hit@{top_k} |",
+                "| --- | --- | --- | --- |",
+            ]
+            for combo, metrics in dataset["ablation"].items():
+                lines.append(
+                    f"| {combo} | {metrics[f'recall@{top_k}']:.4f} "
+                    f"| {metrics[f'ndcg@{top_k}']:.4f} "
+                    f"| {metrics[f'entity_hit@{top_k}']:.4f} |"
+                )
+        write_amp = dataset.get("write_amp")
+        if write_amp:
+            lines += [
+                "",
+                "### Write amplification",
+                "",
+                f"Branch upsert p95: {write_amp['branch_p95']:.4f}s; "
+                f"baseline ({write_amp['baseline_ref']}): "
+                f"{write_amp['baseline_p95']}; "
+                f"increase: {write_amp['upsert_increase']} "
+                "(driver uses synthetic hash embeddings on both sides: a "
+                "write-path measurement, not a quality claim)",
+            ]
+        sizes = dataset.get("index_sizes")
+        if sizes:
+            lines.append(
+                f"GIN index bytes: {sizes['gin_bytes']}; vector index bytes: "
+                f"{sizes['vector_bytes']}; ratio: {sizes['ratio']}"
+            )
+        if dataset.get("backfill_chunks_per_min") is not None:
+            lines.append(
+                f"Backfill throughput: {dataset['backfill_chunks_per_min']:.0f} "
+                "chunks/min (report-only)"
+            )
+        rerank = dataset.get("rerank")
+        if rerank:
+            lines.append(
+                f"Reranker: {rerank['status']}; survival "
+                f"{rerank['survival']}; {rerank['detail']}"
+            )
+        for phase, reason in (dataset.get("skipped") or {}).items():
+            lines.append(f"Skipped {phase}: {reason}")
+    lines += [
+        "",
+        "## Appendix: hardware and configuration",
+        "",
+        "```json",
+        json.dumps(
+            {"hardware": results["hardware"], "config": results["config"]},
+            indent=2,
+        ),
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_report(results: dict, output_dir: Path) -> tuple[Path, Path]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "report.json"
+    md_path = output_dir / "report.md"
+    json_path.write_text(
+        json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    md_path.write_text(render_markdown(results), encoding="utf-8")
+    return md_path, json_path

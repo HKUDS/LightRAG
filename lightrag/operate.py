@@ -5444,6 +5444,13 @@ async def kg_query(
         # store's context, so it must miss; every other entry keeps hitting,
         # which is why _ANSWER_CACHE_POLICY_VERSION does not need a bump.
         *(("\n<kg_keyword_fallback>\n", keyword_fallback) if keyword_fallback else ()),
+        # Present only when hybrid retrieval is requested: on a supporting
+        # backend the flag changes which records the context is built from,
+        # so an answer cached with it on must not serve a request with it off.
+        # Conditional like the fallback above, so entries written before the
+        # flag existed keep hitting with the flag off -- which is why
+        # _ANSWER_CACHE_POLICY_VERSION does not need a bump.
+        *(("\n<enable_hybrid>\n",) if query_param.enable_hybrid else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
     )
@@ -5492,6 +5499,7 @@ async def kg_query(
                 "ll_keywords": ll_keywords_str,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_hybrid": query_param.enable_hybrid,
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
                 ),
@@ -5913,6 +5921,9 @@ async def _get_vector_context(
     Retrieve text chunks from the vector database without reranking or truncation.
 
     This function performs vector search to find relevant text chunks for a query.
+    With ``enable_hybrid`` on a hybrid-capable backend it performs hybrid
+    (vector + lexical) search instead; the returned order is the backend's
+    fusion order and downstream stages consume it as-is.
     Reranking and truncation will be handled later in the unified processing.
 
     Args:
@@ -5933,9 +5944,17 @@ async def _get_vector_context(
     search_top_k = query_param.chunk_top_k or query_param.top_k
     cosine_threshold = chunks_vdb.cosine_better_than_threshold
 
-    results = await chunks_vdb.query(
-        query, top_k=search_top_k, query_embedding=query_embedding
-    )
+    if (
+        getattr(chunks_vdb, "supports_hybrid_query", False)
+        and query_param.enable_hybrid
+    ):
+        results = await chunks_vdb.hybrid_query(
+            query, top_k=search_top_k, query_embedding=query_embedding
+        )
+    else:
+        results = await chunks_vdb.query(
+            query, top_k=search_top_k, query_embedding=query_embedding
+        )
     if not results:
         logger.info(
             f"Naive query: 0 chunks (chunk_top_k:{search_top_k} cosine:{cosine_threshold})"
@@ -7169,9 +7188,25 @@ async def _get_node_data(
         f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
-    results = await entities_vdb.query(
-        query, top_k=query_param.top_k, query_embedding=query_embedding
-    )
+    if (
+        getattr(entities_vdb, "supports_hybrid_query", False)
+        and query_param.enable_hybrid
+    ):
+        # The entity query is the keyword list joined with ", " (kg_query);
+        # recover the boundaries for the lexical leg so each keyword can seed
+        # entities on its own instead of ANDing across separate keywords.
+        # Same split _build_query_context uses for the keyword metadata. The
+        # dense leg still embeds the joined string.
+        results = await entities_vdb.hybrid_query(
+            query,
+            top_k=query_param.top_k,
+            query_embedding=query_embedding,
+            lexical_keywords=query.split(", "),
+        )
+    else:
+        results = await entities_vdb.query(
+            query, top_k=query_param.top_k, query_embedding=query_embedding
+        )
 
     if not len(results):
         return [], []
@@ -7213,7 +7248,8 @@ async def _get_node_data(
         f"Local query: {len(node_datas)} entities, {len(use_relations)} relations"
     )
 
-    # Entities are sorted by cosine similarity
+    # Entities keep retrieval order: cosine similarity, or hybrid fusion
+    # order when enable_hybrid dispatched to hybrid_query.
     # Relations are sorted by rank + weight
     return node_datas, use_relations
 
@@ -8032,6 +8068,9 @@ async def naive_query(
         effective_user_prompt.text,
         query_param.enable_rerank,
         global_config.get("enable_content_headings", False),
+        # Present only when hybrid retrieval is requested -- see the matching
+        # component in kg_query for why it is conditional.
+        *(("\n<enable_hybrid>\n",) if query_param.enable_hybrid else ()),
         *(("\n<system_prompt>\n", system_prompt) if system_prompt else ()),
         "\n<llm_identity>\n",
         serialize_llm_cache_identity(llm_cache_identity),
@@ -8075,6 +8114,7 @@ async def naive_query(
                 "max_total_tokens": query_param.max_total_tokens,
                 "user_prompt": query_param.user_prompt or "",
                 "enable_rerank": query_param.enable_rerank,
+                "enable_hybrid": query_param.enable_hybrid,
                 "enable_content_headings": global_config.get(
                     "enable_content_headings", False
                 ),
