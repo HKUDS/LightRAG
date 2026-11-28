@@ -405,7 +405,14 @@ async def generic_rerank_api(
 
             if response_format == "aliyun":
                 # Aliyun format: {"output": {"results": [...]}}
-                results = response_json.get("output", {}).get("results", [])
+                output = response_json.get("output", {})
+                if not isinstance(output, dict):
+                    logger.warning(
+                        "Expected 'output' to be a JSON object, got %s",
+                        type(output).__name__,
+                    )
+                    return []
+                results = output.get("results", [])
                 if not isinstance(results, list):
                     logger.warning(
                         f"Expected 'output.results' to be list, got {type(results)}: {results}"

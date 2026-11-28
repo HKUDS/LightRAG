@@ -123,11 +123,16 @@ class TestAliRerankResponseFormat:
             {"index": 0, "relevance_score": 0.42},
         ]
 
+    @pytest.mark.parametrize(
+        "response_json",
+        [
+            pytest.param({"unexpected": "shape"}, id="missing-output"),
+            pytest.param({"output": None}, id="null-output"),
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_missing_output_key_returns_empty_without_raising(self):
-        """A response with no "output" at all (e.g. an unexpected provider
-        payload shape) must degrade to an empty result, not raise."""
-        session, _ = mock_rerank_session({"unexpected": "shape"})
+    async def test_missing_or_null_output_returns_empty(self, response_json):
+        session, _ = mock_rerank_session(response_json)
 
         with patch("lightrag.rerank.aiohttp.ClientSession", return_value=session):
             result = await ali_rerank(
@@ -136,6 +141,7 @@ class TestAliRerankResponseFormat:
                 api_key="test-key",
             )
 
+        session.post.assert_called_once()
         assert result == []
 
     @pytest.mark.asyncio
