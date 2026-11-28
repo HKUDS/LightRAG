@@ -111,15 +111,7 @@ async def llama_index_complete_if_cache(
             )
 
         # Add history messages
-        for msg in history_messages:
-            formatted_messages.append(
-                ChatMessage(
-                    role=MessageRole.USER
-                    if msg["role"] == "user"
-                    else MessageRole.ASSISTANT,
-                    content=msg["content"],
-                )
-            )
+        formatted_messages.extend(format_chat_messages(history_messages))
 
         # Add current prompt
         formatted_messages.append(ChatMessage(role=MessageRole.USER, content=prompt))
