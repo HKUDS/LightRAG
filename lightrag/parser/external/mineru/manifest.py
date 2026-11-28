@@ -138,7 +138,12 @@ def load_manifest(raw_dir: Path) -> Manifest | None:
         return None
     try:
         return Manifest.from_dict(payload)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        # A hand-edited or corrupted field reads as a stale bundle: a
+        # non-object ``critical_file`` has no ``.get`` (AttributeError), and
+        # JSON ``Infinity`` in a size field fails ``int()`` (OverflowError).
+        # Raising instead would fail every retry, because the parse template
+        # checks the bundle before it clears raw_dir.
         return None
 
 
