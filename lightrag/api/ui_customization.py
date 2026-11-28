@@ -115,7 +115,10 @@ def normalize_locale(value: str) -> str:
       internal ids to hyphens is the frontend's single-throat job (§8.2),
       the server only refuses the wrong shape;
     - lowercases the language subtag, uppercases 2-letter region subtags,
-      titlecases 4-letter script subtags.
+      titlecases 4-letter script subtags;
+    - lowercases every subtag from the first singleton (``-u-``, ``-t-``,
+      ``-x-``…) on: extension and private-use values are never read as a
+      region or script (``en-u-ca-gregory`` stays as written).
     """
     if not isinstance(value, str) or not value.strip():
         raise ValueError("locale must be a non-empty string")
@@ -129,12 +132,19 @@ def normalize_locale(value: str) -> str:
         raise ValueError(f"locale {value!r} is too long")
     subtags = value.split("-")
     normalized: list[str] = []
+    in_extension = False
     for index, subtag in enumerate(subtags):
         if not _LOCALE_SUBTAG_RE.match(subtag):
             raise ValueError(f"locale {value!r} has an invalid subtag {subtag!r}")
+        # BCP 47: a single-character subtag is a singleton introducing an
+        # extension or private-use sequence; everything after it stays lowercase.
+        if len(subtag) == 1:
+            in_extension = True
         if index == 0:
             if not subtag.isalpha() or len(subtag) < 2:
                 raise ValueError(f"locale {value!r} has an invalid language subtag")
+            normalized.append(subtag.lower())
+        elif in_extension:
             normalized.append(subtag.lower())
         elif len(subtag) == 4 and subtag.isalpha():
             normalized.append(subtag.title())

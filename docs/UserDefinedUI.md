@@ -183,6 +183,7 @@ Keys are BCP 47 tags in **hyphen** form, written exactly in their normalized sha
 - lowercase language (`zh`, `en`, `ar`);
 - Titlecase 4-letter script (`Hant`, `Arab`);
 - UPPERCASE 2-letter region (`TW`, `CN`);
+- lowercase everything from a one-character singleton on — extension and private-use values (`en-u-ca-gregory`, `en-US-x-tw`);
 - `zh_TW` (underscore) is rejected — write `zh-TW`;
 - `zh-tw` is rejected too: the key must already be normalized (`zh-TW`).
 
@@ -194,13 +195,13 @@ What the server applies is a **shape and case check**, not full BCP 47 validatio
 | Every later subtag is 1–8 alphanumerics | `zh-Hant-TW`, `de-CH-1901`, `sl-rozaj-biske` | `abcdefghi` |
 | The whole tag is ≤ 35 characters | | anything longer |
 
-Script, region, variant and extension subtags all work — `zh-Hant-TW`, `ar-aao-Latn`, `en-US-u-VA-posix`.
+Script, region, variant and extension subtags all work — `zh-Hant-TW`, `ar-aao-Latn`, `en-US-u-va-posix`.
 
 The exclusion is precisely **a first subtag of one letter**, which is what rules out private-use tags (`x-acme`) and the *irregular* grandfathered ones (`i-klingon`). It is not "grandfathered tags" as a class: the regular grandfathered tags begin with a normal language subtag and are accepted — `art-lojban`, `en-GB-oed` and `zh-min-nan` all pass.
 
 In the other direction, the check is looser than BCP 47: `en-u` is accepted even though a well-formed tag must follow an extension singleton with at least one subtag. Nothing depends on that being caught — an unknown locale simply falls back — so treat the table as the contract and BCP 47 as the convention the table approximates.
 
-Note that normalization is positional and applies to *every* subtag, including an extension's own values: `en-US-u-va-posix` normalizes to `en-US-u-VA-posix`, and since the key must already be normalized, that is the form to write.
+Note that the region and script rules apply only before the first singleton: an extension's own values are lowercased whatever their length, so `en-US-u-VA-posix` normalizes to `en-US-u-va-posix`, and since the key must already be normalized, the lowercase form is the one to write.
 
 Read [§5.3](#53-interface-languages-vs-bundle-locales) before declaring a locale outside the WebUI's own languages.
 
@@ -566,7 +567,7 @@ A configured directory *without* `manifest.json` is the one exception — the un
 | `unsupported schema_version` | Must be exactly `1`. |
 | `locales: key 'zh_TW' uses the underscore form` | Write `zh-TW`. |
 | `locales: key 'x-acme' has an invalid language subtag` | The primary subtag must be 2–8 letters, so a one-letter first subtag is rejected — private-use (`x-…`) and irregular grandfathered (`i-…`) tags. Regular grandfathered tags such as `art-lojban` are fine — see [§4.3](#43-locale-keys). |
-| `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | Fix the casing. |
+| `locales: key 'zh-tw' must be written in its normalized form 'zh-TW'` | Fix the casing. After a singleton (`-u-`, `-x-`…) every subtag is lowercase: `en-u-CA-gregory` → `en-u-ca-gregory`. |
 | `default_locale '…' is not a declared locale` | `default_locale` must appear in `locales`. |
 | `fallbacks.xx: target 'yy' is not a declared locale` | Fallback targets must be declared; only sources may be uncovered. |
 | `…: '…' does not exist or is not a file` | A manifest path points at nothing. Paths are relative to the bundle root and case-sensitive. |
