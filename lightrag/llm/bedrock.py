@@ -645,11 +645,23 @@ async def bedrock_embed(
         ),
     ) as bedrock_async_client:
         try:
-            if (model_provider := model.split(".")[0]) == "amazon":
+            # ARNs can end in a model ID, and cross-region IDs prefix the provider.
+            model_id = model.rsplit("/", 1)[-1]
+            model_parts = model_id.split(".", 2)
+            model_provider = model_parts[0]
+            supported_providers = ("amazon", "cohere")
+            if (
+                len(model_parts) == 3
+                and model_provider not in supported_providers
+                and model_parts[1] in supported_providers
+            ):
+                model_provider = model_parts[1]
+
+            if model_provider == "amazon":
                 embed_texts = []
                 for text in texts:
                     try:
-                        if "v2" in model:
+                        if "v2" in model_id:
                             request_body: dict[str, Any] = {
                                 "inputText": text,
                                 "embeddingTypes": ["float"],
@@ -657,7 +669,7 @@ async def bedrock_embed(
                             if embedding_dim is not None:
                                 request_body["dimensions"] = embedding_dim
                             body = json.dumps(request_body)
-                        elif "v1" in model:
+                        elif "v1" in model_id:
                             body = json.dumps({"inputText": text})
                         else:
                             raise BedrockError(f"Model {model} is not supported!")
@@ -717,6 +729,8 @@ async def bedrock_embed(
                         )
 
                     embeddings = response_body["embeddings"]
+                    if isinstance(embeddings, dict):
+                        embeddings = embeddings.get("float")
                     if not embeddings or len(embeddings) != len(texts):
                         raise BedrockError(
                             f"Invalid embeddings count: expected {len(texts)}, got {len(embeddings) if embeddings else 0}"
