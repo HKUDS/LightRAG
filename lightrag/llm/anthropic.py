@@ -447,6 +447,17 @@ async def anthropic_complete(
     )
 
 
+def _warn_retired_model(helper: str, model: str, retired: str) -> None:
+    warnings.warn(
+        f"lightrag.llm.anthropic.{helper} calls {model}, which Anthropic retired "
+        f"on {retired}; requests to it fail with 404 not_found_error. Use "
+        "anthropic_complete with a current model (LLM_MODEL) instead. This "
+        "helper will be removed in a future release.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 # Claude 3 Opus specific completion
 async def claude_3_opus_complete(
     prompt: str,
@@ -455,6 +466,9 @@ async def claude_3_opus_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    _warn_retired_model(
+        "claude_3_opus_complete", "claude-3-opus-20240229", "2026-01-05"
+    )
     apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
@@ -476,6 +490,9 @@ async def claude_3_sonnet_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    _warn_retired_model(
+        "claude_3_sonnet_complete", "claude-3-sonnet-20240229", "2025-07-21"
+    )
     apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
@@ -497,6 +514,9 @@ async def claude_3_haiku_complete(
     enable_cot: bool = False,
     **kwargs: Any,
 ) -> Union[str, AsyncIterator[str]]:
+    _warn_retired_model(
+        "claude_3_haiku_complete", "claude-3-haiku-20240307", "2026-04-20"
+    )
     apply_llm_timeout(kwargs)
     if history_messages is None:
         history_messages = []
