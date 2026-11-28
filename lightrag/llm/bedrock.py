@@ -23,6 +23,7 @@ from tenacity import (
 from collections.abc import AsyncIterator
 from typing import Any, Union
 
+from lightrag.exceptions import ContentPolicyViolationError
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     embedding_timeout,
@@ -111,6 +112,38 @@ def _bedrock_client_kwargs(
     return client_kwargs
 
 
+def _collect_guardrail_actions(node: Any) -> list[str]:
+    """Collect every ``action`` value from a Bedrock guardrail trace.
+
+    The assessment shapes differ per policy (topic, content, word,
+    sensitive-information), so the walk is structural rather than a list of
+    known paths; the caller decides which action values are usable.
+    """
+    actions: list[str] = []
+    if isinstance(node, dict):
+        action = node.get("action")
+        if isinstance(action, str):
+            actions.append(action)
+        for value in node.values():
+            actions.extend(_collect_guardrail_actions(value))
+    elif isinstance(node, list):
+        for item in node:
+            actions.extend(_collect_guardrail_actions(item))
+    return actions
+
+
+def _content_policy_violation(
+    stop_reason: str, actions: list[str] | None = None
+) -> ContentPolicyViolationError:
+    """Build the non-retryable error for a Bedrock moderation verdict."""
+    detail = f"stopReason={stop_reason}"
+    if actions is not None:
+        detail = f"{detail}, actions={sorted(set(actions))}"
+    return ContentPolicyViolationError(
+        f"Bedrock content moderation rejected the response ({detail})"
+    )
+
+
 def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> None:
     """Convert AWS Bedrock exceptions to appropriate custom exceptions.
 
@@ -122,6 +155,8 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
         BedrockRateLimitError: For rate limiting and throttling issues (retryable)
         BedrockConnectionError: For network and server issues (retryable)
         BedrockTimeoutError: For timeout issues (retryable)
+        ContentPolicyViolationError: For provider moderation verdicts
+            (non-retryable), re-raised unchanged
         BedrockError: For validation and other non-retryable errors
     """
     error_message = str(e)
@@ -177,6 +212,7 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
             BedrockConnectionError,
             BedrockTimeoutError,
             BedrockError,
+            ContentPolicyViolationError,
         ),
     ):
         raise
@@ -187,6 +223,10 @@ def _handle_bedrock_exception(e: Exception, operation: str = "Bedrock API") -> N
         raise BedrockError(f"Unexpected error: {error_message}")
 
 
+# ContentPolicyViolationError is deliberately absent from the retry predicate:
+# a moderation verdict is deterministic for a given prompt, so retrying re-buys
+# the same rejection at full price. It is raised after a successful (billed)
+# response and must surface after one attempt.
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -376,6 +416,8 @@ async def bedrock_complete_if_cache(
             # task cancellation, avoiding aiohttp "Unclosed connection" warnings.
             async with session.client("bedrock-runtime", **client_kwargs) as client:
                 event_stream = None
+                stop_reason = None
+                guardrail_verified = False
                 try:
                     # Make the API call
                     response = await client.converse_stream(**args, **kwargs)
@@ -392,9 +434,14 @@ async def bedrock_complete_if_cache(
                             text = delta.get("text")
                             if text:
                                 yield text
-                        elif "metadata" in event and token_tracker is not None:
-                            usage = event["metadata"].get("usage") or {}
-                            if usage:
+                        elif "messageStop" in event:
+                            stop_reason = (event["messageStop"] or {}).get("stopReason")
+                            if stop_reason == "content_filtered":
+                                raise _content_policy_violation(stop_reason)
+                        elif "metadata" in event:
+                            metadata = event["metadata"] or {}
+                            usage = metadata.get("usage") or {}
+                            if token_tracker is not None and usage:
                                 token_tracker.add_usage(
                                     {
                                         "prompt_tokens": usage.get("inputTokens", 0),
@@ -404,6 +451,27 @@ async def bedrock_complete_if_cache(
                                         "total_tokens": usage.get("totalTokens", 0),
                                     }
                                 )
+                            if stop_reason == "guardrail_intervened":
+                                trace = metadata.get("trace") or {}
+                                guardrail = (
+                                    trace.get("guardrail", {})
+                                    if isinstance(trace, dict)
+                                    else {}
+                                )
+                                actions = _collect_guardrail_actions(guardrail)
+                                if not (
+                                    actions and all(a == "ANONYMIZED" for a in actions)
+                                ):
+                                    raise _content_policy_violation(
+                                        stop_reason, actions
+                                    )
+                                guardrail_verified = True
+
+                    if stop_reason == "guardrail_intervened" and not guardrail_verified:
+                        # Fail closed when no metadata event carried the
+                        # assessments: text already yielded must not be
+                        # presented as a usable answer without that proof.
+                        raise _content_policy_violation(stop_reason, [])
 
                 except Exception as e:
                     # Convert to appropriate exception type
@@ -448,6 +516,45 @@ async def bedrock_complete_if_cache(
             # Use converse for non-streaming responses
             response = await bedrock_async_client.converse(**args, **kwargs)
 
+            # A moderation verdict can arrive with no message content at all,
+            # so the stop reason and billed usage are read before the
+            # structure/content checks below, which would otherwise mask the
+            # verdict as a generic BedrockError("Invalid response structure")
+            # / empty-content error.
+            stop_reason = (
+                response.get("stopReason") if isinstance(response, dict) else None
+            )
+            usage = (response.get("usage") or {}) if isinstance(response, dict) else {}
+            if token_tracker is not None and usage:
+                token_tracker.add_usage(
+                    {
+                        "prompt_tokens": usage.get("inputTokens", 0),
+                        "completion_tokens": usage.get("outputTokens", 0),
+                        "total_tokens": usage.get("totalTokens", 0),
+                    }
+                )
+
+            if stop_reason == "content_filtered":
+                # The model's Responsible-AI filter rejected the output.
+                # Raised whether or not text survived: flagged output must
+                # never be returned or cached as a complete answer.
+                raise _content_policy_violation(stop_reason)
+
+            if stop_reason == "guardrail_intervened":
+                trace = response.get("trace") or {}
+                guardrail = (
+                    trace.get("guardrail", {}) if isinstance(trace, dict) else {}
+                )
+                actions = _collect_guardrail_actions(guardrail)
+                if not (actions and all(a == "ANONYMIZED" for a in actions)):
+                    # Fail closed: an intervention without proof that every
+                    # assessment merely anonymized is treated as a block. A
+                    # trace that is absent, empty or carries BLOCKED must not
+                    # let flagged or unverified output look like an answer.
+                    raise _content_policy_violation(stop_reason, actions)
+                # Every assessment ANONYMIZED: the masked content is a usable
+                # response (AWS documents ANONYMIZE as usable, not a block).
+
             # Validate response structure
             if (
                 not response
@@ -469,19 +576,8 @@ async def bedrock_complete_if_cache(
             ]
             content = "".join(text_blocks) if text_blocks else None
 
-            stop_reason = response.get("stopReason")
             hit_context_limit = stop_reason == "model_context_window_exceeded"
             truncated = stop_reason == "max_tokens" or hit_context_limit
-
-            usage = response.get("usage") or {}
-            if token_tracker is not None and usage:
-                token_tracker.add_usage(
-                    {
-                        "prompt_tokens": usage.get("inputTokens", 0),
-                        "completion_tokens": usage.get("outputTokens", 0),
-                        "total_tokens": usage.get("totalTokens", 0),
-                    }
-                )
 
             if not content or content.strip() == "":
                 # Already a failure before this change; what was missing is the
@@ -499,7 +595,6 @@ async def bedrock_complete_if_cache(
                     if isinstance(block, dict)
                     and isinstance(block.get("reasoningContent"), dict)
                 )
-                usage = response.get("usage") or {}
                 diagnostics = format_response_diagnostics(
                     stopReason=stop_reason,
                     outputTokens=usage.get("outputTokens"),

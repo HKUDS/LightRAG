@@ -22,17 +22,39 @@ from tenacity import (
     retry_if_exception,
 )
 
+from lightrag.exceptions import (
+    ContentPolicyViolationError,
+    EmptyTruncatedResponseError,
+)
 from lightrag.llm_roles import apply_llm_timeout
 from lightrag.utils import (
     embedding_timeout,
     provider_timeout,
     TruncatedResponse,
+    empty_length_truncated_hint,
+    format_response_diagnostics,
     wrap_embedding_func_with_attrs,
     logger,
 )
 
 import numpy as np
 from typing import Any, Union, List, Optional, Dict
+
+
+class InvalidResponseError(Exception):
+    """A Zhipu completion that carried no usable content.
+
+    Declared per binding, as in ``lightrag.llm.anthropic`` / ``gemini`` /
+    ``ollama``, so importing one binding never drags in another's setup.
+
+    Deliberately absent from the retry predicate below: that predicate only
+    matches zai-sdk connection and transient-status errors, so a malformed
+    successful response fails after ONE request here, as in anthropic and
+    ollama. A fresh attempt cannot change a response the provider already
+    accepted as successful.
+    """
+
+    pass
 
 
 def _build_client(client_cls, api_key: Optional[str]):
@@ -80,6 +102,43 @@ def _is_retryable_zhipu_error(error: BaseException) -> bool:
             status_code in _RETRYABLE_STATUS_CODES or status_code >= 500
         )
     return False
+
+
+# Zhipu's content-safety verdict code. A flagged request is answered with
+# HTTP 400 and ``{"error": {"code": "1301", ...}}``; the code is a STRING in
+# the provider's envelope.
+_ZHIPU_CONTENT_SENSITIVE_CODE = "1301"
+
+
+def _is_zhipu_content_policy_error(error: BaseException) -> bool:
+    """Report whether a zai-sdk status error is Zhipu's content-safety verdict.
+
+    zai-sdk raises its own ``APIStatusError`` (``APIRequestFailedError`` for a
+    400) that carries ``.status_code`` and ``.response`` but no ``.body`` /
+    ``.code``, so the provider's code is read from the raw HTTP response body.
+    A body that is absent, non-JSON or not the documented ``{"error": {...}}``
+    envelope is not a verdict. ``str(code)`` also matches a numeric code an SDK
+    version might hand back.
+    """
+    try:
+        from zai.core._errors import APIStatusError
+    except ImportError:
+        return False
+    if not isinstance(error, APIStatusError):
+        return False
+    response = getattr(error, "response", None)
+    if response is None:
+        return False
+    try:
+        body = response.json()
+    except (AttributeError, ValueError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    error_body = body.get("error")
+    if not isinstance(error_body, dict):
+        return False
+    return str(error_body.get("code")) == _ZHIPU_CONTENT_SENSITIVE_CODE
 
 
 @retry(
@@ -222,6 +281,19 @@ async def zhipu_complete_if_cache(
             "completes on its own"
         )
         raise
+    except Exception as error:
+        # A moderation verdict arrives as an HTTP 400 body code, not a
+        # finish_reason. Classify it so the non-retryable type reaches
+        # doc_status; every other SDK error keeps its own type and retry
+        # behaviour (the predicate above retries only transient ones).
+        if _is_zhipu_content_policy_error(error):
+            error_message = (
+                "Content policy violation (Zhipu moderation rejected the "
+                f"request, code {_ZHIPU_CONTENT_SENSITIVE_CODE}): {error}"
+            )
+            logger.error(error_message)
+            raise ContentPolicyViolationError(error_message) from error
+        raise
 
     # Record usage before extracting content: the API call is already billed
     # and response.usage is already populated at this point, regardless of
@@ -235,12 +307,34 @@ async def zhipu_complete_if_cache(
             }
         )
 
-    if not response.choices or response.choices[0].message is None:
-        return ""
+    if not response.choices:
+        error_message = (
+            "Invalid response from Zhipu API: the completion carried no choices"
+        )
+        logger.error(error_message)
+        raise InvalidResponseError(error_message)
     choice = response.choices[0]
     message = choice.message
+    if message is None:
+        error_message = (
+            "Invalid response from Zhipu API: the completion carried no message"
+        )
+        logger.error(error_message)
+        raise InvalidResponseError(error_message)
     content = message.content or ""
     reasoning_content = getattr(message, "reasoning_content", "") or ""
+    finish_reason = getattr(choice, "finish_reason", None)
+
+    # Zhipu reports moderation as finish_reason="sensitive" (the streaming
+    # shape carries an empty delta). A policy stop is not truncation: flagged
+    # partial text must never be returned or cached as a complete answer.
+    if finish_reason == "sensitive":
+        error_message = (
+            "Zhipu response stopped by provider content moderation "
+            f"(finish_reason=sensitive, content_len={len(content)})"
+        )
+        logger.error(error_message)
+        raise ContentPolicyViolationError(error_message)
 
     if enable_cot and reasoning_content.strip():
         if content:
@@ -248,7 +342,36 @@ async def zhipu_complete_if_cache(
         else:
             content = f"<think>{reasoning_content}</think>"
 
-    if getattr(choice, "finish_reason", None) == "length":
+    if not content.strip():
+        # An empty completion silently loses the chunk's knowledge: the caller
+        # would index no entities, cache "", and still report the document
+        # PROCESSED. The finish reason picks the type, and the type picks the
+        # retry policy: token-limit exhaustion is deterministic for a given
+        # prompt and output budget, so it fails once instead of re-buying the
+        # same full-budget generation.
+        diagnostics = format_response_diagnostics(
+            finish_reason=finish_reason,
+            content_len=len(content),
+            reasoning_content_len=len(reasoning_content.strip()),
+        )
+        if finish_reason == "length":
+            hint = empty_length_truncated_hint(
+                "consider raising max_tokens or disabling thinking mode",
+                reasoning_consumed_budget=bool(reasoning_content.strip()),
+            )
+            error_message = (
+                f"Received empty content from Zhipu API ({diagnostics}): {hint}"
+            )
+            logger.error(error_message)
+            raise EmptyTruncatedResponseError(error_message)
+        error_message = (
+            "Received empty content from Zhipu API "
+            f"({diagnostics}): model produced no output"
+        )
+        logger.error(error_message)
+        raise InvalidResponseError(error_message)
+
+    if finish_reason == "length":
         return TruncatedResponse(content)
     return content
 

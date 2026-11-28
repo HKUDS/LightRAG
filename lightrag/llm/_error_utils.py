@@ -56,3 +56,60 @@ def is_permanent_rate_limit_error(error: BaseException) -> bool:
             return True
     rendered = str(error).lower()
     return any(slug in rendered for slug in PERMANENT_RATE_LIMIT_ERROR_TYPES)
+
+
+# Provider content-moderation verdict codes, matched case-insensitively on the
+# error CODE (never error.type: DashScope models that as invalid_request_error
+# while the verdict lives in code). The endswith rule covers the Algo-prefixed
+# native variant (InternalError.Algo.DataInspectionFailed) while excluding
+# InternalError.DataInspection / InvalidParameter.DataInspection, which are a
+# moderation-service outage and a media decode failure, not content verdicts.
+_CONTENT_POLICY_ERROR_CODES = frozenset(
+    {
+        "data_inspection_failed",
+        "datainspectionfailed",
+        "content_filter",
+    }
+)
+
+# Distinctive DashScope slugs for the message fallbacks. "content_filter" is
+# deliberately NOT among them: that word appears in Azure annotation payloads
+# (prompt_filter_results) on choice-less chunks, which are not block verdicts.
+_DASHSCOPE_POLICY_SLUGS = ("data_inspection_failed", "datainspectionfailed")
+
+
+def is_content_policy_error(error: BaseException) -> bool:
+    """Report whether an API error is a provider content-moderation verdict.
+
+    Probes ``error.body`` (the OpenAI SDK unwraps the JSON envelope via
+    ``body.get("error", body)``, so both shapes are checked) for a verdict
+    code: DashScope ``data_inspection_failed`` / ``DataInspectionFailed``,
+    including Algo-prefixed variants, and Azure ``content_filter``. Messages
+    are not stable (URL suffixes, ``<400>`` prefixes), so a message-substring
+    fallback covers proxies that flatten the body; with no dict body at all,
+    the rendered message is the last resort, matched only on the two DashScope
+    slugs.
+
+    NOT verdicts (must keep their own retry/failure behaviour):
+    ``InternalError.DataInspection`` (moderation service unavailable),
+    ``InvalidParameter.DataInspection`` (media download/decode failure),
+    ``Contain.Forbidden.Label.Error`` (account/billing) and ``FaqRuleBlocked``
+    (FAQ rule). The suffix rule excludes the first two by construction.
+    """
+    body = getattr(error, "body", None)
+    candidates = [body]
+    if isinstance(body, dict):
+        candidates.append(body.get("error"))
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        code = str(candidate.get("code") or "").strip().lower()
+        if code in _CONTENT_POLICY_ERROR_CODES or code.endswith("datainspectionfailed"):
+            return True
+        message = str(candidate.get("message") or "").lower()
+        if any(slug in message for slug in _DASHSCOPE_POLICY_SLUGS):
+            return True
+    if isinstance(body, dict):
+        return False
+    rendered = str(error).lower()
+    return any(slug in rendered for slug in _DASHSCOPE_POLICY_SLUGS)

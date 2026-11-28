@@ -45,9 +45,12 @@ from lightrag.utils import (
 )
 
 from lightrag.api import __api_version__
-from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.exceptions import ContentPolicyViolationError, EmptyTruncatedResponseError
 from lightrag.tiktoken_cache import load_tiktoken_encoding
-from lightrag.llm._error_utils import is_permanent_rate_limit_error
+from lightrag.llm._error_utils import (
+    is_content_policy_error,
+    is_permanent_rate_limit_error,
+)
 
 import numpy as np
 import base64
@@ -393,6 +396,12 @@ async def _close_openai_stream_response(response: Any) -> None:
 # Token-limit-truncated completions (finish_reason == "length") are returned
 # wrapped in TruncatedResponse so the cache layer skips persisting incomplete
 # output. See the "Note on truncated structured output" in the docstring below.
+#
+# ContentPolicyViolationError (provider moderation verdicts: DashScope
+# data_inspection_failed, Azure/OpenAI content_filter) is deliberately absent
+# from the retry predicate below, like EmptyTruncatedResponseError: the verdict
+# is deterministic for a given prompt, so retrying re-buys the same rejection
+# at full price.
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -456,6 +465,13 @@ async def openai_complete_if_cache(
     prevents later runs — even with a higher token budget — from reusing the
     incomplete data. See `is_truncated_response` in `lightrag.utils`.
 
+    A `finish_reason == "content_filter"` stop (OpenAI/Azure moderation) is NOT
+    truncation: it raises the non-retryable `ContentPolicyViolationError`
+    whether the content is empty or partial, streaming or not, so flagged text
+    is never returned or cached as an answer. Provider moderation 400s
+    (DashScope `data_inspection_failed`, Azure `content_filter`) and mid-stream
+    moderation errors raise the same type.
+
     Note on `reasoning_content`: This feature relies on a Deepseek Style `reasoning_content`
     in the API response, which may be provided by OpenAI-compatible endpoints that support
     Chain of Thought.
@@ -516,6 +532,8 @@ async def openai_complete_if_cache(
 
     Raises:
         InvalidResponseError: If the response from OpenAI is invalid or empty.
+        ContentPolicyViolationError: If provider moderation rejected the
+            request or stopped generation (``content_filter``). Not retried.
         APIConnectionError: If there is a connection error with the OpenAI API.
         RateLimitError: If the OpenAI API rate limit is exceeded. Retried
             with backoff, except for a permanent spend stop (a LiteLLM Proxy
@@ -668,6 +686,15 @@ async def openai_complete_if_cache(
         await _close_openai_client_if_unowned(
             openai_async_client, caller_supplied_http_client
         )
+        # Provider moderation verdicts (DashScope data_inspection_failed,
+        # Azure content_filter) are deterministic: fail fast with the typed
+        # non-retryable error, keeping the provider's reason in the message.
+        if is_content_policy_error(e):
+            logger.error(f"OpenAI API content policy violation (not retrying): {e}")
+            raise ContentPolicyViolationError(
+                "Content policy violation (provider moderation rejected the "
+                f"request): {e}"
+            ) from e
         # Heuristic: match on the provider's error wording. It can drift across
         # providers/proxies or localization, and a genuinely malformed request
         # body (e.g. invalid user-supplied JSON) could also surface this text —
@@ -732,6 +759,19 @@ async def openai_complete_if_cache(
                             f"Received chunk without choices (likely Azure content filter): {chunk}"
                         )
                         continue
+
+                    # A moderation stop (OpenAI/Azure content_filter) can arrive
+                    # on a terminal chunk with an empty or absent delta, so this
+                    # check runs BEFORE the no-delta skip below. Raising here
+                    # lands in the except branch, which closes stream + client.
+                    if (
+                        getattr(chunk.choices[0], "finish_reason", None)
+                        == "content_filter"
+                    ):
+                        raise ContentPolicyViolationError(
+                            "OpenAI stream stopped by provider content filter "
+                            "(finish_reason=content_filter)"
+                        )
 
                     # Check if delta exists
                     if not hasattr(chunk.choices[0], "delta"):
@@ -846,6 +886,15 @@ async def openai_complete_if_cache(
                 await _close_openai_client_if_unowned(
                     openai_async_client, caller_supplied_http_client
                 )
+                # DashScope streaming moderation arrives as HTTP 200 + an SSE
+                # error chunk (possibly after partial content), which the SDK
+                # raises as APIError here -- not as a create() BadRequestError.
+                # Classify it after cleanup so the verdict still fails fast.
+                if is_content_policy_error(e):
+                    raise ContentPolicyViolationError(
+                        "Content policy violation (provider moderation rejected "
+                        f"the stream): {e}"
+                    ) from e
                 raise
             finally:
                 # Final safety check for unclosed COT tags, skipped while
@@ -947,6 +996,8 @@ async def openai_complete_if_cache(
                             "consider raising max_tokens or disabling thinking mode",
                             reasoning_consumed_budget=bool(reasoning_len),
                         )
+                    elif finish_reason == "content_filter":
+                        hint = "provider content filter stopped the generation"
                     elif reasoning_len:
                         hint = (
                             "model returned reasoning-only output "
@@ -973,21 +1024,40 @@ async def openai_complete_if_cache(
                     # it raises EmptyTruncatedResponseError — absent from the
                     # retry predicate — and fails after one request instead of
                     # buying two more full-budget generations plus backoff.
-                    # The other empty modes stay retryable: those are sampling
-                    # artifacts a fresh attempt can genuinely fix.
+                    # A content_filter stop is a provider moderation verdict,
+                    # deterministic the same way, and raises the non-retryable
+                    # ContentPolicyViolationError. The other empty modes stay
+                    # retryable: those are sampling artifacts a fresh attempt
+                    # can genuinely fix.
                     if finish_reason == "length":
                         raise EmptyTruncatedResponseError(error_message)
+                    elif finish_reason == "content_filter":
+                        raise ContentPolicyViolationError(error_message)
                     raise InvalidResponseError(error_message)
 
             # Apply Unicode decoding to final content if needed
             if r"\u" in final_content:
                 final_content = safe_unicode_decode(final_content.encode("utf-8"))
 
+            # A policy stop is not caller-budget truncation (same decision as
+            # openai_responses.py's non-budget incomplete handling): returning
+            # the tail would present flagged partial text as a complete answer,
+            # so it raises instead of being returned or cached. Only the length
+            # is logged, never the flagged content.
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason == "content_filter":
+                error_message = (
+                    "OpenAI response stopped by provider content filter "
+                    f"(finish_reason=content_filter, content_len={len(final_content)})"
+                )
+                logger.error(error_message)
+                raise ContentPolicyViolationError(error_message)
+
             # Flag token-limit truncation so the cache layer skips persisting
             # partial output. The content is still returned unchanged for
             # best-effort salvage (e.g. tolerant JSON parsing); TruncatedResponse
             # is a str subclass, so downstream processing is unaffected.
-            if getattr(response.choices[0], "finish_reason", None) == "length":
+            if finish_reason == "length":
                 logger.warning(
                     "OpenAI response truncated by token limit "
                     f"(finish_reason=length, content_len={len(final_content)}), returning partial content"

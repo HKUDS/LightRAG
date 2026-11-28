@@ -7,10 +7,12 @@ offline CI job with no network and no API key.
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
+from openai import APIError, BadRequestError
 from tenacity import wait_none
 
-from lightrag.exceptions import EmptyTruncatedResponseError
+from lightrag.exceptions import ContentPolicyViolationError, EmptyTruncatedResponseError
 from lightrag.llm.openai_responses import (
     InvalidResponseError,
     ResponseRefusedError,
@@ -600,14 +602,15 @@ def _incomplete(reason: str, usage: Any = None) -> SimpleNamespace:
 async def test_streaming_non_budget_incomplete_terminal_raises(monkeypatch):
     """`response.incomplete` also covers stops that are not token-limit
     truncation. Without a branch of its own, a content-filtered stream with no
-    text ends successfully and empty."""
+    text ends successfully and empty. A content_filter stop is a provider
+    moderation verdict, so it raises the non-retryable typed error."""
     _patch_client(
         monkeypatch, _FakeStream([_incomplete("content_filter", _usage(3, 0))])
     )
 
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
-    with pytest.raises(InvalidResponseError) as excinfo:
+    with pytest.raises(ContentPolicyViolationError) as excinfo:
         await _collect(result)
     assert "content_filter" in str(excinfo.value)
 
@@ -628,7 +631,7 @@ async def test_streaming_non_budget_incomplete_is_not_masked_by_partial_text(
     result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
 
     chunks: list[str] = []
-    with pytest.raises(InvalidResponseError):
+    with pytest.raises(ContentPolicyViolationError):
         async for chunk in result:
             chunks.append(chunk)
     assert "".join(chunks) == "par"
@@ -648,7 +651,7 @@ async def test_streaming_non_budget_incomplete_still_counts_usage(monkeypatch):
         token_tracker=SimpleNamespace(add_usage=recorded.append),
     )
 
-    with pytest.raises(InvalidResponseError):
+    with pytest.raises(ContentPolicyViolationError):
         await _collect(result)
     # The attempt spent its budget whether or not the output was usable.
     assert recorded == [{"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}]
@@ -982,7 +985,8 @@ async def test_refusal_content_part_raises_rather_than_reporting_empty_output(
 async def test_non_budget_incomplete_status_raises(monkeypatch):
     """The non-streaming sibling of the stopped terminal: content on a payload
     stopped by a content filter is the tail of a generation that did not
-    finish, so returning it would present it as a complete answer."""
+    finish, so returning it would present it as a complete answer. The stop is
+    a provider moderation verdict, hence the non-retryable typed error."""
     payload = _response(
         output=[_message("partial")],
         status="incomplete",
@@ -991,7 +995,7 @@ async def test_non_budget_incomplete_status_raises(monkeypatch):
 
     error = await _non_streaming_failure(monkeypatch, payload)
 
-    assert isinstance(error, InvalidResponseError)
+    assert isinstance(error, ContentPolicyViolationError)
     assert "content_filter" in str(error)
 
 
@@ -1058,3 +1062,114 @@ async def test_streaming_completed_with_reasoning_only_does_not_raise(monkeypatc
     )
 
     assert await _collect(result) == "<think>trace</think>"
+
+
+# --------------------------------------------------------------------------
+# Content-moderation verdicts (ContentPolicyViolationError)
+# --------------------------------------------------------------------------
+
+
+async def test_non_stream_content_filter_costs_one_attempt(monkeypatch):
+    """A moderation verdict is deterministic for the prompt, so the decorated
+    call must fail after ONE request instead of buying two more retries."""
+    client = _patch_client(
+        monkeypatch,
+        _response(
+            output=[_message("partial")],
+            status="incomplete",
+            incomplete_reason="content_filter",
+        ),
+    )
+
+    with pytest.raises(ContentPolicyViolationError) as excinfo:
+        await openai_responses_complete_if_cache("gpt-5.6", "hi")
+
+    assert len(client.responses.calls) == 1
+    assert "content_filter" in str(excinfo.value)
+    assert client.closed
+
+
+async def test_other_incomplete_reason_stays_retryable_invalid_response(monkeypatch):
+    """Only content_filter is a moderation verdict: any other non-budget
+    incomplete reason keeps the retryable InvalidResponseError."""
+    client = _patch_client(
+        monkeypatch,
+        _response(
+            output=[_message("partial")],
+            status="incomplete",
+            incomplete_reason="upstream_stop",
+        ),
+    )
+
+    with pytest.raises(InvalidResponseError) as excinfo:
+        await openai_responses_complete_if_cache("gpt-5.6", "hi")
+
+    assert not isinstance(excinfo.value, ContentPolicyViolationError)
+    assert "upstream_stop" in str(excinfo.value)
+    assert len(client.responses.calls) == 3, "a non-verdict stop stays retryable"
+
+
+async def test_policy_400_fails_after_one_attempt(monkeypatch):
+    """DashScope moderation on the Responses transport: HTTP 400 with the
+    verdict in the inner error body's code, not in error.type."""
+    body = {
+        "code": "data_inspection_failed",
+        "type": "invalid_request_error",
+        "param": None,
+        "message": "Input data may contain inappropriate content.",
+    }
+    request = httpx.Request("POST", "https://proxy.example/v1/responses")
+    response = httpx.Response(status_code=400, request=request)
+    error = BadRequestError(f"Error code: 400 - {body}", response=response, body=body)
+    client = _patch_client(monkeypatch, error)
+
+    with pytest.raises(ContentPolicyViolationError) as excinfo:
+        await openai_responses_complete_if_cache("gpt-5.6", "hi")
+
+    assert len(client.responses.calls) == 1
+    assert "inappropriate content" in str(excinfo.value)
+    assert client.closed
+
+
+class _RaisingStream:
+    """Yields one text delta, then raises the SDK error a DashScope SSE
+    moderation chunk produces mid-iteration (APIError, not BadRequestError)."""
+
+    def __init__(self, error: Exception):
+        self._error = error
+        self.aclosed = False
+
+    def __aiter__(self):
+        async def gen():
+            yield _delta("response.output_text.delta", "par")
+            raise self._error
+
+        return gen()
+
+    async def aclose(self) -> None:
+        self.aclosed = True
+
+
+async def test_streaming_mid_stream_policy_apierror_raises(monkeypatch):
+    """The streaming except branch must classify a mid-stream moderation
+    APIError too; partial text already yielded is preserved, cleanup runs."""
+    body = {
+        "code": "data_inspection_failed",
+        "message": "Output data may contain inappropriate content.",
+    }
+    request = httpx.Request("POST", "https://proxy.example/v1/responses")
+    error = APIError(f"Error code: 400 - {body}", request=request, body=body)
+    stream = _RaisingStream(error)
+    client = _patch_client(monkeypatch, stream)
+
+    result = await openai_responses_complete_if_cache("gpt-5.6", "hi", stream=True)
+
+    chunks: list[str] = []
+    with pytest.raises(ContentPolicyViolationError) as excinfo:
+        async for chunk in result:
+            chunks.append(chunk)
+
+    assert "".join(chunks) == "par"
+    assert "inappropriate content" in str(excinfo.value)
+    assert stream.aclosed
+    assert client.closed

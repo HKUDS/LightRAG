@@ -97,6 +97,40 @@ class ReasoningOnlyResponseError(RuntimeError):
     """
 
 
+class ContentPolicyViolationError(RuntimeError):
+    """A provider-side content-moderation verdict rejected the request or output.
+
+    Raised by the provider bindings for moderation verdicts: Aliyun DashScope
+    ``data_inspection_failed`` (input inspection or output filtering), Azure
+    ``content_filter`` 400s, and OpenAI/Azure ``finish_reason="content_filter"``
+    / Responses ``incomplete_reason="content_filter"`` stops, with or without
+    partial text. The provider's reason is preserved in the message.
+
+    Deliberately absent from every binding's retry predicate, like
+    ``ResponseRefusedError``: the verdict is deterministic for a given prompt,
+    so repeating the same prompt buys the same verdict at full price. A caller
+    that wants another attempt must change the input.
+
+    Distinct from its neighbours:
+
+    - ``ResponseRefusedError`` is the MODEL refusing; this is the PROVIDER's
+      moderation layer, which can flag input the model never saw.
+    - ``EmptyTruncatedResponseError`` is the caller's token budget stopping
+      generation, and partial output there is salvageable because the stop was
+      the caller's own limit. A policy stop is not truncation: flagged partial
+      text must never be returned or cached as a complete answer.
+
+    Message-only constructor (a single positional string): ``lightrag.utils``
+    re-raises binding errors as ``type(e)(error_msg)`` and
+    ``create_prefixed_exception`` reconstructs via ``type(e)(*args)``, so
+    keyword-only structured fields would degrade to ``TypeError`` and lose the
+    type in doc_status.
+
+    Streaming may raise after partial text was already yielded — accepted
+    residue: the error tells the consumer the answer is flagged/incomplete.
+    """
+
+
 class EmptySummaryResponseError(RuntimeError):
     """An entity or relation description summary that came back empty.
 
