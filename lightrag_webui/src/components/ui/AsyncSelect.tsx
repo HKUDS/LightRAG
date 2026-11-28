@@ -237,11 +237,14 @@ export function AsyncSelect<T>({
                 </CommandEmpty>
               ))}
             <CommandGroup>
-              {options.map((option) => {
+              {options.map((option, index) => {
                 const optionValue = getOptionValue(option);
-                // Fix cmdk filtering issue: use empty string when search is empty
-                // This ensures all items are shown when searchTerm is empty
-                const itemValue = searchTerm.trim() === '' ? '' : optionValue;
+                // cmdk only tracks which item is highlighted by this value
+                // (shouldFilter is off, so it never hides an item). It must be
+                // non-empty, or cmdk never highlights the item and the keyboard
+                // cannot pick it, and unique: cmdk trims it, so labels that
+                // differ only in surrounding whitespace would collide.
+                const itemValue = `${index}-${optionValue}`;
 
                 return (
                   <CommandItem

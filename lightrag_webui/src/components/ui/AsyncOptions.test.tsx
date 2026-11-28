@@ -104,14 +104,16 @@ describe('Async primitive accessibility', () => {
     expect(screen.queryAllByRole('option')).toHaveLength(state === 'open' && composing ? 1 : 0)
   })
 
+  // 'Alpha ' differs from 'Alpha' only by whitespace, which cmdk trims from
+  // item values: the keyboard case picks it to prove the two stay distinct.
   test.each([
-    ['keyboard', true],
-    ['pointer', false]
-  ] as const)('AsyncSelect after a %s selection', async (input, viaKeyboard) => {
+    ['keyboard', true, 'Alpha '],
+    ['pointer', false, 'Alpha']
+  ] as const)('AsyncSelect after a %s selection', async (input, viaKeyboard, picked) => {
     const onChange = mock<(value: string, meta: { viaKeyboard: boolean }) => void>(() => {})
     renderWithProviders(
       <AsyncSelect
-        fetcher={() => Promise.resolve(['Alpha'])}
+        fetcher={() => Promise.resolve(['*', 'Alpha', 'Alpha '])}
         preload
         renderOption={(o: string) => <span>{o}</span>}
         getOptionValue={(o: string) => o}
@@ -125,7 +127,7 @@ describe('Async primitive accessibility', () => {
     const trigger = screen.getByRole('combobox', { name: 'Pick entity' })
     const user = userEvent.setup()
     await user.click(trigger)
-    const option = await screen.findByText('Alpha')
+    const option = (await screen.findAllByText('Alpha'))[0]
     // Radix wires the trigger to the popover (a dialog holding the search
     // input and the listbox); a caller-set id would be overwritten by cmdk.
     expect(trigger.getAttribute('aria-haspopup')).toBe('dialog')
@@ -133,16 +135,15 @@ describe('Async primitive accessibility', () => {
     expect(popup?.contains(screen.getByRole('listbox'))).toBe(true)
     if (input === 'keyboard') {
       // Clicking into the search box first: the key presses after it must
-      // still count as a keyboard selection. A typed term gives the items
-      // real cmdk values (with an empty term they are all '', which cmdk never
-      // highlights), so Enter picks the first one.
-      const search = screen.getByPlaceholderText('Search...')
-      await user.click(search)
-      await user.keyboard('Al{Enter}')
+      // still count as a keyboard selection. The search stays empty, so the
+      // arrow keys must reach the options without a typed term ('*' starts
+      // highlighted).
+      await user.click(screen.getByPlaceholderText('Search...'))
+      await user.keyboard('{ArrowDown}{ArrowDown}{Enter}')
     } else {
       await user.click(option)
     }
-    expect(onChange.mock.calls).toEqual([['Alpha', { viaKeyboard }]])
+    expect(onChange.mock.calls).toEqual([[picked, { viaKeyboard }]])
     // Radix returns focus from a setTimeout(0) queued during the close;
     // one zero-delay macrotask queued after it is enough (no fixed sleep).
     await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
