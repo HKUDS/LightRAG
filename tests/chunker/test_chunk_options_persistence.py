@@ -1319,37 +1319,44 @@ def test_ainsert_legacy_path_honors_f_size_env(tmp_path, monkeypatch):
     )
 
 
+_SIZE_ENV = {"fixed_token": 640, "recursive_character": 777, "semantic_vector": 888}
+
+
 @pytest.mark.offline
-def test_partial_chunker_config_still_picks_up_size_env(tmp_path, monkeypatch):
+@pytest.mark.parametrize("explicit", list(_SIZE_ENV))
+def test_partial_chunker_config_still_picks_up_size_env(
+    tmp_path, monkeypatch, explicit
+):
     """A partial ``addon_params['chunker']`` skips ``default_chunker_config``
     (``normalize_addon_params`` only defaults the whole ``chunker`` key when
     absent), so ``_apply_chunk_size_overlay`` must mirror the strategy
     size-env seeding — otherwise ``CHUNK_F_SIZE`` / ``CHUNK_R_SIZE`` /
     ``CHUNK_V_SIZE`` are silently ignored for partial configs.
+
+    Each case gives one strategy an explicit size, which must beat its env
+    (tier 1 > tier 2), while the other two are backfilled from env. Every
+    strategy is a separate entry of the backfill loop, so each one has to be
+    seen both ways.
     """
     monkeypatch.setenv("CHUNK_F_SIZE", "640")
     monkeypatch.setenv("CHUNK_R_SIZE", "777")
     monkeypatch.setenv("CHUNK_V_SIZE", "888")
 
-    # Partial config: F has no chunk_token_size slot and V no sub-dict at all
-    # (the overlap overlay creates F/R/P but never V); both must be backfilled
-    # from env. R carries an explicit size, which beats CHUNK_R_SIZE
-    # (tier 1 > tier 2).
-    rag = _new_rag(
-        tmp_path,
-        addon_params={
-            "chunker": {
-                "fixed_token": {"split_by_character": "\n"},
-                "recursive_character": {"chunk_token_size": 320},
-            }
-        },
-    )
+    # F keeps a non-size caller value. V has no sub-dict unless it is the
+    # explicit one: the overlap overlay creates F/R/P before the size backfill
+    # runs, but never V, so V alone reaches the missing-sub-dict branch.
+    chunker_cfg: dict = {"fixed_token": {"split_by_character": "\n"}}
+    chunker_cfg.setdefault(explicit, {})["chunk_token_size"] = 320
+
+    rag = _new_rag(tmp_path, addon_params={"chunker": chunker_cfg})
+
     chunker = rag.addon_params["chunker"]
-    assert chunker["fixed_token"]["chunk_token_size"] == 640
+    assert {key: chunker[key]["chunk_token_size"] for key in _SIZE_ENV} == {
+        **_SIZE_ENV,
+        explicit: 320,
+    }
     # Explicit caller value preserved alongside the env-backfilled size.
     assert chunker["fixed_token"]["split_by_character"] == "\n"
-    assert chunker["recursive_character"]["chunk_token_size"] == 320
-    assert chunker["semantic_vector"]["chunk_token_size"] == 888
 
 
 @pytest.mark.offline
