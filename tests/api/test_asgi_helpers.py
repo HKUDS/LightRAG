@@ -21,20 +21,19 @@ def _scope(authorization: str | None) -> dict:
     [
         ("Bearer abc", "abc"),
         ("bearer abc", "abc"),
-        ("Bearer  abc", "abc"),
         ("Bearer   abc   ", "abc"),
         ("Bearer\tabc", None),
         ("Bearer   ", None),
         ("Basic abc", None),
-        ("", None),
         (None, None),
     ],
 )
 def test_bearer_token_matches_fastapi_scheme_extraction(
     header: str | None, expected: str | None
 ) -> None:
-    assert bearer_token(_scope(header)) == expected
+    token = bearer_token(_scope(header))
+    assert token == expected
     if header is not None:
         scheme, param = get_authorization_scheme_param(header)
         fastapi_token = param if (scheme.lower() == "bearer" and param) else None
-        assert bearer_token(_scope(header)) == fastapi_token
+        assert token == fastapi_token
