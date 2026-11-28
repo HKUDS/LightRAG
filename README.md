@@ -560,6 +560,7 @@ Entries marked 🇨🇳 also ship a Chinese translation as `*-zh.md` in the same
 | [ParagraphSemanticChunking.md](./docs/ParagraphSemanticChunking.md) [🇨🇳](./docs/ParagraphSemanticChunking-zh.md) | The `Paragraph semantic (P)` chunking strategy: heading/paragraph/table-aware boundaries, reference dropping |
 | [LightRAGSidecarFormat.md](./docs/LightRAGSidecarFormat.md) [🇨🇳](./docs/LightRAGSidecarFormat-zh.md) | The sidecar (`*.parsed/`) interchange format every multimodal-capable parser engine must emit |
 | [ThirdPartyParser.md](./docs/ThirdPartyParser.md) [🇨🇳](./docs/ThirdPartyParser-zh.md) | Developing and registering your own parser engine |
+| [ThirdPartyEntityNameNormalizer.md](./docs/ThirdPartyEntityNameNormalizer.md) | Selecting a pure, idempotent entity-name plugin with `CUSTOM_ENTITY_NAME_NORMALIZER`; key limits and reindexing rules |
 | [ParserDebugCLI.md](./docs/ParserDebugCLI.md) [🇨🇳](./docs/ParserDebugCLI-zh.md) | `python -m lightrag.parser.cli` — parse a single file offline and inspect the result without a server |
 
 **Models and Storage**
