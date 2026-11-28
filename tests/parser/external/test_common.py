@@ -264,46 +264,44 @@ def test_manifest_load_treats_undecodable_file_as_missing(
     assert load_manifest(raw, expected_engine="docling") is None
 
 
-@pytest.mark.parametrize(
-    "bad_critical_file",
-    ["oops", ["a"], 42, True],
-)
-def test_manifest_load_treats_non_dict_critical_file_as_missing(
-    tmp_path: Path, bad_critical_file: object
-) -> None:
+def _load_docling_manifest(raw: Path) -> Manifest | None:
+    return load_manifest(raw, expected_engine="docling")
+
+
+def _load_mineru_manifest(raw: Path):
     from lightrag.parser.external.mineru.manifest import (
         load_manifest as load_mineru_manifest,
     )
 
-    raw_docling = tmp_path / "docling_raw"
-    raw_docling.mkdir()
-    (raw_docling / "_manifest.json").write_text(
-        json.dumps(
-            {
-                "version": "1.0",
-                "engine": "docling",
-                "critical_file": bad_critical_file,
-                "files": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert load_manifest(raw_docling, expected_engine="docling") is None
+    return load_mineru_manifest(raw)
 
-    raw_mineru = tmp_path / "mineru_raw"
-    raw_mineru.mkdir()
-    (raw_mineru / "_manifest.json").write_text(
-        json.dumps(
-            {
-                "version": "1.0",
-                "engine": "mineru",
-                "critical_file": bad_critical_file,
-                "files": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert load_mineru_manifest(raw_mineru) is None
+
+@pytest.mark.parametrize(
+    "engine, loader",
+    [("docling", _load_docling_manifest), ("mineru", _load_mineru_manifest)],
+    ids=["docling", "mineru"],
+)
+@pytest.mark.parametrize(
+    "bad_field",
+    [
+        # A non-object critical_file has no .get -> AttributeError.
+        {"critical_file": "oops"},
+        # JSON Infinity in a size field -> OverflowError from int().
+        {"source_size_bytes": float("inf")},
+    ],
+    ids=["non_dict_critical_file", "infinite_size"],
+)
+def test_manifest_load_treats_malformed_field_as_missing(
+    tmp_path: Path, engine: str, loader, bad_field: dict
+) -> None:
+    # A malformed field must read as a stale bundle instead of escaping:
+    # the parse template checks the bundle before clearing raw_dir, so an
+    # escaped error would fail every retry.
+    raw = tmp_path / f"demo.{engine}_raw"
+    raw.mkdir()
+    payload = {"version": "1.0", "engine": engine, "files": [], **bad_field}
+    (raw / "_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert loader(raw) is None
 
 
 # ---------------------------------------------------------------------------
