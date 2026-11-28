@@ -295,7 +295,9 @@ def _usage_counts(usage: Any) -> dict[str, int]:
 
     Thinking tokens are reported in ``thoughts_token_count``, outside
     ``candidates_token_count``, but are generated and billed as output, so
-    they count as completion tokens.
+    they count as completion tokens. ``cached_prompt_tokens`` (a subset of
+    ``prompt_tokens``) is sent only when Gemini reports it; a reported zero
+    is kept.
     """
     prompt_tokens = getattr(usage, "prompt_token_count", None) or 0
     completion_tokens = (getattr(usage, "candidates_token_count", None) or 0) + (
@@ -304,11 +306,15 @@ def _usage_counts(usage: Any) -> dict[str, int]:
     total_tokens = getattr(usage, "total_token_count", None)
     if total_tokens is None:
         total_tokens = prompt_tokens + completion_tokens
-    return {
+    counts = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+    cached_tokens = getattr(usage, "cached_content_token_count", None)
+    if cached_tokens is not None:
+        counts["cached_prompt_tokens"] = cached_tokens
+    return counts
 
 
 def _format_history_messages(history_messages: list[dict[str, Any]] | None) -> str:
