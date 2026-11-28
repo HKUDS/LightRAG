@@ -1707,7 +1707,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                             # Check if the same edge already exists (considering undirectedness)
                             if sorted_pair not in visited_edge_pairs:
-                                # Only add the edge if the target node is already in the result or will be added
+                                # Keep edges to visited nodes and candidates within the depth limit.
                                 if target_id in visited_nodes or (
                                     target_id not in visited_nodes
                                     and current_depth < max_depth
@@ -1724,10 +1724,8 @@ class Neo4JStorage(BaseGraphStorage):
                                     # Edge is already added to result, so we pass None as edge
                                     queue.append((target_node, None, current_depth + 1))
                                 else:
-                                    # At max depth, we've already added the edge but we don't add the node
-                                    # This prevents adding nodes beyond max_depth to the result
                                     logger.debug(
-                                        f"[{self.workspace}] Node {target_id} beyond max depth {max_depth}, edge added but node not included"
+                                        f"[{self.workspace}] Node {target_id} beyond max depth {max_depth}, skipping node and edge"
                                     )
                             else:
                                 # If target node already exists in result, we don't need to add it again
@@ -1738,6 +1736,14 @@ class Neo4JStorage(BaseGraphStorage):
                             logger.warning(
                                 f"[{self.workspace}] Skipping edge {edge_id} due to missing entity_id on target node"
                             )
+
+        # Queued neighbors can be excluded by the node cap. Filter after
+        # traversal so edges seen before both endpoints were admitted survive.
+        result.edges = [
+            edge
+            for edge in result.edges
+            if edge.source in visited_nodes and edge.target in visited_nodes
+        ]
 
         logger.info(
             f"[{self.workspace}] BFS subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
