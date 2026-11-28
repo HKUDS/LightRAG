@@ -137,6 +137,18 @@ def test_invalid_when_manifest_wrong_engine(
     assert is_bundle_valid(raw, source_file) is False
 
 
+def test_invalid_when_source_size_changes(
+    fresh_bundle: tuple[Path, Manifest], source_file: Path
+) -> None:
+    # Append bytes to the source file — size diverges from manifest fast-path.
+    # The size check returns before hashing, so the same-size hash case below
+    # cannot see a fast path that wrongly accepts.
+    raw, _ = fresh_bundle
+    with source_file.open("ab") as fh:
+        fh.write(b"x")
+    assert is_bundle_valid(raw, source_file) is False
+
+
 def test_invalid_when_source_hash_changes_but_size_same(
     fresh_bundle: tuple[Path, Manifest], source_file: Path
 ) -> None:

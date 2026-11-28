@@ -348,11 +348,12 @@ async def test_stream_capped_get_sends_accept_encoding_identity():
     "headers",
     [
         {},
-        # Padded and mixed-case at once: goes red if either the strip or the
-        # case fold is dropped from the comparison.
+        # The canonical value, and a padded mixed-case one that goes red if
+        # either the strip or the case fold is dropped from the comparison.
+        {"content-encoding": "identity"},
         {"content-encoding": "  Identity  "},
     ],
-    ids=["absent", "identity-padded-mixed-case"],
+    ids=["absent", "identity", "identity-padded-mixed-case"],
 )
 async def test_stream_capped_get_accepts_absent_or_identity_encoding(headers):
     from lightrag.parser.external._common import stream_capped_get
