@@ -629,17 +629,22 @@ async def test_gemini_counts_usage_before_the_empty_truncated_raise(
     before the token accounting, so the request that consumed its ENTIRE
     output budget on reasoning was the one request missing from usage
     reporting. Usage is now recorded before any validation raise, mirroring
-    the streaming path's finally."""
+    the streaming path's finally.
+
+    Such a request's output is almost all thinking, which Gemini reports in
+    ``thoughts_token_count`` outside ``candidates_token_count`` and bills as
+    output, so both count as completion tokens, also in a computed total."""
     from lightrag.exceptions import EmptyTruncatedResponseError
 
     gemini_module = _load_gemini_module(monkeypatch, request)
 
-    fake_client = _make_nonstreaming_client(
-        _make_fake_gemini_response(
-            thought_text="let me carefully consider the entities",
-            finish_reason="MAX_TOKENS",
-        )
+    response = _make_fake_gemini_response(
+        thought_text="let me carefully consider the entities",
+        finish_reason="MAX_TOKENS",
     )
+    response.usage_metadata.thoughts_token_count = 300
+    response.usage_metadata.total_token_count = None
+    fake_client = _make_nonstreaming_client(response)
     monkeypatch.setattr(gemini_module, "_get_gemini_client", lambda *args: fake_client)
 
     tracked: list[dict] = []
@@ -655,7 +660,7 @@ async def test_gemini_counts_usage_before_the_empty_truncated_raise(
         )
 
     assert tracked == [
-        {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        {"prompt_tokens": 1, "completion_tokens": 302, "total_tokens": 303}
     ], (
         "the exhausted request's tokens vanished from usage accounting "
         "because the raise preceded token_tracker.add_usage"
