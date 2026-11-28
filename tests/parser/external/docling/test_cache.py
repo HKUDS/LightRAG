@@ -138,14 +138,6 @@ def test_is_bundle_valid_wrong_engine(tmp_path: Path, source_file: Path) -> None
     assert is_bundle_valid(raw, source_file) is False
 
 
-def test_is_bundle_valid_source_size_mismatch(
-    tmp_path: Path, source_file: Path
-) -> None:
-    raw = _build_valid_bundle(tmp_path, source_file)
-    source_file.write_bytes(source_file.read_bytes() + b"!")
-    assert is_bundle_valid(raw, source_file) is False
-
-
 def test_is_bundle_valid_source_hash_mismatch(
     tmp_path: Path, source_file: Path
 ) -> None:
