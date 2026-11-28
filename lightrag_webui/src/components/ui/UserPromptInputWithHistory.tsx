@@ -181,8 +181,13 @@ export default function UserPromptInputWithHistory({
           className="absolute top-full left-0 right-0 z-50 mt-0.5 bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md shadow-lg max-h-96 overflow-auto min-w-0"
         >
           {history.map((prompt, index) => (
+            // role="none": the row is layout only, so the listbox owns the
+            // option directly. The delete button stays a sibling of the option,
+            // which a strict listbox check still reports; the full fix is a grid
+            // pattern or a keyboard delete shortcut.
             <div
               key={index}
+              role="none"
               className={cn(
                 'flex items-center justify-between pl-3 pr-1 py-2 text-sm hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
                 'border-b border-gray-100 dark:border-gray-700 last:border-b-0',

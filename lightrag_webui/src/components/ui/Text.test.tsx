@@ -15,15 +15,11 @@ describe('Text interactive semantics', () => {
     expect(onClick).toHaveBeenCalledTimes(1)
   })
 
-  test('a tooltip-only Text trigger is keyboard focusable', () => {
-    renderWithProviders(<Text text="Value" tooltip="Full value" />)
-    const trigger = screen.getByText('Value')
-    expect(trigger.tabIndex).toBe(0)
-  })
-
-  test('a plain Text without tooltip or onClick is not focusable', () => {
-    renderWithProviders(<Text text="Plain" />)
-    const trigger = screen.getByText('Plain')
-    expect(trigger.tabIndex).toBe(-1)
+  test.each([
+    ['a tooltip-only Text is keyboard focusable', 'Full value', 0],
+    ['a plain Text without tooltip or onClick is not focusable', undefined, -1]
+  ] as const)('%s', (_name, tooltip, tabIndex) => {
+    renderWithProviders(<Text text="Value" tooltip={tooltip} />)
+    expect(screen.getByText('Value').tabIndex).toBe(tabIndex)
   })
 })

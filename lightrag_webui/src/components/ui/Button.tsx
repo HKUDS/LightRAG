@@ -41,6 +41,9 @@ interface ButtonProps
 
 // Derive a name from the tooltip only for icon-only buttons: a visible-text button
 // must keep its text as the name so the name still contains the label (WCAG 2.5.3).
+// Only text reachable through `children` is seen: a child component that renders
+// its own text (`<Label />`) reads as icon-only, so such a button needs an
+// explicit `aria-label`.
 const hasVisibleText = (node: React.ReactNode): boolean => {
   if (typeof node === 'string' || typeof node === 'number') {
     return String(node).trim().length > 0

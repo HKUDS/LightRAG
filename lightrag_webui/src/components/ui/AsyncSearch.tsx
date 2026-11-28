@@ -232,7 +232,7 @@ export function AsyncSearch<T>({
                   value={getOptionValue(option)}
                   onSelect={handleSelect}
                   onMouseMove={() => onFocus(getOptionValue(option))}
-                  className="truncate cmd-item [content-visibility:auto] [contain-intrinsic-size:auto_2rem]"
+                  className="truncate cmd-item"
                 >
                   {renderOption(option)}
                 </CommandItem>

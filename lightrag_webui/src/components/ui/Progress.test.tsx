@@ -7,15 +7,11 @@ import Progress from './Progress'
 afterEach(cleanup)
 
 describe('Progress value semantics', () => {
-  test('forwards value to the progressbar as aria-valuenow', () => {
-    renderWithProviders(<Progress value={40} />)
-    const bar = screen.getByRole('progressbar')
-    expect(bar.getAttribute('aria-valuenow')).toBe('40')
-  })
-
-  test('no value stays indeterminate', () => {
-    renderWithProviders(<Progress />)
-    const bar = screen.getByRole('progressbar')
-    expect(bar.hasAttribute('aria-valuenow')).toBe(false)
+  test.each([
+    ['forwards value to the progressbar as aria-valuenow', 40, '40'],
+    ['no value stays indeterminate', undefined, null]
+  ] as const)('%s', (_name, value, valueNow) => {
+    renderWithProviders(<Progress value={value} />)
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe(valueNow)
   })
 })

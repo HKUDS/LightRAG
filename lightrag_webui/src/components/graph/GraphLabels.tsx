@@ -22,6 +22,7 @@ const GraphLabels = () => {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [selectKey, setSelectKey] = useState(0)
+  const selectContainerRef = useRef<HTMLDivElement>(null)
 
   // Pipeline state monitoring
   const pipelineBusy = useBackendState.use.pipelineBusy()
@@ -256,7 +257,7 @@ const GraphLabels = () => {
       >
         <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
       </Button>
-      <div className="w-full min-w-[280px] max-w-[500px]">
+      <div ref={selectContainerRef} className="w-full min-w-[280px] max-w-[500px]">
         <AsyncSelect<string>
           key={selectKey} // Force re-render when data changes
           className="min-w-[300px]"
@@ -282,7 +283,7 @@ const GraphLabels = () => {
           searchPlaceholder={t('graphPanel.graphLabels.placeholder')}
           noResultsMessage={t('graphPanel.graphLabels.noLabels')}
           value={label !== null ? label : '*'}
-          onChange={(newLabel) => {
+          onChange={(newLabel, { viaKeyboard }) => {
             const currentLabel = useSettingsStore.getState().queryLabel;
 
             // select the last item means query all
@@ -308,6 +309,17 @@ const GraphLabels = () => {
 
             // Force graph re-render and reset zoom/scale (must be AFTER setQueryLabel)
             useGraphStore.getState().incrementGraphDataVersion();
+
+            // A changed label bumps selectKey and remounts AsyncSelect, so the
+            // trigger Radix returns focus to is gone. Refocus the new one after
+            // it mounts, for keyboard selections only (AsyncSelect's rule).
+            if (viaKeyboard) {
+              requestAnimationFrame(() => {
+                selectContainerRef.current
+                  ?.querySelector<HTMLElement>('[role="combobox"]')
+                  ?.focus()
+              })
+            }
           }}
           clearable={false}  // Prevent clearing value on reselect
           debounceTime={500}
