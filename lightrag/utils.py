@@ -749,6 +749,9 @@ class EmbeddingFunc:
         send_dimensions: Whether to inject embedding_dim argument to underlying function
         model_name: Model name for implementing workspace data isolation in vector DB
         supports_asymmetric: Whether the underlying function supports context parameter so it can be injected
+        document_token_counter: Optional count of the complete provider input for a
+            document chunk, including any prefix and special tokens. Used by ordinary
+            ingestion before vectorization. Must be thread-safe.
     """
 
     embedding_dim: int
@@ -761,6 +764,8 @@ class EmbeddingFunc:
     supports_asymmetric: bool = (
         False  # Whether underlying function accepts context parameter
     )
+
+    document_token_counter: Callable[[str], int] | None = None
 
     def __post_init__(self):
         """Unwrap nested EmbeddingFunc to prevent double wrapping issues.
@@ -3915,8 +3920,13 @@ class Tokenizer:
     # multiple threads and under ``copy.deepcopy`` (see the class docstring),
     # and any mutable "observed retreat" state would violate both.
 
+    @staticmethod
     def _bounded_prefix_span(
-        self, content: str, start: int, max_tokens: int, chars_per_token: float
+        content: str,
+        start: int,
+        max_tokens: int,
+        chars_per_token: float,
+        count_tokens: Callable[[str], int],
     ) -> TokenSpan:
         """Find a safe ``TokenSpan`` starting at character offset ``start``.
 
@@ -3944,7 +3954,7 @@ class Tokenizer:
         good, good_count = 0, 0
         bad = remaining_len + 1
 
-        count = len(self.encode(content[start : start + seed]))
+        count = count_tokens(content[start : start + seed])
         if count <= max_tokens:
             good, good_count = seed, count
             if seed == remaining_len:
@@ -3952,7 +3962,7 @@ class Tokenizer:
             candidate = seed
             while True:  # double until a candidate overflows
                 candidate = min(remaining_len, candidate * 2)
-                probe_count = len(self.encode(content[start : start + candidate]))
+                probe_count = count_tokens(content[start : start + candidate])
                 if probe_count > max_tokens:
                     bad = candidate
                     break
@@ -3964,7 +3974,7 @@ class Tokenizer:
             candidate = seed
             while candidate > 1:  # halve until a candidate fits
                 candidate //= 2
-                probe_count = len(self.encode(content[start : start + candidate]))
+                probe_count = count_tokens(content[start : start + candidate])
                 if probe_count <= max_tokens:
                     good, good_count = candidate, probe_count
                     break
@@ -3972,7 +3982,7 @@ class Tokenizer:
 
         while bad - good > 1:  # bisect the bracket
             midpoint = (good + bad) // 2
-            probe_count = len(self.encode(content[start : start + midpoint]))
+            probe_count = count_tokens(content[start : start + midpoint])
             if probe_count <= max_tokens:
                 good, good_count = midpoint, probe_count
             else:
@@ -3982,7 +3992,7 @@ class Tokenizer:
             return TokenSpan(start, start + good, good_count)
 
         first_cp = content[start : start + 1]
-        first_cp_tokens = len(self.encode(first_cp))
+        first_cp_tokens = count_tokens(first_cp)
         if first_cp_tokens > max_tokens:
             raise TokenBudgetError(
                 max_tokens, first_cp_tokens, content[start : start + 80]
@@ -4010,7 +4020,9 @@ class Tokenizer:
             return TokenSpan(0, len(content), full_tokens)
 
         chars_per_token = len(content) / full_tokens
-        return self._bounded_prefix_span(content, 0, max_tokens, chars_per_token)
+        return self._bounded_prefix_span(
+            content, 0, max_tokens, chars_per_token, lambda text: len(self.encode(text))
+        )
 
     def split_by_token_limit(
         self, content: str, max_tokens: int, overlap_tokens: int = 0
@@ -4026,6 +4038,17 @@ class Tokenizer:
         the target, retreating the target itself (by the same exponential
         steps) whenever the estimated overlap would fail to make progress.
         """
+        return self._split_by_token_count(
+            content, max_tokens, overlap_tokens, lambda text: len(self.encode(text))
+        )
+
+    @staticmethod
+    def _split_by_token_count(
+        content: str,
+        max_tokens: int,
+        overlap_tokens: int,
+        count_tokens: Callable[[str], int],
+    ) -> List[TokenSpan]:
         if max_tokens <= 0:
             raise ValueError(f"max_tokens must be positive, got {max_tokens}")
         if overlap_tokens < 0:
@@ -4035,7 +4058,7 @@ class Tokenizer:
         if not content:
             return []
 
-        total_tokens = len(self.encode(content))
+        total_tokens = count_tokens(content)
         if total_tokens <= max_tokens:
             return [TokenSpan(0, len(content), total_tokens)]
 
@@ -4068,8 +4091,8 @@ class Tokenizer:
                 )
                 start = max(0, covered_end - overlap_chars)
                 try:
-                    candidate_span = self._bounded_prefix_span(
-                        content, start, max_tokens, chars_per_token
+                    candidate_span = Tokenizer._bounded_prefix_span(
+                        content, start, max_tokens, chars_per_token, count_tokens
                     )
                 except TokenBudgetError:
                     if target_overlap == 0:
@@ -4580,6 +4603,7 @@ def enforce_chunk_token_limit_before_embedding(
     max_tokens: int,
     overlap_tokens: int = 0,
     source_content: str | None = None,
+    document_token_counter: Callable[[str], int] | None = None,
 ) -> list[dict[str, Any]]:
     """Hard fallback split before embedding while preserving heading hierarchy.
 
@@ -4589,6 +4613,10 @@ def enforce_chunk_token_limit_before_embedding(
     longer preserves sentence/paragraph boundaries — overlap is what now
     carries the "don't lose context at a cut" job that used to be the
     sentence-first packer's.
+
+    An explicit document counter measures the complete embedding input. Span
+    offsets still refer to the source text, and stored tokens still use the
+    content tokenizer for downstream context budgeting.
 
     ``source_content`` is the merged document text the chunker itself
     received (the same string :mod:`lightrag.sidecar.backfill` reconstructs
@@ -4651,13 +4679,22 @@ def enforce_chunk_token_limit_before_embedding(
         # here would mean silently re-emitting the original, still-oversized
         # chunk instead of failing the document — exactly the unsafe
         # fallback this contract exists to remove.
-        spans = tokenizer.split_by_token_limit(
-            content, max_tokens, overlap_tokens=overlap_tokens
-        )
+        if document_token_counter is None:
+            spans = tokenizer.split_by_token_limit(
+                content, max_tokens, overlap_tokens=overlap_tokens
+            )
+        else:
+            spans = Tokenizer._split_by_token_count(
+                content, max_tokens, overlap_tokens, document_token_counter
+            )
 
         if len(spans) == 1:
             ndp = dict(dp)
-            ndp["tokens"] = spans[0].token_count
+            ndp["tokens"] = (
+                spans[0].token_count
+                if document_token_counter is None
+                else len(tokenizer.encode(content))
+            )
             normalized.append(ndp)
             continue
 
@@ -4714,7 +4751,11 @@ def enforce_chunk_token_limit_before_embedding(
             piece = content[span.start : span.end]
             new_dp = dict(dp)
             new_dp["content"] = piece
-            new_dp["tokens"] = span.token_count
+            new_dp["tokens"] = (
+                span.token_count
+                if document_token_counter is None
+                else len(tokenizer.encode(piece))
+            )
 
             # Shallow-copy preserves the nested heading dict and sidecar
             # block from the source chunk; only the payload (content/tokens

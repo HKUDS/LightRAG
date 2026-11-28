@@ -647,6 +647,28 @@ async def custom_embed(texts: list[str]) -> np.ndarray:
 
 `max_token_size` declares the model's real input limit. It is what keeps an over-long text from reaching a service that would split it internally and return one vector per segment — which the return contract below rejects as a vector count mismatch.
 
+If the embedding model counts tokens differently, pass
+`document_token_counter` alongside `max_token_size`. For ordinary document
+ingestion, it counts each candidate chunk as it will actually be sent, including
+any document prefix and special tokens. For example, with a local Hugging Face
+tokenizer and an adapter that prepends `document_prefix`:
+
+```python
+def count_embedding_input(text: str) -> int:
+    return len(
+        embedding_tokenizer.encode(
+            document_prefix + text, add_special_tokens=True, truncation=False
+        )
+    )
+```
+
+Pass this as `document_token_counter=count_embedding_input` to `EmbeddingFunc`
+or its decorator. The counter must be thread-safe and support deep copying.
+Stored chunk token counts and query context budgets still use the content
+tokenizer. This option applies to the final split in ordinary document
+ingestion. Custom chunk validation, semantic chunking windows, and entity or
+relationship description limits continue to use their existing counters.
+
 > **Pitfall — switching embedding models**: existing vectors do not match the new model's space, and nothing re-embeds them. Run `lightrag-rebuild-vdb` with the new embedding configuration; it drops each vector storage and rebuilds it from the knowledge graph and `text_chunks`, which are the authoritative sources. Do NOT clear the data directory — that destroys the graph the rebuild reads from. See [Switching embedding models](#switching-embedding-models).
 
 ### Embedding Function Return Contract

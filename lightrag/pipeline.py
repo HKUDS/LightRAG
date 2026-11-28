@@ -5677,6 +5677,9 @@ class _PipelineMixin:
                         max_tokens=self.embedding_token_limit,
                         overlap_tokens=self.embedding_chunk_overlap_token_size,
                         source_content=content,
+                        document_token_counter=getattr(
+                            self.embedding_func, "document_token_counter", None
+                        ),
                     )
                     if len(chunking_result) != original_chunk_count:
                         logger.info(

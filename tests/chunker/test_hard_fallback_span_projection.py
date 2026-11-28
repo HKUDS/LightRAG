@@ -38,6 +38,29 @@ def _tok() -> Tokenizer:
     return Tokenizer("char", _CharTokenizer())
 
 
+def test_document_budget_includes_prefix_and_keeps_content_tokens_and_spans():
+    text = "工单驳回"
+    parent = {"content": text, "_source_span": {"start": 0, "end": len(text)}}
+
+    def document_token_counter(chunk: str) -> int:
+        return len("D:" + chunk)
+
+    children = enforce_chunk_token_limit_before_embedding(
+        [parent],
+        _tok(),
+        max_tokens=4,
+        source_content=text,
+        document_token_counter=document_token_counter,
+    )
+
+    assert [
+        (child["content"], child["tokens"], child["_source_span"]) for child in children
+    ] == [
+        ("工单", 2, {"start": 0, "end": 2}),
+        ("驳回", 2, {"start": 2, "end": 4}),
+    ]
+
+
 def test_projection_fixes_the_double_space_regression_example():
     """Pinned example from the design doc: the source document has TWO
     separate U+0020 spaces between "a" and "b" (length 4), but the parent
