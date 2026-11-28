@@ -77,6 +77,7 @@ from lightrag.utils import (
     empty_length_truncated_hint,
     logger,
     safe_unicode_decode,
+    StreamingUnicodeDecoder,
     verbose_debug,
 )
 
@@ -659,6 +660,8 @@ async def _stream_response(
     final_terminal = None
     terminal_seen = False
     final_usage = None
+    body_decoder = StreamingUnicodeDecoder()
+    reasoning_decoder = StreamingUnicodeDecoder()
     # Set on GeneratorExit and CancelledError: the finally block must not
     # yield on either, or cleanup is suspended before stream/client close.
     closing_without_yield = False
@@ -698,10 +701,9 @@ async def _stream_response(
                 if not cot_active:
                     yield "<think>"
                     cot_active = True
-                if r"\u" in delta:
-                    delta = safe_unicode_decode(delta.encode("utf-8"))
                 reasoning_text_seen = True
-                yield delta
+                if text := reasoning_decoder.feed(delta):
+                    yield text
                 continue
 
             if event_type == "response.output_text.delta":
@@ -711,12 +713,13 @@ async def _stream_response(
                 # First body text closes any open reasoning block, matching the
                 # Chat Completions rule that COT stops once content arrives.
                 if cot_active:
+                    if tail := reasoning_decoder.flush():
+                        yield tail
                     yield "</think>"
                     cot_active = False
                 body_text_seen = True
-                if r"\u" in delta:
-                    delta = safe_unicode_decode(delta.encode("utf-8"))
-                yield delta
+                if text := body_decoder.feed(delta):
+                    yield text
                 continue
 
             if event_type == "response.refusal.delta":
@@ -761,7 +764,11 @@ async def _stream_response(
                 message = getattr(event, "message", "") or "unknown streaming error"
                 raise InvalidResponseError(f"OpenAI Responses stream error: {message}")
 
+        if tail := body_decoder.flush():
+            yield tail
         if cot_active:
+            if tail := reasoning_decoder.flush():
+                yield tail
             yield "</think>"
             cot_active = False
 

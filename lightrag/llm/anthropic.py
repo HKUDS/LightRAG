@@ -27,7 +27,7 @@ from lightrag.utils import (
     empty_length_truncated_hint,
     format_response_diagnostics,
     provider_timeout,
-    safe_unicode_decode,
+    StreamingUnicodeDecoder,
     logger,
     TruncatedResponse,
 )
@@ -352,6 +352,7 @@ async def anthropic_complete_if_cache(
 
     async def stream_response():
         usage_counts: dict[str, int] = {}
+        decoder = StreamingUnicodeDecoder()
         try:
             async for event in response:
                 usage = getattr(event, "usage", None)
@@ -376,9 +377,10 @@ async def anthropic_complete_if_cache(
                 )
                 if content is None:
                     continue
-                if r"\u" in content:
-                    content = safe_unicode_decode(content.encode("utf-8"))
-                yield content
+                if text := decoder.feed(content):
+                    yield text
+            if tail := decoder.flush():
+                yield tail
             if token_tracker and usage_counts:
                 prompt_tokens = sum(
                     usage_counts.get(field, 0)

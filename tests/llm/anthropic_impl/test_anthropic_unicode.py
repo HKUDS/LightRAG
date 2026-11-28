@@ -23,12 +23,20 @@ sdk_http = getattr(anthropic_base_client, "httpx2", None) or anthropic_base_clie
 
 @pytest.mark.asyncio
 async def test_surrogate_pair_in_anthropic_stream_is_utf8_encodable(monkeypatch):
-    event = {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {"type": "text_delta", "text": r"Answer: \ud83d\ude00"},
-    }
-    sse = f"event: content_block_delta\ndata: {json.dumps(event)}\n\n"
+    # The pair is split across two deltas: each half alone is a lone surrogate.
+    # The trailing open escape is emitted as is once the stream ends.
+    sse = "".join(
+        "event: content_block_delta\ndata: "
+        + json.dumps(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": text},
+            }
+        )
+        + "\n\n"
+        for text in (r"Answer: \ud83d", r"\ude00!\u4f")
+    )
 
     def provider_response(request):
         assert request.url.path == "/v1/messages"
@@ -57,5 +65,5 @@ async def test_surrogate_pair_in_anthropic_stream_is_utf8_encodable(monkeypatch)
         response = await consumer.get("/")
 
     assert response.status_code == 200
-    assert response.content == "Answer: 😀".encode("utf-8")
+    assert response.content == ("Answer: 😀!" + r"\u4f").encode("utf-8")
     assert provider_http.is_closed
