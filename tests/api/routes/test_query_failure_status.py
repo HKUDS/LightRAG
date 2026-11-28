@@ -103,6 +103,7 @@ def failing_rag(monkeypatch):
         entities_vdb=None,
         relationships_vdb=None,
         text_chunks=SimpleNamespace(global_config=config),
+        full_docs=None,
         chunks_vdb=SimpleNamespace(
             cosine_better_than_threshold=0.0, query=AsyncMock(return_value=[chunk])
         ),

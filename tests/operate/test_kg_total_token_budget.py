@@ -1,5 +1,6 @@
 """The total KG budget constrains graph records and the rendered references."""
 
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -69,6 +70,17 @@ def _prompt_tokens(context, param, config, template=TEMPLATE):
     )
     tokenizer = config["tokenizer"]
     return len(tokenizer.encode(prompt)) + len(tokenizer.encode(QUERY))
+
+
+def _kg_context_without_chunks(entities=()):
+    return PROMPTS["kg_query_context"].format(
+        entities_str="\n".join(
+            json.dumps(entity, ensure_ascii=False) for entity in entities
+        ),
+        relations_str="",
+        text_chunks_str="",
+        reference_list_str="",
+    )
 
 
 async def _build(monkeypatch, search, param, config, template=TEMPLATE):
@@ -278,8 +290,12 @@ async def test_real_tokenizer_default_prompt_and_user_instructions(monkeypatch):
 
 async def test_repeated_context_placeholder_counts_rendered_chunks():
     config = _config()
-    param = QueryParam(mode="mix", max_total_tokens=2300, enable_rerank=False)
+    param = QueryParam(mode="mix", enable_rerank=False)
     template = "{context_data}{context_data}"
+    # Leave room for two copies of one chunk and its metadata.
+    param.max_total_tokens = (
+        _prompt_tokens(_kg_context_without_chunks(), param, config, template) + 1200
+    )
     chunks = [
         {"chunk_id": str(i), "content": str(i) * 500, "file_path": f"{i}.txt"}
         for i in range(2)
@@ -289,16 +305,15 @@ async def test_repeated_context_placeholder_counts_rendered_chunks():
     )
     assert raw["status"] == "success"
     assert len(raw["data"]["chunks"]) == 1
-    assert _prompt_tokens(context, param, config, template) <= 2300
+    assert _prompt_tokens(context, param, config, template) <= param.max_total_tokens
 
 
 async def test_mix_vector_only_budget_exhaustion_does_not_call_answer(monkeypatch):
     config = _config()
     model = AsyncMock(return_value="answer")
     config["role_llm_funcs"] = {"query": model}
-    param = QueryParam(
-        mode="mix", max_total_tokens=650, hl_keywords=["knows"], enable_rerank=False
-    )
+    param = QueryParam(mode="mix", hl_keywords=["knows"], enable_rerank=False)
+    param.max_total_tokens = _prompt_tokens(_kg_context_without_chunks(), param, config)
     chunks = [{"chunk_id": "chunk", "content": "e" * 1000, "file_path": "e.txt"}]
     monkeypatch.setattr(
         operate, "_perform_kg_search", AsyncMock(return_value=_search([], [], chunks))
@@ -401,8 +416,11 @@ async def test_graph_filling_the_budget_warns_and_answers_from_graph(
     lightrag_log_records,
 ):
     config = _config()
-    param = QueryParam(mode="mix", max_total_tokens=1000, enable_rerank=False)
+    param = QueryParam(mode="mix", enable_rerank=False)
     entities = [{"entity": "Alice", "type": "person", "description": "e" * 300}]
+    param.max_total_tokens = _prompt_tokens(
+        _kg_context_without_chunks(entities), param, config
+    )
     chunks = [{"chunk_id": "c", "content": "c" * 500, "file_path": "c.md"}]
     context, raw = await operate._build_context_str(
         entities, [], chunks, QUERY, param, config, system_prompt=TEMPLATE
@@ -435,7 +453,8 @@ async def test_reference_list_dropping_every_chunk_warns(lightrag_log_records):
 
 async def test_vector_only_budget_exhaustion_warns(lightrag_log_records):
     config = _config()
-    param = QueryParam(mode="mix", max_total_tokens=650, enable_rerank=False)
+    param = QueryParam(mode="mix", enable_rerank=False)
+    param.max_total_tokens = _prompt_tokens(_kg_context_without_chunks(), param, config)
     chunks = [{"chunk_id": "chunk", "content": "e" * 1000, "file_path": "e.txt"}]
     context, raw = await operate._build_context_str(
         [], [], chunks, QUERY, param, config, system_prompt=TEMPLATE

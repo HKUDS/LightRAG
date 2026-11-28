@@ -6,10 +6,10 @@ to reach the answer-cache key: otherwise an operator who edits the prefix keeps
 being served answers written under the old one.
 
 The key component was changed in place -- ``query_param.user_prompt or ""``
-became the COMPOSED text -- rather than appended as a new component. That is
-what keeps ``_ANSWER_CACHE_POLICY_VERSION`` at v2: with no prefix configured
-the composed text is byte-identical to the old value, so every entry written
-before this feature existed still hits. These tests pin both halves.
+became the COMPOSED text -- rather than appended as a new component. With no
+prefix configured, that component remains byte-identical to its historical
+value. These tests pin that behavior as well as the deliberate v3 retirement
+of v2 entries after the default answer prompts gained document-date semantics.
 
 ``disable_user_prompt_prefix`` is deliberately NOT a key component of its own:
 it acts only through the composed text, so a disabled request with a prefix
@@ -19,7 +19,7 @@ configured must share an entry with a request that never had one.
 import pytest
 
 from lightrag.base import QueryContextResult, QueryParam
-from lightrag.operate import kg_query, naive_query
+from lightrag.operate import _ANSWER_CACHE_POLICY_VERSION, kg_query, naive_query
 from lightrag.utils import (
     Tokenizer,
     compute_args_hash,
@@ -101,40 +101,32 @@ def _answer_cache_keys(cache: _FakeKVStorage) -> list[str]:
     return [key for key in cache._store if ":query:" in key]
 
 
-def _preprefix_answer_cache_key(
+def _v2_answer_cache_key(
     param: QueryParam,
     cfg: dict,
     *,
     keywords: tuple[str, str] | None = None,
+    policy_version: str = "query-answer-cache-v2",
     kg_total_budget: bool = True,
 ) -> str:
-    """Frozen snapshot of the answer-cache key as composed BEFORE this feature.
+    """Frozen snapshot of the v2 answer-cache key.
 
     Deliberately duplicates the historical argument list rather than reusing
-    production code: the point is to prove an entry written by the old code is
-    still served when no prefix is configured. Do NOT refresh this when new key
-    fields are added -- if a later change makes this miss, that change costs
-    every deployment its warm answer cache and must be a deliberate decision.
+    production code: the point is to prove that v3 deliberately misses entries
+    written before the default answer prompts learned document-date semantics.
+    Do NOT refresh this helper when later key fields are added.
 
-    Refreshed ONCE, deliberately, in PR #3877: the KG chunk-selection settings
-    (``related_chunk_number`` / ``kg_chunk_pick_method``) joined the key because
-    changing either changes the retrieved context, and serving an answer cached
-    under the previous setting is a wrong answer. That retires every KG answer
-    entry written before it; a stale answer is worse than a cold cache. The
-    naive branch is untouched -- it does not carry these components. The
-    defaults below are written as literals on purpose: if ``DEFAULT_*`` ever
-    moves, this snapshot must go red again rather than follow it silently.
+    The KG snapshot includes the chunk-selection fields added in PR #3877
+    and the total rendered budget marker added in PR #4221. Naive uses
+    neither. Literal defaults keep future configuration changes from
+    silently updating the historical key.
 
-    Refreshed a second time, deliberately, in PR #4221: ``max_total_tokens``
-    started capping the whole rendered KG context, so a request may now keep
-    fewer graph records or chunks than the context an older entry was written
-    from, and that entry's citations would point at references the new list
-    no longer has. The unconditional ``kg_total_budget`` component retires
-    every KG answer entry written before it; pass ``kg_total_budget=False`` to
-    get the key the code before that change wrote. Naive is untouched again.
+    Use "policy_version" to isolate key changes within the same version
+    (prefix composition, KG budget, or keyword fallback). Use
+    "kg_total_budget=False" to reproduce a KG key without that marker.
     """
     args = [
-        "query-answer-cache-v2",
+        policy_version,
         param.mode,
         QUERY,
         param.response_type,
@@ -469,64 +461,53 @@ async def test_disabled_prefix_keeps_the_prefix_out_of_the_prompt(
 
 
 # ---------------------------------------------------------------------------
-# The invariant: an unconfigured prefix invalidates nothing.
+# Cache-key compatibility across prefix, KG budget and policy changes.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_naive_entry_written_before_the_prefix_feature_still_hits():
+@pytest.mark.parametrize(
+    "runner,param,keywords",
+    [
+        (_run_naive, _naive_param, None),
+        (_run_kg, _kg_param, ("", "Tesla")),
+    ],
+)
+async def test_entry_without_prefix_hits_at_current_cache_version(
+    runner, param, keywords, stub_query_context
+):
     cache = _FakeKVStorage()
     model = _RecordingModel()
     cfg = _query_global_config(model)
-    param = _naive_param(user_prompt=USER_PROMPT)
+    p = param(user_prompt=USER_PROMPT)
+    key = _v2_answer_cache_key(
+        p, cfg, keywords=keywords, policy_version=_ANSWER_CACHE_POLICY_VERSION
+    )
+    cache._store[key] = {"return": "PRE-PREFIX-ANSWER", "create_time": 1}
 
-    cache._store[_preprefix_answer_cache_key(param, cfg)] = {
-        "return": "PRE-PREFIX-ANSWER",
-        "create_time": 1,
-    }
-
-    result = await _run_naive(param, cfg, cache)
+    result = await runner(p, cfg, cache)
     assert result.content == "PRE-PREFIX-ANSWER"
     assert model.calls == 0
 
 
 @pytest.mark.offline
 @pytest.mark.asyncio
-async def test_kg_entry_written_before_the_prefix_feature_still_hits(
+async def test_kg_cache_entry_without_total_budget_misses_at_current_version(
     stub_query_context,
 ):
+    """A KG entry without the rendered-context budget marker is stale."""
     cache = _FakeKVStorage()
     model = _RecordingModel()
     cfg = _query_global_config(model)
     param = _kg_param(user_prompt=USER_PROMPT)
 
-    cache._store[_preprefix_answer_cache_key(param, cfg, keywords=("", "Tesla"))] = {
-        "return": "PRE-PREFIX-ANSWER",
-        "create_time": 1,
-    }
-
-    result = await _run_kg(param, cfg, cache)
-    assert result.content == "PRE-PREFIX-ANSWER"
-    assert model.calls == 0
-
-
-@pytest.mark.offline
-@pytest.mark.asyncio
-async def test_kg_entry_written_before_the_total_budget_cap_misses(
-    stub_query_context,
-):
-    """A KG answer cached before max_total_tokens capped the graph context was
-    written from a context the same request may no longer build, so it must not
-    be served. (The naive counterpart above still hits: its context is unchanged.)
-    """
-    cache = _FakeKVStorage()
-    model = _RecordingModel()
-    cfg = _query_global_config(model)
-    param = _kg_param(user_prompt=USER_PROMPT)
-
-    old_key = _preprefix_answer_cache_key(
-        param, cfg, keywords=("", "Tesla"), kg_total_budget=False
+    old_key = _v2_answer_cache_key(
+        param,
+        cfg,
+        keywords=("", "Tesla"),
+        policy_version=_ANSWER_CACHE_POLICY_VERSION,
+        kg_total_budget=False,
     )
     cache._store[old_key] = {"return": "PRE-BUDGET-ANSWER", "create_time": 1}
 
@@ -538,26 +519,35 @@ async def test_kg_entry_written_before_the_total_budget_cap_misses(
 @pytest.mark.offline
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "runner,param", [(_run_naive, _naive_param), (_run_kg, _kg_param)]
+    "runner,param,keywords",
+    [
+        (_run_naive, _naive_param, None),
+        (_run_kg, _kg_param, ("", "Tesla")),
+    ],
 )
-async def test_configured_prefix_does_not_serve_a_pre_prefix_entry(
-    runner, param, stub_query_context
+async def test_v2_answer_cache_entries_are_retired_by_v3(
+    runner, param, keywords, stub_query_context
 ):
-    """The other side of the invariant: once a prefix exists, old entries miss."""
     cache = _FakeKVStorage()
     model = _RecordingModel()
-    cfg = _query_global_config(model, prefix=PREFIX_A)
+    cfg = _query_global_config(model)
     p = param(user_prompt=USER_PROMPT)
 
-    keywords = ("", "Tesla") if p.mode == "local" else None
-    cache._store[_preprefix_answer_cache_key(p, cfg, keywords=keywords)] = {
-        "return": "PRE-PREFIX-ANSWER",
+    cache._store[_v2_answer_cache_key(p, cfg, keywords=keywords)] = {
+        "return": "V2-ANSWER",
         "create_time": 1,
     }
 
     result = await runner(p, cfg, cache)
     assert result.content == "answer-1"
     assert model.calls == 1
+    v3_entries = [
+        entry
+        for entry in cache._store.values()
+        if entry.get("queryparam", {}).get("answer_cache_version")
+        == "query-answer-cache-v3"
+    ]
+    assert len(v3_entries) == 1
 
 
 # ---------------------------------------------------------------------------

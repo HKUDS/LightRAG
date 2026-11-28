@@ -65,6 +65,9 @@ def query_setup(monkeypatch):
             cosine_better_than_threshold=0.0, query=AsyncMock(return_value=[chunk])
         ),
         llm_response_cache=cache,
+        # The query paths read document dates from full_docs; the chunk carries
+        # no full_doc_id, so no read happens and no storage is needed.
+        full_docs=None,
     )
     return rag, search, model, cache, reranker
 

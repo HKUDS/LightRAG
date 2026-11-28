@@ -62,6 +62,7 @@ def _rag(monkeypatch, keyword_reply):
         text_chunks=None,
         chunks_vdb=None,
         llm_response_cache=None,
+        full_docs=None,
     )
     return namespace, search
 
