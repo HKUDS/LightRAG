@@ -10,7 +10,10 @@ pytestmark = pytest.mark.offline
 
 
 def _ior(params: ObservableAddonParams, other: Any) -> None:
+    original = params
     params |= other
+    # ``|=`` rebinds the caller's name to whatever ``__ior__`` returns.
+    assert params is original
 
 
 def _delete(params: ObservableAddonParams, key: str) -> None:

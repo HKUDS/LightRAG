@@ -1331,15 +1331,16 @@ def test_partial_chunker_config_still_picks_up_size_env(tmp_path, monkeypatch):
     monkeypatch.setenv("CHUNK_R_SIZE", "777")
     monkeypatch.setenv("CHUNK_V_SIZE", "888")
 
-    # Partial config: F and R have no chunk_token_size slot and must be
-    # backfilled from env; V carries an explicit size, which beats CHUNK_V_SIZE
+    # Partial config: F has no chunk_token_size slot and V no sub-dict at all
+    # (the overlap overlay creates F/R/P but never V); both must be backfilled
+    # from env. R carries an explicit size, which beats CHUNK_R_SIZE
     # (tier 1 > tier 2).
     rag = _new_rag(
         tmp_path,
         addon_params={
             "chunker": {
                 "fixed_token": {"split_by_character": "\n"},
-                "semantic_vector": {"chunk_token_size": 320},
+                "recursive_character": {"chunk_token_size": 320},
             }
         },
     )
@@ -1347,8 +1348,8 @@ def test_partial_chunker_config_still_picks_up_size_env(tmp_path, monkeypatch):
     assert chunker["fixed_token"]["chunk_token_size"] == 640
     # Explicit caller value preserved alongside the env-backfilled size.
     assert chunker["fixed_token"]["split_by_character"] == "\n"
-    assert chunker["recursive_character"]["chunk_token_size"] == 777
-    assert chunker["semantic_vector"]["chunk_token_size"] == 320
+    assert chunker["recursive_character"]["chunk_token_size"] == 320
+    assert chunker["semantic_vector"]["chunk_token_size"] == 888
 
 
 @pytest.mark.offline
