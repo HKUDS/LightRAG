@@ -2,7 +2,7 @@ import pytest
 
 from lightrag.exceptions import ChunkTokenLimitExceededError
 from lightrag.chunker import chunking_by_token_size
-from lightrag.utils import Tokenizer, TokenizerInterface
+from lightrag.utils import TiktokenTokenizer, Tokenizer, TokenizerInterface
 
 
 class DummyTokenizer(TokenizerInterface):
@@ -142,42 +142,50 @@ def test_split_by_character_only_one_over_limit():
 
 
 @pytest.mark.offline
-def test_split_with_chunk_overlap():
-    """
-    Test chunk splitting with overlap using distinctive content.
+@pytest.mark.parametrize("kind", ["char", "char-trailing-space", "tiktoken"])
+def test_split_with_chunk_overlap(kind):
+    """Rebalance a genuinely new small tail without exceeding the window cap.
 
-    With distinctive characters, we can verify overlap positions are exact.
-    Misaligned overlap would produce wrong content and fail the test.
+    The character fixture checks exact offsets; the real default tokenizer
+    checks the production 1200-token budget without relying on its decoder.
     """
-    tokenizer = make_tokenizer()
-    # Each character is unique - enables exact position verification
-    content = "0123456789abcdefghijklmno"  # 25 chars
+    if kind == "char":
+        tokenizer = make_tokenizer()
+        content = "0123456789abcdefghijklmno"
+        size, overlap = 10, 3
+        expected_counts = [10, 10, 7, 7]
+        expected_spans = [(0, 10), (7, 17), (14, 21), (18, 25)]
+    elif kind == "char-trailing-space":
+        tokenizer = make_tokenizer()
+        content = "abcdefghijK    "
+        size, overlap = 10, 3
+        expected_counts = [9, 5]
+        expected_spans = [(0, 9), (6, 11)]
+    else:
+        tokenizer = TiktokenTokenizer()
+        content = "hello!" * 1250
+        size, overlap = 1200, 100
+        expected_counts = [1200, 750, 750]
+        expected_spans = [(0, 3600), (3300, 5550), (5250, 7500)]
 
     chunks = chunking_by_token_size(
         tokenizer,
         content,
         split_by_character="\n\n",
         split_by_character_only=False,
-        chunk_token_size=10,
-        chunk_overlap_token_size=3,
+        chunk_token_size=size,
+        chunk_overlap_token_size=overlap,
+        _emit_source_span=True,
     )
 
-    # With overlap=3, step size = chunk_size - overlap = 10 - 3 = 7
-    # Chunks start at positions: 0, 7, 14, 21
-    assert len(chunks) == 4
-
-    # Verify exact content and token counts
-    assert chunks[0]["tokens"] == 10
-    assert chunks[0]["content"] == "0123456789"  # [0:10]
-
-    assert chunks[1]["tokens"] == 10
-    assert chunks[1]["content"] == "789abcdefg"  # [7:17] - overlaps with "789"
-
-    assert chunks[2]["tokens"] == 10
-    assert chunks[2]["content"] == "efghijklmn"  # [14:24] - overlaps with "efg"
-
-    assert chunks[3]["tokens"] == 4
-    assert chunks[3]["content"] == "lmno"  # [21:25] - overlaps with "lmn"
+    assert [chunk["tokens"] for chunk in chunks] == expected_counts
+    assert [chunk["content"] for chunk in chunks] == [
+        content[start:end] for start, end in expected_spans
+    ]
+    assert [chunk["_source_span"] for chunk in chunks] == [
+        {"start": start, "end": end} for start, end in expected_spans
+    ]
+    assert chunks[-1]["tokens"] * 2 >= size
 
 
 @pytest.mark.offline
@@ -352,13 +360,22 @@ def test_every_window_adds_new_text(split_by_character):
                 chunk_overlap_token_size=chunk_overlap_token_size,
                 _emit_source_span=True,
             )
-            ends = [chunk["_source_span"]["end"] for chunk in chunks]
+            spans = [chunk["_source_span"] for chunk in chunks]
+            ends = [span["end"] for span in spans]
+            counts = [chunk["tokens"] for chunk in chunks]
             expected_count = 1 + max(0, -(-(length - chunk_token_size) // step))
             if (
                 not ends
                 or ends != sorted(set(ends))
                 or ends[-1] != length
                 or len(chunks) != expected_count
+                or any(count > chunk_token_size for count in counts)
+                or (len(chunks) > 1 and counts[-1] * 2 < chunk_token_size)
+                or any(
+                    spans[index - 1]["end"] - span["start"] != chunk_overlap_token_size
+                    for index, span in enumerate(spans)
+                    if index
+                )
             ):
                 mismatches.append(
                     (length, chunk_overlap_token_size, ends, expected_count)
