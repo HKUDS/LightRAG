@@ -547,9 +547,7 @@ async def test_streaming_records_usage_from_completed_event(monkeypatch):
             SimpleNamespace(
                 type="response.completed",
                 response=SimpleNamespace(
-                    usage=_usage(
-                        3, 4, input_details=SimpleNamespace(cached_tokens=2)
-                    )
+                    usage=_usage(3, 4, input_details=SimpleNamespace(cached_tokens=2))
                 ),
             ),
         ]
