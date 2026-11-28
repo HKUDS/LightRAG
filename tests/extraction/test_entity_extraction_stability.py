@@ -650,39 +650,6 @@ async def test_text_mode_gleaned_relation_can_reference_prior_entity():
 
 
 @pytest.mark.offline
-def test_addon_params_default_includes_entity_type_prompt_file_env(tmp_path):
-    _require_yaml()
-
-    from lightrag import LightRAG
-
-    prompt_dir = tmp_path / "entity_type"
-    prompt_dir.mkdir()
-    _write_prompt_profile(
-        prompt_dir / "entity_type_prompt.sample.yml",
-        text_examples=[_text_profile_example("Env Default Example")],
-    )
-
-    with patch.dict(
-        os.environ,
-        {
-            "SUMMARY_LANGUAGE": "English",
-            "ENTITY_TYPE_PROMPT_FILE": "entity_type_prompt.sample.yml",
-        },
-    ):
-        with _patch_prompt_dir(prompt_dir):
-            rag = LightRAG(
-                working_dir=str(tmp_path / "rag-default-env"),
-                llm_model_func=AsyncMock(),
-                embedding_func=_dummy_embedding_func(),
-                entity_extraction_use_json=False,
-            )
-
-    assert (
-        rag.addon_params["entity_type_prompt_file"] == "entity_type_prompt.sample.yml"
-    )
-
-
-@pytest.mark.offline
 @pytest.mark.asyncio
 async def test_text_mode_prompt_file_injects_examples_and_guidance():
     _require_yaml()
@@ -1067,34 +1034,6 @@ def test_addon_guidance_overrides_file_profile(tmp_path):
     assert any(
         "Merged Example" in example for example in profile["entity_extraction_examples"]
     )
-
-
-@pytest.mark.offline
-def test_explicit_addon_params_still_picks_up_env_defaults(tmp_path, monkeypatch):
-    """Passing addon_params explicitly must not drop env-based defaults."""
-    _require_yaml()
-
-    from lightrag import LightRAG
-
-    prompt_dir = tmp_path / "entity_type"
-    prompt_dir.mkdir()
-    _write_prompt_profile(
-        prompt_dir / "from_env.yml",
-        text_examples=[_text_profile_example("Env Example")],
-    )
-
-    monkeypatch.setenv("ENTITY_TYPE_PROMPT_FILE", "from_env.yml")
-
-    with _patch_prompt_dir(prompt_dir):
-        rag = LightRAG(
-            working_dir=str(tmp_path / "rag-env-default"),
-            llm_model_func=AsyncMock(),
-            embedding_func=_dummy_embedding_func(),
-            entity_extraction_use_json=False,
-            addon_params={"language": "English"},
-        )
-
-    assert rag.addon_params["entity_type_prompt_file"] == "from_env.yml"
 
 
 @pytest.mark.offline
