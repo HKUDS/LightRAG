@@ -95,13 +95,21 @@ def _response(
     return payload
 
 
-def _usage(input_tokens: int, output_tokens: int, reasoning_tokens: int = 0):
-    return SimpleNamespace(
+def _usage(
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int = 0,
+    input_details: Any = None,
+):
+    usage = SimpleNamespace(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=input_tokens + output_tokens,
         output_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
     )
+    if input_details is not None:
+        usage.input_tokens_details = input_details
+    return usage
 
 
 def _patch_client(monkeypatch, payload: Any) -> _FakeClient:
@@ -299,19 +307,34 @@ async def test_structured_output_disables_cot(monkeypatch):
     assert result == '{"a": 1}'
 
 
-async def test_token_tracker_maps_responses_usage_keys(monkeypatch):
+@pytest.mark.parametrize(
+    ("input_details", "expected_cached"),
+    [
+        pytest.param(None, None, id="details-absent"),
+        pytest.param(SimpleNamespace(cached_tokens=None), None, id="cached-null"),
+        pytest.param(SimpleNamespace(cached_tokens=0), 0, id="reported-zero"),
+        pytest.param(SimpleNamespace(cached_tokens=5), 5, id="reported"),
+    ],
+)
+async def test_token_tracker_maps_responses_usage_keys(
+    monkeypatch, input_details, expected_cached
+):
     _patch_client(
         monkeypatch,
-        _response(output=[_message("ok")], usage=_usage(11, 7)),
+        _response(
+            output=[_message("ok")],
+            usage=_usage(11, 7, input_details=input_details),
+        ),
     )
     recorded: list[dict[str, int]] = []
     tracker = SimpleNamespace(add_usage=recorded.append)
 
     await openai_responses_complete_if_cache("gpt-5.6", "hi", token_tracker=tracker)
 
-    assert recorded == [
-        {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-    ]
+    expected = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+    if expected_cached is not None:
+        expected["cached_prompt_tokens"] = expected_cached
+    assert recorded == [expected]
 
 
 async def test_truncated_output_is_wrapped_for_the_cache_layer(monkeypatch):
@@ -523,7 +546,11 @@ async def test_streaming_records_usage_from_completed_event(monkeypatch):
             _delta("response.output_text.delta", "ok"),
             SimpleNamespace(
                 type="response.completed",
-                response=SimpleNamespace(usage=_usage(3, 4)),
+                response=SimpleNamespace(
+                    usage=_usage(
+                        3, 4, input_details=SimpleNamespace(cached_tokens=2)
+                    )
+                ),
             ),
         ]
     )
@@ -536,7 +563,14 @@ async def test_streaming_records_usage_from_completed_event(monkeypatch):
     )
     await _collect(result)
 
-    assert recorded == [{"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}]
+    assert recorded == [
+        {
+            "prompt_tokens": 3,
+            "completion_tokens": 4,
+            "total_tokens": 7,
+            "cached_prompt_tokens": 2,
+        }
+    ]
 
 
 async def test_streaming_records_usage_from_incomplete_event(monkeypatch):
