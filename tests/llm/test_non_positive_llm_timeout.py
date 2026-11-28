@@ -21,13 +21,14 @@ pytestmark = pytest.mark.offline
 async def test_non_positive_llm_timeout_still_runs_the_call(
     llm_timeout, lightrag_caplog
 ):
-    async def slow_func(value: str, **_kwargs):
-        await asyncio.sleep(0.05)
+    async def yielding_func(value: str, **_kwargs):
+        # One scheduler yield is enough: a 0s budget cancels the call there.
+        await asyncio.sleep(0)
         return value
 
     wrapped = priority_limit_async_func_call(
         1, llm_timeout=llm_timeout, queue_name="no-timeout LLM func"
-    )(slow_func)
+    )(yielding_func)
     try:
         with lightrag_caplog.at_level("INFO", logger="lightrag"):
             assert await wrapped("hello") == "hello"
